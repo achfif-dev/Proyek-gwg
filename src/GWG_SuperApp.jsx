@@ -10,13 +10,13 @@ import * as XLSX from "xlsx";
 // 3. Aktifkan Realtime Database → mulai dalam test mode
 // 4. Aktifkan Authentication → Google Sign-In
 const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
-  authDomain: "your-project.firebaseapp.com",
-  databaseURL: "https://your-project-default-rtdb.firebaseio.com",
-  projectId: "your-project",
-  storageBucket: "your-project.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxxxxxxxx",
+  apiKey: "AIzaSyBBAWDbCtCde8mgRgASZ7nl36bfEwZaPM4",
+  authDomain: "proyek-gwg.firebaseapp.com",
+  databaseURL: "https://proyek-gwg-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId: "proyek-gwg",
+  storageBucket: "proyek-gwg.firebasestorage.app",
+  messagingSenderId: "481668966064",
+  appId: "1:481668966064:web:8b1bbc7a1c1eac71bb3d75",
 };
 const FIREBASE_CONFIGURED = !FIREBASE_CONFIG.apiKey.includes("XXXXX");
 
