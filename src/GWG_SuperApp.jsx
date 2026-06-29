@@ -159,6 +159,20 @@ function mapToArr(map) {
   return Object.values(map);
 }
 
+// Memicu unduhan file JSON ke perangkat pengguna (dipakai fitur Backup).
+function downloadJSON(filename, obj) {
+  try {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("Gagal membuat file backup: " + e.message);
+  }
+}
+
 function useDB(user) {
   const [db, setDB] = useState(() => {
     try {
@@ -210,13 +224,25 @@ function useDB(user) {
         const rootVal = rootSnap.val();
         const isOldShape = rootVal && LIST_TABLES.some(key => Array.isArray(rootVal[key]));
         if (isOldShape) {
+          // PENTING: hanya tulis ulang key yang BENAR-BENAR ada (berbentuk array)
+          // di rootVal. JANGAN looping semua LIST_TABLES tanpa pengecekan —
+          // kalau root hanya berisi sebagian tabel (misal hasil import JSON
+          // parsial / restrukturisasi manual lewat Firebase Console yang hanya
+          // menyertakan sebagian data), arrToMap(undefined) akan menghasilkan
+          // {} kosong dan ITU AKAN MENIMPA / MENGHAPUS data tabel lain yang
+          // sebenarnya masih valid tersimpan di path-nya masing-masing. Ini
+          // adalah akar bug "data lama hilang setelah deploy JSON baru".
           const writes = {};
-          LIST_TABLES.forEach(key => { writes[key] = arrToMap(rootVal[key]); });
-          writes.stokAwal = rootVal.stokAwal || {};
-          writes.bagiHasilConfig = rootVal.bagiHasilConfig ?? null;
-          await Promise.all(Object.entries(writes).map(([key, val]) =>
-            set(ref(rtdb, `gwg_data/shared/${key}`), val)
-          ));
+          LIST_TABLES.forEach(key => {
+            if (Array.isArray(rootVal[key])) writes[key] = arrToMap(rootVal[key]);
+          });
+          if (rootVal.stokAwal !== undefined) writes.stokAwal = rootVal.stokAwal || {};
+          if (rootVal.bagiHasilConfig !== undefined) writes.bagiHasilConfig = rootVal.bagiHasilConfig ?? null;
+          if (Object.keys(writes).length > 0) {
+            await Promise.all(Object.entries(writes).map(([key, val]) =>
+              set(ref(rtdb, `gwg_data/shared/${key}`), val)
+            ));
+          }
         }
         await set(ref(rtdb, `gwg_data/_migratedV3`), true); // tandai selesai, walau tidak ada yang dimigrasi
       } catch (e) {
@@ -350,6 +376,11 @@ function useDB(user) {
   }, [pushUpdates]);
 
   const resetDB = useCallback(() => {
+    // PENGAMAN TAMBAHAN: selalu backup snapshot SEBELUM data dihapus, supaya
+    // kalau reset ternyata tidak disengaja, masih ada cara memulihkannya
+    // lewat menu "Riwayat Backup" (lihat backupNow/listBackups/restoreBackup
+    // di bawah).
+    backupNow(db, { reason: "sebelum-reset" });
     setDB(DB_EMPTY);
     try { localStorage.setItem("gwg_db_v2", JSON.stringify(DB_EMPTY)); } catch {}
     // Reset menghapus SETIAP path tabel secara eksplisit (bukan menulis satu
@@ -359,9 +390,94 @@ function useDB(user) {
     updates.stokAwal = null;
     updates.bagiHasilConfig = null;
     pushUpdates(updates);
+  }, [pushUpdates, db]);
+
+  // ───────────────────────────────────────────────────────────────────────
+  // BACKUP OTOMATIS & MANUAL
+  // Tujuannya: kalaupun suatu saat ada kesalahan deploy/import/reset lagi,
+  // selalu ada salinan yang bisa dipulihkan. Backup disimpan dengan KEY =
+  // tanggal (YYYY-MM-DD), jadi backup di hari yang sama akan menimpa backup
+  // hari itu saja (tidak menumpuk tanpa batas), dan backup lebih tua dari
+  // MAX_BACKUPS hari otomatis dibersihkan.
+  // ───────────────────────────────────────────────────────────────────────
+  const MAX_BACKUPS = 30;
+
+  const backupNow = useCallback(async (dbToBackup, { reason = "manual" } = {}) => {
+    const nowIso = new Date().toISOString();
+    const snapshot = { ts: nowIso, reason, data: dbToBackup };
+    const dateKey = nowIso.slice(0, 10); // YYYY-MM-DD
+
+    // 1) Salinan lokal — selalu jalan, bahkan tanpa login/Firebase.
+    try { localStorage.setItem(`gwg_backup_${dateKey}`, JSON.stringify(snapshot)); } catch {}
+
+    // 2) Salinan cloud — supaya bisa dipulihkan dari perangkat lain juga.
+    if (user && firebaseDB) {
+      try {
+        const { db: rtdb, ref, set, get } = firebaseDB;
+        await set(ref(rtdb, `gwg_data/_backups/${dateKey}`), snapshot);
+        const listSnap = await get(ref(rtdb, `gwg_data/_backups`));
+        const all = listSnap.val();
+        if (all) {
+          const keys = Object.keys(all).sort(); // format YYYY-MM-DD bisa diurutkan sebagai string
+          const excess = keys.length - MAX_BACKUPS;
+          if (excess > 0) {
+            await Promise.all(keys.slice(0, excess).map(k => set(ref(rtdb, `gwg_data/_backups/${k}`), null)));
+          }
+        }
+      } catch (e) {
+        console.warn("Backup ke cloud gagal (salinan lokal tetap tersimpan):", e);
+      }
+    }
+    return snapshot;
+  }, [user]);
+
+  // Auto-backup 1x per hari per perangkat. Dipasang lewat efek terpisah agar
+  // berjalan sendiri tanpa perlu dipanggil manual dari komponen UI, dan baru
+  // jalan setelah cloudLoaded supaya tidak membackup data kosong/parsial yang
+  // belum selesai sinkron dari Firebase.
+  useEffect(() => {
+    if (!cloudLoaded) return;
+    if (!db || (db.pengguna || []).length === 0) return; // belum ada data nyata, lewati
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      if (localStorage.getItem("gwg_last_autobackup") === today) return;
+      backupNow(db, { reason: "auto-harian" });
+      localStorage.setItem("gwg_last_autobackup", today);
+    } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cloudLoaded, db, backupNow]);
+
+  // Daftar backup yang tersedia di cloud, untuk ditampilkan di menu Admin.
+  const listBackups = useCallback(async () => {
+    if (!firebaseDB) return [];
+    try {
+      const { db: rtdb, ref, get } = firebaseDB;
+      const snap = await get(ref(rtdb, `gwg_data/_backups`));
+      const all = snap.val() || {};
+      return Object.entries(all)
+        .map(([key, val]) => ({ key, ts: val?.ts, reason: val?.reason, data: val?.data }))
+        .sort((a, b) => b.key.localeCompare(a.key));
+    } catch (e) {
+      console.warn("Gagal memuat daftar backup:", e);
+      return [];
+    }
+  }, []);
+
+  // Restore dari satu snapshot backup — menulis ulang SEMUA tabel secara
+  // eksplisit (beda dengan save() yang hanya mengirim yang berubah), supaya
+  // hasil restore benar-benar identik dengan snapshot yang dipilih.
+  const restoreBackup = useCallback((snapshotData) => {
+    const restored = { ...DB_EMPTY, ...snapshotData };
+    setDB(restored);
+    try { localStorage.setItem("gwg_db_v2", JSON.stringify(restored)); } catch {}
+    const updates = {};
+    LIST_TABLES.forEach(key => { updates[key] = arrToMap(restored[key]); });
+    updates.stokAwal = restored.stokAwal || {};
+    updates.bagiHasilConfig = restored.bagiHasilConfig ?? null;
+    pushUpdates(updates);
   }, [pushUpdates]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup };
 }
 
 
@@ -1667,8 +1783,8 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
 
     return rutesToShow.map(rute => {
       const wilayah = (db.wilayah||[]).find(w=>w.id===rute.wilayahId);
-      // Semua toko aktif di rute ini
-      const tokoList = (db.toko||[]).filter(t=>t.ruteId===rute.id && t.status==="Aktif");
+      // Semua toko aktif DAN baru di rute ini (Non-Aktif disembunyikan otomatis mulai bulan berikutnya)
+      const tokoList = (db.toko||[]).filter(t=>t.ruteId===rute.id && (t.status==="Aktif" || t.status==="Baru"));
       return {
         rute, wilayah,
         tokoList: tokoList.map(toko => {
@@ -1763,14 +1879,19 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
   ).map(r=>({ value:r.id, label:r.nama })), [db.rute, modalFilter.wilayahId]);
 
   const modalTokoOpts = useMemo(() => {
-    let list = (db.toko||[]).filter(t=>t.status==="Aktif");
+    // Tampilkan toko Aktif DAN Baru di dropdown kontrol (jangan tampilkan Non-Aktif)
+    // Label disertai badge status supaya petugas langsung tahu statusnya tanpa buka tab Toko
+    let list = (db.toko||[]).filter(t => t.status === "Aktif" || t.status === "Baru");
     if (modalFilter.ruteId) {
       list = list.filter(t=>t.ruteId===modalFilter.ruteId);
     } else if (modalFilter.wilayahId) {
       const ruteIds = (db.rute||[]).filter(r=>r.wilayahId===modalFilter.wilayahId).map(r=>r.id);
       list = list.filter(t=>ruteIds.includes(t.ruteId));
     }
-    return list.map(t => ({ value:t.id, label: `${t.nama}${t.kode?` (${t.kode})`:""}` }));
+    return list.map(t => {
+      const statusBadge = t.status === "Baru" ? " 🆕 [BARU]" : t.status === "Aktif" ? "" : ` [${t.status}]`;
+      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}` };
+    });
   }, [db.toko, db.rute, modalFilter]);
 
   // Import Kontrol Bulanan dari Excel
@@ -1946,7 +2067,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
                       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                         <span style={{ fontSize:18 }}>{sudahDikontrol?"✅":"⏳"}</span>
                         <div>
-                          <div style={{ fontWeight:700, fontSize:14, color:T.gray800 }}>{toko.nama}</div>
+                          <div style={{ fontWeight:700, fontSize:14, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}>
+                            {toko.nama}
+                            {toko.status === "Baru" && (
+                              <span style={{ background:T.blue, color:"#fff", fontSize:10, fontWeight:700,
+                                borderRadius:99, padding:"1px 8px", letterSpacing:"0.03em" }}>🆕 BARU</span>
+                            )}
+                          </div>
                           <div style={{ fontSize:11, color:T.gray400 }}>{toko.kode}</div>
                         </div>
                       </div>
@@ -2047,7 +2174,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
               options={modalRuteOpts} hint="Pilih rute untuk mempersempit pilihan toko" />
             <div style={{ gridColumn:"1/-1" }}>
               <Input label="Toko" value={form.tokoId} onChange={handleTokoChange} options={modalTokoOpts} required
-                hint={modalTokoOpts.length===0 ? "Tidak ada toko aktif untuk filter ini" : `${modalTokoOpts.length} toko ditemukan di rute/wilayah ini`} />
+                hint={modalTokoOpts.length===0
+                  ? "Tidak ada toko Aktif/Baru untuk filter ini"
+                  : `${modalTokoOpts.length} toko (Aktif + Baru) · Toko Non-Aktif disembunyikan otomatis · 🆕 = toko baru`} />
             </div>
             <Input label="Tanggal Kontrol" value={form.tanggal} onChange={v=>f("tanggal",v)} type="date" required />
           </div>
@@ -3686,10 +3815,26 @@ function canAccessTab(tabKey, { isAdmin, isManajer }) {
 export default function GWGSuperApp() {
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showReset, setShowReset] = useState(false);
+  const [resetConfirmText, setResetConfirmText] = useState("");
+  const [resetStep, setResetStep] = useState(1); // 1 = alasan, 2 = konfirmasi ketik
+  const [resetAlasan, setResetAlasan] = useState("");
+  const [showBackup, setShowBackup] = useState(false);
+  const [backupList, setBackupList] = useState([]);
+  const [backupLoading, setBackupLoading] = useState(false);
+  const [restoreTarget, setRestoreTarget] = useState(null); // snapshot yang mau direstore (perlu konfirmasi)
+  const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [loginError, setLoginError] = useState("");
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError, cloudLoaded } = useDB(user);
+  const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup } = useDB(user);
   const analytics = useAnalytics(db);
+
+  // Buka modal backup & langsung muat daftar backup cloud (kalau ada)
+  const openBackupModal = useCallback(async () => {
+    setShowBackup(true);
+    setBackupLoading(true);
+    try { setBackupList(await listBackups()); } catch { setBackupList([]); }
+    setBackupLoading(false);
+  }, [listBackups]);
 
   // Cari role user yang login berdasarkan email di tabel pengguna
   const currentUserRecord = user ? db.pengguna.find(p => p.email?.toLowerCase() === user.email?.toLowerCase()) : null;
@@ -3879,10 +4024,30 @@ export default function GWGSuperApp() {
                 </div>
               )}
 
-              <Btn variant="secondary" size="sm" onClick={()=>setShowReset(true)}
-                style={{ background:"rgba(255,255,255,.1)", color:"#fff", border:"1px solid rgba(255,255,255,.2)" }}>
-                ⚙️ Reset
-              </Btn>
+              {isAdmin && (
+                <div style={{ display:"flex", gap:4 }}>
+                  <Btn variant="secondary" size="sm" onClick={async () => {
+                    const snap = await backupNow(db, { reason: "manual-cepat" });
+                    if (snap) {
+                      downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, snap);
+                    }
+                  }}
+                    style={{ background:"rgba(255,255,255,.1)", color:"#fff", border:"1px solid rgba(255,255,255,.2)", fontSize:11, padding:"5px 10px" }}
+                    title="Backup & unduh sekarang (tanpa buka modal)">
+                    💾⚡
+                  </Btn>
+                  <Btn variant="secondary" size="sm" onClick={openBackupModal}
+                    style={{ background:"rgba(255,255,255,.1)", color:"#fff", border:"1px solid rgba(255,255,255,.2)" }}>
+                    💾 Backup
+                  </Btn>
+                </div>
+              )}
+              {isAdmin && (
+                <Btn variant="secondary" size="sm" onClick={()=>{ setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); }}
+                  style={{ background:"rgba(220,38,38,.25)", color:"#FCA5A5", border:"1px solid rgba(220,38,38,.4)" }}>
+                  ⚠️ Reset DB
+                </Btn>
+              )}
             </div>
           </div>
 
@@ -3921,20 +4086,208 @@ export default function GWGSuperApp() {
         {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} />}
       </div>
 
-      {/* RESET CONFIRM */}
-      {showReset && (
-        <Modal title="⚠️ Reset Database" onClose={()=>setShowReset(false)}>
+      {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
+      {showBackup && isAdmin && (
+        <Modal title="💾 Backup & Restore Data" onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); }}>
+          <div style={{ padding:"4px 0 8px" }}>
+            <div style={{ fontSize:13, color:T.gray400, marginBottom:16 }}>
+              Sistem otomatis membuat backup 1x/hari ke cloud. Anda juga bisa membuat backup manual kapan saja, atau mengunduh salinan ke perangkat.
+            </div>
+
+            <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
+              <Btn onClick={() => downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, { ts:new Date().toISOString(), reason:"manual-download", data:db })}>
+                ⬇️ Unduh Backup Sekarang (.json)
+              </Btn>
+              <Btn variant="secondary" onClick={async () => {
+                setBackupLoading(true);
+                await backupNow(db, { reason: "manual" });
+                setBackupList(await listBackups());
+                setBackupLoading(false);
+              }}>
+                ☁️ Simpan Snapshot ke Cloud
+              </Btn>
+            </div>
+
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>Riwayat Backup Cloud</div>
+            {!user && (
+              <div style={{ fontSize:12, color:T.gray400, marginBottom:8 }}>Login dengan Google untuk melihat & menyimpan backup di cloud.</div>
+            )}
+            {backupLoading && <div style={{ fontSize:13, color:T.gray400 }}>Memuat...</div>}
+            {!backupLoading && user && backupList.length === 0 && (
+              <div style={{ fontSize:13, color:T.gray400 }}>Belum ada backup cloud tersimpan.</div>
+            )}
+            {!backupLoading && backupList.length > 0 && (
+              <div style={{ maxHeight:260, overflow:"auto", border:`1px solid ${T.gray200}`, borderRadius:8 }}>
+                {backupList.map(b => (
+                  <div key={b.key} style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                    padding:"10px 12px", borderBottom:`1px solid ${T.gray100}`, fontSize:13 }}>
+                    <div>
+                      <div style={{ fontWeight:600, color:T.gray800 }}>{b.key}</div>
+                      <div style={{ fontSize:11, color:T.gray400 }}>{b.reason || "—"} · {b.ts ? new Date(b.ts).toLocaleString("id-ID") : "-"}</div>
+                    </div>
+                    <div style={{ display:"flex", gap:6 }}>
+                      <Btn size="sm" variant="secondary" onClick={() => downloadJSON(`gwg_backup_${b.key}.json`, b)}>⬇️</Btn>
+                      <Btn size="sm" variant="danger" onClick={() => { setRestoreTarget(b); setRestoreConfirmText(""); }}>Pulihkan</Btn>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div style={{ display:"flex", justifyContent:"flex-end", marginTop:18 }}>
+              <Btn variant="secondary" onClick={()=>setShowBackup(false)}>Tutup</Btn>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* KONFIRMASI RESTORE — backup akan MENGGANTI seluruh data saat ini,
+          jadi perlu konfirmasi ketat sama seperti Reset. */}
+      {restoreTarget && isAdmin && (
+        <Modal title="⚠️ Pulihkan dari Backup" onClose={()=>{ setRestoreTarget(null); setRestoreConfirmText(""); }}>
           <div style={{ textAlign:"center", padding:"8px 0 20px" }}>
             <div style={{ fontSize:40, marginBottom:12 }}>⚠️</div>
-            <div style={{ fontSize:15, fontWeight:600, color:T.gray800, marginBottom:8 }}>Reset semua data ke kosong?</div>
-            <div style={{ fontSize:13, color:T.gray400, marginBottom:20 }}>
-              Semua data yang sudah diinput akan <b>hilang permanen</b>. Tindakan ini tidak bisa dibatalkan.
-              {user && <div style={{ marginTop:8, color:T.red }}><b>⚠️ Data di cloud (Firebase) juga akan dihapus!</b></div>}
+            <div style={{ fontSize:15, fontWeight:600, color:T.gray800, marginBottom:8 }}>
+              Pulihkan data dari backup <b>{restoreTarget.key}</b>?
             </div>
+            <div style={{ fontSize:13, color:T.gray400, marginBottom:16 }}>
+              Seluruh data <b>saat ini</b> akan <b>diganti</b> dengan isi backup ini. Tindakan ini tidak bisa dibatalkan.
+              Disarankan membuat backup data saat ini dulu sebelum melanjutkan (tombol "Unduh Backup Sekarang" di menu sebelumnya).
+            </div>
+            <div style={{ fontSize:13, color:T.gray800, marginBottom:8, textAlign:"left" }}>
+              Ketik <b>PULIHKAN</b> di kolom bawah untuk mengonfirmasi:
+            </div>
+            <input
+              type="text"
+              value={restoreConfirmText}
+              onChange={(e)=>setRestoreConfirmText(e.target.value)}
+              placeholder="Ketik PULIHKAN"
+              autoFocus
+              style={{ width:"100%", boxSizing:"border-box", padding:"10px 12px", fontSize:14,
+                border:`1px solid ${T.gray200}`, borderRadius:8, marginBottom:20, textAlign:"center",
+                fontFamily:"inherit", letterSpacing:1 }}
+            />
             <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-              <Btn variant="secondary" onClick={()=>setShowReset(false)}>Batal</Btn>
-              <Btn variant="danger" onClick={()=>{ resetDB(); setShowReset(false); }}>Ya, Reset Sekarang</Btn>
+              <Btn variant="secondary" onClick={()=>{ setRestoreTarget(null); setRestoreConfirmText(""); }}>Batal</Btn>
+              <Btn
+                variant="danger"
+                disabled={restoreConfirmText.trim().toUpperCase() !== "PULIHKAN"}
+                onClick={()=>{
+                  if (!isAdmin || restoreConfirmText.trim().toUpperCase() !== "PULIHKAN") return;
+                  restoreBackup(restoreTarget.data);
+                  setRestoreTarget(null);
+                  setRestoreConfirmText("");
+                  setShowBackup(false);
+                }}
+              >
+                Ya, Pulihkan Sekarang
+              </Btn>
             </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* RESET CONFIRM — hanya bisa dibuka oleh Admin (tombol disembunyikan
+          untuk role lain), DAN sebagai pengaman kedua, eksekusi resetDB()
+          tetap dicek ulang isAdmin di sini, bukan hanya mengandalkan tombol
+          yang tersembunyi di UI.
+          VERIFIKASI 2 TAHAP:
+          - Tahap 1: Admin wajib mengisi alasan reset (mencegah pencet tidak sengaja)
+          - Tahap 2: Ketik frasa "HAPUS PERMANEN" persis (lebih susah terpencet sembarangan) */}
+      {showReset && isAdmin && (
+        <Modal title={`⚠️ Reset Database — Langkah ${resetStep} dari 2`}
+          onClose={()=>{ setShowReset(false); setResetConfirmText(""); setResetStep(1); setResetAlasan(""); }}>
+          <div style={{ padding:"4px 0 8px" }}>
+
+            {/* Langkah 1: Isi alasan reset */}
+            {resetStep === 1 && (
+              <div style={{ textAlign:"center" }}>
+                <div style={{ fontSize:40, marginBottom:12 }}>🔐</div>
+                <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:8 }}>
+                  Langkah 1: Konfirmasi Identitas & Alasan
+                </div>
+                <div style={{ fontSize:13, color:T.gray400, marginBottom:16, textAlign:"left",
+                  background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"12px 14px" }}>
+                  <b style={{ color:T.red }}>⚠️ Peringatan Keras:</b> Tindakan ini akan menghapus
+                  <b> seluruh data</b> (toko, rute, wilayah, produk, kontrol, pengguna)
+                  {user && <span> termasuk <b>data cloud Firebase</b></span>} secara <b>permanen</b> dan
+                  tidak dapat dibatalkan. Sistem akan membuat backup otomatis sebelum reset.
+                </div>
+                <div style={{ textAlign:"left", marginBottom:14 }}>
+                  <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:5 }}>
+                    Alasan Reset <span style={{ color:T.red }}>*</span>
+                  </div>
+                  <textarea
+                    value={resetAlasan}
+                    onChange={e=>setResetAlasan(e.target.value)}
+                    placeholder="Tulis alasan reset secara jelas (misal: migrasi data baru, perbaikan struktur, dll)..."
+                    rows={3}
+                    style={{ width:"100%", boxSizing:"border-box", padding:"10px 12px", fontSize:13,
+                      border:`1.5px solid ${T.gray200}`, borderRadius:8, fontFamily:"inherit", resize:"vertical" }}
+                  />
+                  <div style={{ fontSize:11, color:T.gray400, marginTop:3 }}>
+                    Wajib diisi minimal 10 karakter. Alasan akan dicatat di log backup otomatis.
+                  </div>
+                </div>
+                <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+                  <Btn variant="secondary" onClick={()=>{ setShowReset(false); setResetAlasan(""); setResetStep(1); }}>Batal</Btn>
+                  <Btn variant="danger"
+                    disabled={resetAlasan.trim().length < 10}
+                    onClick={()=>{ if(resetAlasan.trim().length >= 10) setResetStep(2); }}>
+                    Lanjut ke Langkah 2 →
+                  </Btn>
+                </div>
+              </div>
+            )}
+
+            {/* Langkah 2: Ketik frasa konfirmasi */}
+            {resetStep === 2 && (
+              <div style={{ textAlign:"center" }}>
+                <div style={{ fontSize:40, marginBottom:12 }}>💣</div>
+                <div style={{ fontSize:15, fontWeight:700, color:T.red, marginBottom:8 }}>
+                  Langkah 2: Konfirmasi Penghapusan Permanen
+                </div>
+                <div style={{ background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8,
+                  padding:"10px 14px", marginBottom:16, fontSize:13, textAlign:"left" }}>
+                  <div style={{ fontWeight:700, color:T.red, marginBottom:4 }}>Alasan yang Anda isi:</div>
+                  <div style={{ color:T.gray800, fontStyle:"italic" }}>"{resetAlasan}"</div>
+                </div>
+                <div style={{ fontSize:13, color:T.gray800, marginBottom:8, textAlign:"left" }}>
+                  Ketik <b style={{ color:T.red, letterSpacing:1 }}>HAPUS PERMANEN</b> di kolom bawah untuk mengonfirmasi:
+                </div>
+                <input
+                  type="text"
+                  value={resetConfirmText}
+                  onChange={(e)=>setResetConfirmText(e.target.value)}
+                  placeholder="Ketik: HAPUS PERMANEN"
+                  autoFocus
+                  style={{ width:"100%", boxSizing:"border-box", padding:"10px 12px", fontSize:14,
+                    border:`2px solid ${resetConfirmText.trim().toUpperCase()==="HAPUS PERMANEN"?T.red:T.gray200}`,
+                    borderRadius:8, marginBottom:20, textAlign:"center",
+                    fontFamily:"inherit", letterSpacing:2, background:T.redLt }}
+                />
+                <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
+                  <Btn variant="secondary" onClick={()=>{ setResetStep(1); setResetConfirmText(""); }}>← Kembali</Btn>
+                  <Btn
+                    variant="danger"
+                    disabled={resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN"}
+                    onClick={()=>{
+                      if (!isAdmin || resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN") return;
+                      resetDB();
+                      setShowReset(false);
+                      setResetConfirmText("");
+                      setResetStep(1);
+                      setResetAlasan("");
+                    }}
+                  >
+                    💥 Ya, Reset Permanen Sekarang
+                  </Btn>
+                </div>
+                <div style={{ marginTop:12, fontSize:11, color:T.gray400 }}>
+                  Backup otomatis akan dibuat sebelum data dihapus.
+                </div>
+              </div>
+            )}
           </div>
         </Modal>
       )}
