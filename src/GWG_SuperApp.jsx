@@ -1883,7 +1883,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
     // Ambil stok saat ini dari master toko sebagai nilai awal form
     const stokInit = {};
     produkAktif.forEach(p => {
-      stokInit[p.id] = toko[] || 0;
+      stokInit[p.id] = toko[`stok_${p.id}`] || 0;
     });
     setStokPenarikan(stokInit);
     setTokoStatusModal({ toko });
@@ -1896,7 +1896,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
     const tokoUpdates = { status: "Non-Aktif" };
     produkAktif.forEach(p => {
       // Stok dikembalikan ke nilai yang diisikan di form (bisa 0 atau sisa stok)
-      tokoUpdates[] = Number(stokPenarikan[p.id] || 0);
+      tokoUpdates[`stok_${p.id}`] = Number(stokPenarikan[p.id] || 0);
     });
     updateRecord("toko", toko.id, tokoUpdates);
     setTokoStatusModal(null);
