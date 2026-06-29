@@ -147,6 +147,12 @@ function useDB(user) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [syncError, setSyncError] = useState(null);
+  // cloudLoaded: true setelah snapshot PERTAMA dari Firebase diterima (baik
+  // datanya ada isi atau kosong). Dipakai untuk MENCEGAH logika bootstrap-admin
+  // di komponen utama berjalan sebelum kita benar-benar tahu isi database di
+  // cloud — supaya tidak terjadi 2 perangkat berbeda mengira tabel "kosong" di
+  // saat yang sama lalu masing-masing menambahkan dirinya sebagai Admin baru.
+  const [cloudLoaded, setCloudLoaded] = useState(!firebaseDB); // jika Firebase tidak aktif, anggap langsung "loaded" (mode lokal)
   const dbRef = useRef(null);
 
   // Subscribe Firebase realtime jika user login
@@ -171,9 +177,11 @@ function useDB(user) {
       setSyncing(false);
       setLastSync(new Date());
       setSyncError(null);
+      setCloudLoaded(true); // snapshot pertama (isi atau kosong) sudah diterima dari cloud
     }, (err) => {
       setSyncing(false);
       setSyncError(err.message);
+      setCloudLoaded(true); // gagal konek pun jangan sampai bootstrap menunggu selamanya
     });
     return () => { off(r); dbRef.current = null; };
   }, [user]);
@@ -211,7 +219,7 @@ function useDB(user) {
 
   const resetDB = useCallback(() => { save(DB_EMPTY); }, [save]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded };
 }
 
 // ─────────────────────────────────────────────
@@ -3377,7 +3385,7 @@ export default function GWGSuperApp() {
   const [showReset, setShowReset] = useState(false);
   const [loginError, setLoginError] = useState("");
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError } = useDB(user);
+  const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError, cloudLoaded } = useDB(user);
   const analytics = useAnalytics(db);
 
   // Cari role user yang login berdasarkan email di tabel pengguna
@@ -3395,6 +3403,14 @@ export default function GWGSuperApp() {
   const bootstrapDone = useRef(false);
   useEffect(() => {
     if (!user || bootstrapDone.current) return;
+    // PENTING: jangan jalankan pengecekan ini sebelum data dari Firebase (cloud)
+    // benar-benar selesai diterima minimal sekali. Tanpa penundaan ini, dua
+    // perangkat yang login hampir bersamaan bisa SAMA-SAMA melihat db.pengguna
+    // masih kosong (karena keduanya masih memakai data lokal/awal sebelum
+    // snapshot cloud turun) dan masing-masing menambahkan dirinya sendiri
+    // sebagai Admin baru → muncul 2 baris Admin di satu perangkat dan baris
+    // yang berbeda di perangkat lain, padahal harusnya satu data yang sama.
+    if (!cloudLoaded) return;
     const tabelMasihKosong = (db.pengguna||[]).length === 0;
     const belumTerdaftar = !currentUserRecord;
     if (tabelMasihKosong && belumTerdaftar) {
@@ -3407,7 +3423,7 @@ export default function GWGSuperApp() {
         wilayahId: "",
       });
     }
-  }, [user, db.pengguna, currentUserRecord, addRecord]);
+  }, [user, db.pengguna, currentUserRecord, addRecord, cloudLoaded]);
 
   // Selama proses penyimpanan baris Admin pertama di atas belum selesai (delay
   // sinkron Firebase/localStorage), tetap anggap pengguna ini Admin agar tidak
