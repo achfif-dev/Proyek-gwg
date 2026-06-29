@@ -2173,10 +2173,50 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
             <Input label="Rute" value={modalFilter.ruteId} onChange={handleModalRuteChange}
               options={modalRuteOpts} hint="Pilih rute untuk mempersempit pilihan toko" />
             <div style={{ gridColumn:"1/-1" }}>
-              <Input label="Toko" value={form.tokoId} onChange={handleTokoChange} options={modalTokoOpts} required
-                hint={modalTokoOpts.length===0
-                  ? "Tidak ada toko Aktif/Baru untuk filter ini"
-                  : `${modalTokoOpts.length} toko (Aktif + Baru) · Toko Non-Aktif disembunyikan otomatis · 🆕 = toko baru`} />
+              <SearchableSelect
+                label="Toko"
+                value={form.tokoId}
+                onChange={handleTokoChange}
+                options={modalTokoOpts}
+                required
+                placeholder="Ketik nama toko untuk mencari..."
+                hint={
+                  modalTokoOpts.length === 0
+                    ? "Tidak ada toko Aktif/Baru untuk filter ini"
+                    : `${modalTokoOpts.length} toko tersedia (Aktif + Baru) · Toko Non-Aktif otomatis disembunyikan · 🆕 = toko baru`
+                }
+              />
+              {/* Panel info status toko yang dipilih */}
+              {form.tokoId && (() => {
+                const toko = (db.toko||[]).find(t=>t.id===form.tokoId);
+                if (!toko) return null;
+                const isBaru = toko.status === "Baru";
+                return (
+                  <div style={{
+                    marginTop: -8, marginBottom: 14,
+                    background: isBaru ? T.blueLt : T.greenLt,
+                    border: `1px solid ${isBaru ? "#93C5FD" : T.green+"33"}`,
+                    borderRadius: 8, padding: "8px 12px",
+                    display: "flex", alignItems: "center", gap: 10, fontSize: 12
+                  }}>
+                    <span style={{ fontSize: 18 }}>{isBaru ? "🆕" : "✅"}</span>
+                    <div>
+                      <span style={{ fontWeight: 700, color: isBaru ? T.blue : T.green }}>
+                        {toko.nama}
+                      </span>
+                      <span style={{
+                        marginLeft: 8,
+                        background: isBaru ? T.blue : T.green,
+                        color: "#fff", fontSize: 10, fontWeight: 700,
+                        borderRadius: 99, padding: "1px 8px"
+                      }}>
+                        {toko.status}
+                      </span>
+                      {toko.kode && <span style={{ marginLeft: 6, color: T.gray400 }}>· {toko.kode}</span>}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
             <Input label="Tanggal Kontrol" value={form.tanggal} onChange={v=>f("tanggal",v)} type="date" required />
           </div>
