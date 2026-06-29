@@ -958,11 +958,35 @@ function genId(prefix, arr) {
 function normTxt(s) {
   return String(s||"").trim().toLowerCase().replace(/\s+/g," ");
 }
-// Sort alfabetis (case-insensitive, locale Indonesia) — dipakai supaya
-// Master Wilayah, Master Rute, dan Master Toko selalu terurut otomatis
-// walau ada penambahan data baru di kemudian hari.
+// Perbandingan "natural sort": memecah nama menjadi potongan teks & angka,
+// lalu membandingkan potongan angka SEBAGAI ANGKA (bukan string). Ini supaya
+// "Bklu2" terurut sebelum "Bklu10" (bukan "Bklu1, Bklu10, Bklu11, ..., Bklu2"
+// seperti pada urutan alfabetis biasa).
+function naturalCompare(a, b) {
+  const ax = String(a||"").match(/(\d+|\D+)/g) || [];
+  const bx = String(b||"").match(/(\d+|\D+)/g) || [];
+  const len = Math.max(ax.length, bx.length);
+  for (let i = 0; i < len; i++) {
+    const an = ax[i] ?? "";
+    const bn = bx[i] ?? "";
+    const aIsNum = /^\d+$/.test(an);
+    const bIsNum = /^\d+$/.test(bn);
+    if (aIsNum && bIsNum) {
+      const diff = parseInt(an,10) - parseInt(bn,10);
+      if (diff !== 0) return diff;
+    } else {
+      const cmp = an.localeCompare(bn, "id", { sensitivity:"base" });
+      if (cmp !== 0) return cmp;
+    }
+  }
+  return 0;
+}
+// Sort alfabetis + natural angka (case-insensitive, locale Indonesia) —
+// dipakai supaya Master Wilayah, Master Rute, dan Master Toko selalu terurut
+// otomatis walau ada penambahan data baru di kemudian hari, termasuk urutan
+// angka di akhir nama (Bklu1, Bklu2, ... Bklu10, bukan Bklu1, Bklu10, Bklu2).
 function sortByNama(arr, key="nama") {
-  return [...(arr||[])].sort((a,b) => String(a[key]||"").localeCompare(String(b[key]||""), "id", { sensitivity:"base" }));
+  return [...(arr||[])].sort((a,b) => naturalCompare(a[key], b[key]));
 }
 
 // ─────────────────────────────────────────────
@@ -1064,12 +1088,14 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
     jumlahToko: (db.toko||[]).filter(t=>t.ruteId===r.id).length,
   })), [db]);
 
-  // Urutkan Master Rute berdasarkan Wilayah dahulu (abjad), lalu Nama Rute (abjad).
+  // Urutkan Master Rute berdasarkan Wilayah dahulu (abjad), lalu Nama Rute
+  // (natural sort: angka di akhir nama diurutkan sebagai angka, jadi
+  // Bklu1, Bklu2, ... Bklu10 — bukan Bklu1, Bklu10, Bklu2 secara alfabetis).
   // Otomatis berlaku untuk rute baru yang ditambahkan kapan pun.
   const sorted = useMemo(() => [...enriched].sort((a,b) => {
     const wCompare = a.wilayahNama.localeCompare(b.wilayahNama, "id", { sensitivity:"base" });
     if (wCompare !== 0) return wCompare;
-    return a.nama.localeCompare(b.nama, "id", { sensitivity:"base" });
+    return naturalCompare(a.nama, b.nama);
   }), [enriched]);
 
   const data = useMemo(() => sorted.filter(r =>
@@ -1223,8 +1249,9 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
     setStokModal(false);
   }
 
-  // Opsi Rute & Wilayah diurutkan per wilayah lalu nama rute (abjad),
-  // dan nama wilayah (abjad), agar mudah dicari di dropdown pencarian.
+  // Opsi Rute & Wilayah diurutkan per wilayah (abjad) lalu nama rute
+  // (natural sort, angka di akhir nama diurutkan sebagai angka), agar mudah
+  // dicari di dropdown pencarian.
   const ruteOpts = useMemo(() => {
     const list = (db.rute||[]).map(r => {
       const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
@@ -1233,7 +1260,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
     return list.sort((a,b) => {
       const wCompare = a.wilayahNama.localeCompare(b.wilayahNama, "id", { sensitivity:"base" });
       if (wCompare !== 0) return wCompare;
-      return a.ruteNama.localeCompare(b.ruteNama, "id", { sensitivity:"base" });
+      return naturalCompare(a.ruteNama, b.ruteNama);
     });
   }, [db.rute, db.wilayah]);
   const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
