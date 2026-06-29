@@ -794,7 +794,7 @@ function downloadKontrolTemplate(db) {
       ["1. Kolom bertanda * wajib diisi."],
       ["2. Kolom 'Toko' harus sama persis (tidak case-sensitive) dengan Nama Toko di Master Toko."],
       ["3. Kolom 'Tanggal' format YYYY-MM-DD, contoh: 2026-06-28."],
-      ["4. Kolom 'Status Kunjungan' wajib diisi JIKA tidak ada produk yang terjual (Terjual = 0 semua). Pilihan: " + statusOpts.join(", ") + "."],
+      ["4. Kolom 'Status Kunjungan': WAJIB diisi jika tidak ada produk yang terjual. OPSIONAL jika ada penjualan (untuk catatan tambahan). Pilihan: " + statusOpts.join(", ") + "."],
       ["5. Jika salah satu kolom 'Terjual: <produk>' lebih dari 0, status kunjungan otomatis Terjual dan boleh dikosongkan."],
       ["6. Kolom 'Catatan' hanya dipakai jika Status Kunjungan diisi 'Isi Manual'."],
       ["7. Jangan mengubah urutan atau nama header kolom pada sheet 'Template Kontrol'."],
@@ -2025,13 +2025,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
 
   function submit() {
     if (!form.tokoId || !form.tanggal) return alert("Toko & Tanggal wajib diisi");
-    // Status kunjungan hanya wajib jika tidak ada produk terjual
-    if (!adaTerjual && !form.catatanStatus) return alert("Pilih status kunjungan atau isi data terjual");
+    // Status kunjungan WAJIB jika tidak ada produk terjual; opsional jika ada penjualan
+    if (!adaTerjual && !form.catatanStatus) return alert("Pilih status kunjungan karena tidak ada produk yang terjual");
     const d = form.tanggal;
     const [y,m] = d.split("-");
     const payload = { ...form };
-    // Jika ada produk terjual, hapus status kunjungan (otomatis terjual)
-    if (adaTerjual) payload.catatanStatus = "";
+    // catatanStatus tetap disimpan apa adanya (boleh ada catatan meski ada penjualan)
+    // Jika user tidak pilih status apapun → biarkan kosong (= Terjual normal)
     produkAktif.forEach(p => {
       payload[`stok_${p.id}`] = Number(form[`stok_${p.id}`]||0);
       payload[`terjual_${p.id}`] = Number(form[`terjual_${p.id}`]||0);
@@ -2176,15 +2176,18 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
       });
 
       const statusLabel = String(row["Status Kunjungan"] ?? "").trim();
-      if (adaTerjualRow) {
-        payload.catatanStatus = "";
-      } else if (statusLabel) {
+      if (statusLabel) {
+        // Ada status → validasi dan simpan (berlaku baik saat terjual maupun tidak)
         const found = Object.entries(CATATAN_STATUS).find(([,cs]) => cs.label.toLowerCase()===statusLabel.toLowerCase());
         if (!found) { errors.push(`Baris ${rowNum}: Status Kunjungan "${statusLabel}" tidak dikenali`); skipped++; return; }
         payload.catatanStatus = found[0];
         if (payload.catatanStatus === "manual") payload.catatan = String(row["Catatan"] ?? "").trim();
-      } else {
+      } else if (!adaTerjualRow) {
+        // Tidak ada status DAN tidak ada penjualan → wajib ada status
         errors.push(`Baris ${rowNum}: Status Kunjungan wajib diisi jika tidak ada produk yang terjual`); skipped++; return;
+      } else {
+        // Ada penjualan, status kosong → oke, Terjual normal (catatanStatus = "")
+        payload.catatanStatus = "";
       }
 
       const [y,m] = tanggal.split("-");
@@ -2232,7 +2235,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
     ]),
     { key:"totalRev",    label:"Revenue",    render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",  label:"Ttl Bonus",  render:v=><b style={{ color:T.gold }}>{fmt(v)} pcs</b> },
-    { key:"catatanStatus",label:"Status",    render:v=>{ if(!v) return <Badge color={T.green}>✅ Terjual</Badge>; const s=CATATAN_STATUS[v]||CATATAN_STATUS.manual; return <Badge color={s.color} bg={s.bg}>{s.label}</Badge>; } },
+    { key:"catatanStatus",label:"Status",    render:(v,row)=>{ if(!v) return <Badge color={T.green}>✅ Terjual</Badge>; const s=CATATAN_STATUS[v]||CATATAN_STATUS.manual; return <span title={row.catatan||""} style={{ display:"inline-flex", alignItems:"center", gap:4 }}><Badge color={s.color} bg={s.bg}>{s.label}</Badge>{row.catatan && <span style={{ fontSize:10, color:s.color, opacity:.7 }}>📝</span>}</span>; } },
     { key:"catatan",     label:"Catatan" },
   ];
 
@@ -2592,9 +2595,18 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
                                   <td style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, color:T.green }}>{fmtRp(e.totalRev)}</td>
                                   <td style={{ padding:"6px 10px", textAlign:"right", color:T.gold }}>{fmt(e.totalBonus)} pcs</td>
                                   <td style={{ padding:"6px 10px", textAlign:"center" }}>
-                                    {cs
-                                      ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
-                                      : <Badge color={T.green}>✅ Terjual</Badge>}
+                                    <div>
+                                      {cs
+                                        ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
+                                        : <Badge color={T.green}>✅ Terjual</Badge>}
+                                      {e.catatan && (
+                                        <div style={{ fontSize:10, color:T.gray400, marginTop:2,
+                                          maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}
+                                          title={e.catatan}>
+                                          📝 {e.catatan}
+                                        </div>
+                                      )}
+                                    </div>
                                   </td>
                                   <td style={{ padding:"6px 10px", textAlign:"right" }}>
                                     <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
@@ -2754,44 +2766,62 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
             </div>
           </div>
 
-          {/* Status kunjungan: hanya muncul jika tidak ada produk terjual */}
-          {!adaTerjual ? (
-            <div style={{ marginBottom:14 }}>
-              <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8 }}>
-                <div style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>Status Kunjungan</div>
-                <Badge color={T.orange} bg={T.orangeLt}>Wajib diisi jika tidak ada penjualan</Badge>
-              </div>
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
-                {Object.entries(CATATAN_STATUS).filter(([k])=>k!=="manual").map(([key, cs]) => (
-                  <label key={key} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
-                    border:`2px solid ${catatanSt===key ? cs.border : T.gray200}`,
-                    borderRadius:8, cursor:"pointer", background:catatanSt===key ? cs.bg : T.white }}>
-                    <input type="radio" name="catatanStatus" value={key} checked={catatanSt===key}
-                      onChange={()=>f("catatanStatus",key)} style={{ accentColor:cs.color }} />
-                    <span style={{ fontSize:12, fontWeight:600, color:cs.color }}>{cs.label}</span>
-                  </label>
-                ))}
-                <label style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
-                  border:`2px solid ${catatanSt==="manual" ? T.gray400 : T.gray200}`,
-                  borderRadius:8, cursor:"pointer", background:catatanSt==="manual" ? T.gray100 : T.white }}>
-                  <input type="radio" name="catatanStatus" value="manual" checked={catatanSt==="manual"}
-                    onChange={()=>f("catatanStatus","manual")} />
-                  <span style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>Isi Manual</span>
+          {/* Status kunjungan: selalu tampil.
+               - Saat tidak ada penjualan → WAJIB dipilih
+               - Saat ada penjualan       → OPSIONAL (untuk catatan tambahan) */}
+          <div style={{ marginBottom:14 }}>
+            <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
+              <div style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>Status Kunjungan</div>
+              {!adaTerjual
+                ? <Badge color={T.orange} bg={T.orangeLt}>⚠️ Wajib diisi — tidak ada penjualan</Badge>
+                : <Badge color={T.gray400} bg={T.gray100}>Opsional — untuk catatan tambahan</Badge>
+              }
+            </div>
+
+            {/* Saat ada penjualan: tombol "Tidak perlu catatan" sebagai default */}
+            {adaTerjual && (
+              <div style={{ marginBottom:8 }}>
+                <label style={{ display:"inline-flex", alignItems:"center", gap:8, padding:"8px 14px",
+                  border:`2px solid ${catatanSt==="" ? T.green : T.gray200}`,
+                  borderRadius:8, cursor:"pointer",
+                  background:catatanSt==="" ? T.greenLt : T.white }}>
+                  <input type="radio" name="catatanStatus" value="" checked={catatanSt===""}
+                    onChange={()=>{ f("catatanStatus",""); f("catatan",""); }}
+                    style={{ accentColor:T.green }} />
+                  <span style={{ fontSize:12, fontWeight:600, color:T.green }}>✅ Terjual — tanpa catatan tambahan</span>
                 </label>
               </div>
-              {catatanSt==="manual" && (
-                <div style={{ marginTop:10 }}>
-                  <Input label="Catatan" value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea"
-                    placeholder="Tulis catatan bebas..." />
-                </div>
-              )}
+            )}
+
+            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+              {Object.entries(CATATAN_STATUS).filter(([k])=>k!=="manual").map(([key, cs]) => (
+                <label key={key} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
+                  border:`2px solid ${catatanSt===key ? cs.border : T.gray200}`,
+                  borderRadius:8, cursor:"pointer", background:catatanSt===key ? cs.bg : T.white }}>
+                  <input type="radio" name="catatanStatus" value={key} checked={catatanSt===key}
+                    onChange={()=>f("catatanStatus",key)} style={{ accentColor:cs.color }} />
+                  <span style={{ fontSize:12, fontWeight:600, color:cs.color }}>{cs.label}</span>
+                </label>
+              ))}
+              <label style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
+                border:`2px solid ${catatanSt==="manual" ? T.gray400 : T.gray200}`,
+                borderRadius:8, cursor:"pointer", background:catatanSt==="manual" ? T.gray100 : T.white }}>
+                <input type="radio" name="catatanStatus" value="manual" checked={catatanSt==="manual"}
+                  onChange={()=>f("catatanStatus","manual")} />
+                <span style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>📝 Isi Manual</span>
+              </label>
             </div>
-          ) : (
-            <div style={{ background:T.greenLt, border:`1px solid ${T.green}33`, borderRadius:8,
-              padding:"10px 14px", marginBottom:14, fontSize:13, color:T.green, fontWeight:600 }}>
-              ✅ Ada produk terjual — status kunjungan otomatis tercatat sebagai Terjual
-            </div>
-          )}
+
+            {(catatanSt==="manual" || (adaTerjual && catatanSt && catatanSt!=="")) && (
+              <div style={{ marginTop:10 }}>
+                <Input label={catatanSt==="manual" ? "Catatan" : "Catatan Tambahan (opsional)"}
+                  value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea"
+                  placeholder={catatanSt==="manual"
+                    ? "Tulis catatan bebas..."
+                    : "Tambahkan keterangan jika perlu..."} />
+              </div>
+            )}
+          </div>
 
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
