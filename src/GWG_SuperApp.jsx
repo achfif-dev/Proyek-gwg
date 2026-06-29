@@ -87,10 +87,10 @@ async function initFirebase() {
   if (!FIREBASE_CONFIGURED) return false;
   try {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
-    const { getDatabase, ref, set, onValue, off } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    const { getDatabase, ref, set, get, onValue, off } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
     const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
     firebaseApp = initializeApp(FIREBASE_CONFIG);
-    firebaseDB = { db: getDatabase(firebaseApp), ref, set, onValue, off };
+    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, off };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
@@ -137,6 +137,28 @@ function useAuth() {
   return { user, loading, fbReady, loginGoogle, logout };
 }
 
+// Nama-nama tabel yang disimpan sebagai LIST (array of records dengan field
+// `id`). Di Firebase, masing-masing disimpan sebagai OBJEK ber-key id (map),
+// bukan array index, dan sebagai PATH TERPISAH (bukan satu blob besar) —
+// supaya menambah/mengubah 1 toko tidak perlu mengirim ulang seluruh
+// database (wilayah+rute+toko+kontrol+...) setiap kali. Ini penting untuk
+// skala ribuan toko & data kontrol bulanan yang terus bertambah.
+const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna"];
+
+// Konversi array → objek ber-key id, untuk ditulis ke Firebase per-record.
+function arrToMap(arr) {
+  const map = {};
+  (arr||[]).forEach(r => { if (r && r.id != null) map[r.id] = r; });
+  return map;
+}
+// Konversi objek ber-key id (dari Firebase) → array, untuk dipakai komponen
+// UI yang masih mengasumsikan bentuk array seperti semula.
+function mapToArr(map) {
+  if (!map) return [];
+  if (Array.isArray(map)) return map.filter(Boolean); // jaga-jaga data lama format array
+  return Object.values(map);
+}
+
 function useDB(user) {
   const [db, setDB] = useState(() => {
     try {
@@ -153,74 +175,196 @@ function useDB(user) {
   // cloud — supaya tidak terjadi 2 perangkat berbeda mengira tabel "kosong" di
   // saat yang sama lalu masing-masing menambahkan dirinya sebagai Admin baru.
   const [cloudLoaded, setCloudLoaded] = useState(!firebaseDB); // jika Firebase tidak aktif, anggap langsung "loaded" (mode lokal)
-  const dbRef = useRef(null);
+  // Menyimpan snapshot mentah PER TABEL dari Firebase (bentuk map/objek apa
+  // adanya), supaya saat menulis cukup hitung diff terhadap snapshot ini —
+  // tidak perlu menulis ulang tabel yang tidak berubah.
+  const remoteRef = useRef({}); // { wilayah: {...}, rute: {...}, ... , stokAwal: {...}, bagiHasilConfig: {...} }
+  const basePathRef = useRef(null); // ref ke `gwg_data/shared`
 
-  // Subscribe Firebase realtime jika user login
+  // Subscribe Firebase realtime jika user login — SATU listener PER PATH
+  // (per tabel), bukan satu listener di root yang mendownload semuanya
+  // setiap kali ada perubahan di mana pun.
   useEffect(() => {
     if (!user || !firebaseDB) return;
-    const { db: rtdb, ref, onValue, off } = firebaseDB;
-    // PENTING: path data dibuat SATU untuk semua pengguna (bukan per akun Google)
-    // supaya wilayah/rute/toko/produk/pengguna yang sama bisa diakses semua orang
-    // yang login ke aplikasi ini. Sebelumnya path ini "gwg_data/${user.uid}" yang
-    // membuat setiap akun Google punya database TERPISAH (kosong) -> itulah sebabnya
-    // akun baru selalu jadi "Sales" dan tidak melihat data apa pun.
-    const r = ref(rtdb, `gwg_data/shared`);
-    dbRef.current = r;
+    const { db: rtdb, ref, onValue, off, set, get } = firebaseDB;
+    basePathRef.current = ref(rtdb, `gwg_data/shared`);
+
+    const paths = [...LIST_TABLES, "stokAwal", "bagiHasilConfig"];
+    const loadedSet = new Set(); // path mana yang sudah memberi snapshot pertama
     setSyncing(true);
-    const unsub = onValue(r, snap => {
-      const val = snap.val();
-      if (val) {
-        const merged = { ...DB_EMPTY, ...val };
-        setDB(merged);
-        try { localStorage.setItem("gwg_db_v2", JSON.stringify(merged)); } catch {}
+
+    // MIGRASI SATU KALI: jika project ini masih memakai struktur LAMA (satu
+    // blob besar tersimpan persis di root "gwg_data/shared", lengkap dengan
+    // field seperti wilayah/rute/toko sebagai ARRAY langsung di root), maka
+    // tulis ulang sebagai path-path terpisah sebelum listener di bawah mulai
+    // membaca. Supaya tidak men-download seluruh root setiap kali ada yang
+    // login (mahal untuk database besar), kita cek dulu lewat path KECIL
+    // `gwg_data/_migratedV3` — hanya jika flag ini BELUM ada, baru kita
+    // baca root sekali untuk migrasi, lalu set flag supaya login-login
+    // berikutnya melewati langkah ini sepenuhnya.
+    async function migrateIfNeeded() {
+      try {
+        const flagSnap = await get(ref(rtdb, `gwg_data/_migratedV3`));
+        if (flagSnap.val() === true) return; // sudah pernah dimigrasi, skip
+        const rootSnap = await get(ref(rtdb, `gwg_data/shared`));
+        const rootVal = rootSnap.val();
+        const isOldShape = rootVal && LIST_TABLES.some(key => Array.isArray(rootVal[key]));
+        if (isOldShape) {
+          const writes = {};
+          LIST_TABLES.forEach(key => { writes[key] = arrToMap(rootVal[key]); });
+          writes.stokAwal = rootVal.stokAwal || {};
+          writes.bagiHasilConfig = rootVal.bagiHasilConfig ?? null;
+          await Promise.all(Object.entries(writes).map(([key, val]) =>
+            set(ref(rtdb, `gwg_data/shared/${key}`), val)
+          ));
+        }
+        await set(ref(rtdb, `gwg_data/_migratedV3`), true); // tandai selesai, walau tidak ada yang dimigrasi
+      } catch (e) {
+        console.warn("Migrasi struktur lama gagal (akan tetap lanjut baca per-path):", e);
       }
-      setSyncing(false);
-      setLastSync(new Date());
-      setSyncError(null);
-      setCloudLoaded(true); // snapshot pertama (isi atau kosong) sudah diterima dari cloud
-    }, (err) => {
-      setSyncing(false);
-      setSyncError(err.message);
-      setCloudLoaded(true); // gagal konek pun jangan sampai bootstrap menunggu selamanya
-    });
-    return () => { off(r); dbRef.current = null; };
-  }, [user]);
-
-  const save = useCallback((newDB) => {
-    setDB(newDB);
-    try { localStorage.setItem("gwg_db_v2", JSON.stringify(newDB)); } catch {}
-    // Push ke Firebase jika login
-    if (user && firebaseDB && dbRef.current) {
-      const { set } = firebaseDB;
-      set(dbRef.current, newDB).catch(console.warn);
     }
+
+    const unsubs = [];
+    migrateIfNeeded().finally(() => {
+      paths.forEach(key => {
+        const r = ref(rtdb, `gwg_data/shared/${key}`);
+        const unsub = onValue(r, snap => {
+          const val = snap.val();
+          remoteRef.current[key] = val;
+          // Susun ulang objek db lengkap dari potongan-potongan remote yang
+          // sudah diterima sejauh ini, supaya UI tetap dapat tampilan
+          // konsisten meski path lain belum selesai sinkron.
+          setDB(prev => {
+            const next = { ...prev };
+            if (LIST_TABLES.includes(key)) next[key] = mapToArr(val);
+            else next[key] = val ?? (key === "stokAwal" ? {} : null);
+            try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+            return next;
+          });
+          loadedSet.add(key);
+          setLastSync(new Date());
+          setSyncError(null);
+          if (loadedSet.size >= paths.length) {
+            setSyncing(false);
+            setCloudLoaded(true); // semua path sudah memberi snapshot pertama (isi atau kosong)
+          }
+        }, (err) => {
+          setSyncing(false);
+          setSyncError(err.message);
+          setCloudLoaded(true); // gagal konek pun jangan sampai bootstrap menunggu selamanya
+        });
+        unsubs.push(() => off(r));
+      });
+    });
+
+    return () => {
+      unsubs.forEach(fn => fn());
+      basePathRef.current = null;
+      remoteRef.current = {};
+    };
   }, [user]);
 
+  // Tulis HANYA path/record yang benar-benar berubah ke Firebase, dibanding
+  // snapshot remote terakhir yang kita punya. `updates` adalah object dengan
+  // key berupa path relatif ("toko/T001", "kontrol", dst) dan value berupa
+  // data baru untuk path itu (atau null untuk menghapus).
+  const pushUpdates = useCallback((updates) => {
+    if (!user || !firebaseDB || !basePathRef.current) return;
+    const { db: rtdb, ref, set } = firebaseDB;
+    Object.entries(updates).forEach(([path, value]) => {
+      set(ref(rtdb, `gwg_data/shared/${path}`), value === undefined ? null : value).catch(console.warn);
+    });
+  }, [user]);
+
+  // save() generik dipertahankan agar kode lama (stok update, import excel,
+  // config bagi hasil) yang memanggil save(newDB) tetap berfungsi tanpa
+  // diubah. Di balik layar, fungsi ini menghitung DIFF per-tabel terhadap
+  // state sebelumnya dan hanya mengirim tabel yang berubah ke Firebase
+  // (bukan seluruh database), serta menulis tabel sebagai MAP per-id
+  // (bukan array besar) supaya update 1 toko = 1 path kecil, bukan 1 blob.
+  const save = useCallback((newDB) => {
+    setDB(prevDB => {
+      const updates = {};
+      LIST_TABLES.forEach(key => {
+        if (newDB[key] !== prevDB[key]) updates[key] = arrToMap(newDB[key]);
+      });
+      if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
+      if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
+      if (Object.keys(updates).length) pushUpdates(updates);
+      try { localStorage.setItem("gwg_db_v2", JSON.stringify(newDB)); } catch {}
+      return newDB;
+    });
+  }, [pushUpdates]);
+
+  // addRecord/updateRecord/deleteRecord ditulis ulang agar masing-masing
+  // HANYA mengirim 1 record (path "table/id"), bukan seluruh tabel —
+  // jauh lebih hemat bandwidth saat toko sudah ribuan & kontrol terus bertambah.
   const addRecord = useCallback((table, record) => {
-    save({ ...db, [table]: [...(db[table]||[]), record] });
-  }, [db, save]);
+    setDB(prevDB => {
+      const nextArr = [...(prevDB[table]||[]), record];
+      const next = { ...prevDB, [table]: nextArr };
+      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      pushUpdates({ [`${table}/${record.id}`]: record });
+      return next;
+    });
+  }, [pushUpdates]);
 
   const updateRecord = useCallback((table, id, updated) => {
-    save({ ...db, [table]: db[table].map(r => r.id === id ? { ...r, ...updated } : r) });
-  }, [db, save]);
+    setDB(prevDB => {
+      let mergedRecord = null;
+      const nextArr = (prevDB[table]||[]).map(r => {
+        if (r.id !== id) return r;
+        mergedRecord = { ...r, ...updated };
+        return mergedRecord;
+      });
+      const next = { ...prevDB, [table]: nextArr };
+      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      if (mergedRecord) pushUpdates({ [`${table}/${id}`]: mergedRecord });
+      return next;
+    });
+  }, [pushUpdates]);
 
   const deleteRecord = useCallback((table, id) => {
-    save({ ...db, [table]: db[table].filter(r => r.id !== id) });
-  }, [db, save]);
+    setDB(prevDB => {
+      const nextArr = (prevDB[table]||[]).filter(r => r.id !== id);
+      const next = { ...prevDB, [table]: nextArr };
+      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      pushUpdates({ [`${table}/${id}`]: null }); // null = hapus path ini saja di Firebase
+      return next;
+    });
+  }, [pushUpdates]);
 
   const updateStokToko = useCallback((tokoId, produkId, jumlah) => {
-    const newDB = { ...db };
-    newDB.toko = db.toko.map(t => {
-      if (t.id !== tokoId) return t;
-      return { ...t, [`stok_${produkId}`]: jumlah };
+    setDB(prevDB => {
+      let mergedRecord = null;
+      const nextArr = prevDB.toko.map(t => {
+        if (t.id !== tokoId) return t;
+        mergedRecord = { ...t, [`stok_${produkId}`]: jumlah };
+        return mergedRecord;
+      });
+      const next = { ...prevDB, toko: nextArr };
+      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      if (mergedRecord) pushUpdates({ [`toko/${tokoId}`]: mergedRecord });
+      return next;
     });
-    save(newDB);
-  }, [db, save]);
+  }, [pushUpdates]);
 
-  const resetDB = useCallback(() => { save(DB_EMPTY); }, [save]);
+  const resetDB = useCallback(() => {
+    setDB(DB_EMPTY);
+    try { localStorage.setItem("gwg_db_v2", JSON.stringify(DB_EMPTY)); } catch {}
+    // Reset menghapus SETIAP path tabel secara eksplisit (bukan menulis satu
+    // blob kosong ke root), supaya konsisten dengan skema per-path di atas.
+    const updates = {};
+    LIST_TABLES.forEach(key => { updates[key] = null; });
+    updates.stokAwal = null;
+    updates.bagiHasilConfig = null;
+    pushUpdates(updates);
+  }, [pushUpdates]);
 
   return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded };
 }
+
+
 
 // ─────────────────────────────────────────────
 //  DERIVED ANALYTICS
