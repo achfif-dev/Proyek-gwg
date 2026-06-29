@@ -1104,14 +1104,49 @@ function ConfirmDelete({ onConfirm, onCancel, label }) {
   );
 }
 
-function Table({ columns, data, onEdit, onDelete, rowStyle }) {
+// ─────────────────────────────────────────────
+//  BULK ACTION BAR — toolbar seleksi massal
+// ─────────────────────────────────────────────
+function BulkActionBar({ selectedIds, total, onSelectAll, onClearAll, onDeleteSelected, label="item" }) {
+  if (selectedIds.length === 0) return null;
+  const allSelected = selectedIds.length >= total;
+  return (
+    <div style={{
+      display:"flex", alignItems:"center", gap:12, flexWrap:"wrap",
+      background: T.redLt, border:`1.5px solid #FECACA`, borderRadius:10,
+      padding:"10px 16px", marginBottom:10
+    }}>
+      <span style={{ fontSize:13, fontWeight:700, color:T.red }}>
+        ✅ {selectedIds.length} {label} dipilih
+      </span>
+      <Btn variant="secondary" size="sm"
+        onClick={allSelected ? onClearAll : onSelectAll}>
+        {allSelected ? "✗ Batal Pilih Semua" : `☑ Pilih Semua (${total})`}
+      </Btn>
+      {selectedIds.length > 0 && (
+        <Btn variant="danger" size="sm" icon="🗑"
+          onClick={onDeleteSelected}>
+          Hapus {selectedIds.length} Terpilih
+        </Btn>
+      )}
+      <Btn variant="secondary" size="sm" onClick={onClearAll}>✗ Batal</Btn>
+    </div>
+  );
+}
+
+function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, onToggleSelect, onToggleSelectAll }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
+  const hasSelection = !!(onToggleSelect && onToggleSelectAll);
 
   if (!data || !data.length) return (
     <div style={{ textAlign:"center", padding:40, color:T.gray400, fontSize:13 }}>
       Belum ada data. Klik <b>+ Tambah</b> untuk menambahkan.
     </div>
   );
+
+  const allChecked = hasSelection && data.length > 0 && data.every(row => (selectedIds||[]).includes(row.id));
+  const someChecked = hasSelection && (selectedIds||[]).some(id => data.find(r=>r.id===id));
+
   return (
     <>
       {deleteTarget && (
@@ -1125,6 +1160,15 @@ function Table({ columns, data, onEdit, onDelete, rowStyle }) {
         <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
           <thead>
             <tr style={{ background:T.gray50, borderBottom:`2px solid ${T.gray200}` }}>
+              {hasSelection && (
+                <th style={{ padding:"10px 14px", width:36 }}>
+                  <input type="checkbox"
+                    checked={allChecked}
+                    ref={el => { if (el) el.indeterminate = someChecked && !allChecked; }}
+                    onChange={() => onToggleSelectAll(data, allChecked)}
+                    style={{ accentColor:T.green, width:15, height:15, cursor:"pointer" }} />
+                </th>
+              )}
               {columns.map(c => (
                 <th key={c.key} style={{ padding:"10px 14px", textAlign:"left", fontWeight:700,
                   color:T.gray600, fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", whiteSpace:"nowrap" }}>
@@ -1138,9 +1182,18 @@ function Table({ columns, data, onEdit, onDelete, rowStyle }) {
           </thead>
           <tbody>
             {data.map((row, i) => {
-              const rowBg = rowStyle ? (rowStyle(row) || (i%2===0 ? T.white : T.gray50)) : (i%2===0 ? T.white : T.gray50);
+              const isSelected = hasSelection && (selectedIds||[]).includes(row.id);
+              const rowBg = isSelected ? T.greenLt : (rowStyle ? (rowStyle(row) || (i%2===0 ? T.white : T.gray50)) : (i%2===0 ? T.white : T.gray50));
               return (
                 <tr key={row.id||i} style={{ borderBottom:`1px solid ${T.gray100}`, background:rowBg, transition:"background .1s" }}>
+                  {hasSelection && (
+                    <td style={{ padding:"10px 14px", width:36 }}>
+                      <input type="checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleSelect(row.id)}
+                        style={{ accentColor:T.green, width:15, height:15, cursor:"pointer" }} />
+                    </td>
+                  )}
                   {columns.map(c => (
                     <td key={c.key} style={{ padding:"10px 14px", color:T.gray800, verticalAlign:"middle" }}>
                       {c.render ? c.render(row[c.key], row) : (row[c.key] ?? "—")}
@@ -1257,7 +1310,21 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", deskripsi:"" });
   const [filter, setFilter] = useState({ q:"" });
+  const [selectedIds, setSelectedIds] = useState([]);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
+  }
+  function toggleSelectAll(rows, allChecked) {
+    if (allChecked) setSelectedIds(prev => prev.filter(id => !rows.find(r=>r.id===id)));
+    else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
+  }
+  function deleteSelected() {
+    if (!confirm(`Hapus ${selectedIds.length} wilayah terpilih? Tindakan ini permanen.`)) return;
+    selectedIds.forEach(id => deleteRecord("wilayah", id));
+    setSelectedIds([]);
+  }
 
   // Urutkan Master Wilayah berdasarkan abjad nama wilayah, otomatis
   // mengikutkan data baru kapan pun ditambahkan.
@@ -1316,9 +1383,15 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
       </div>
       <FilterBar filters={[{ key:"q", label:"Cari Wilayah", value:filter.q }]}
         onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:""})} />
+      <BulkActionBar
+        selectedIds={selectedIds} total={enriched.length}
+        onSelectAll={()=>toggleSelectAll(enriched, false)}
+        onClearAll={()=>setSelectedIds([])}
+        onDeleteSelected={deleteSelected} label="wilayah" />
       <Card padding={0}>
         <Table columns={cols} data={enriched} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus wilayah ini?")) deleteRecord("wilayah",id); }} />
+          onDelete={id=>{ if(confirm("Hapus wilayah ini?")) deleteRecord("wilayah",id); }}
+          selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
       {modal && (
         <Modal title={modal==="add"?"Tambah Wilayah":"Edit Wilayah"} onClose={()=>setModal(null)}>
@@ -1341,7 +1414,21 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", wilayahId:"", keterangan:"" });
   const [filter, setFilter] = useState({ q:"", wilayahId:"" });
+  const [selectedIds, setSelectedIds] = useState([]);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
+  }
+  function toggleSelectAll(rows, allChecked) {
+    if (allChecked) setSelectedIds(prev => prev.filter(id => !rows.find(r=>r.id===id)));
+    else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
+  }
+  function deleteSelected() {
+    if (!confirm(`Hapus ${selectedIds.length} rute terpilih? Tindakan ini permanen.`)) return;
+    selectedIds.forEach(id => deleteRecord("rute", id));
+    setSelectedIds([]);
+  }
 
   const enriched = useMemo(() => (db.rute||[]).map(r => ({
     ...r,
@@ -1408,9 +1495,15 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
         { key:"q", label:"Cari Rute", value:filter.q },
         { key:"wilayahId", label:"Filter Wilayah", value:filter.wilayahId, options:wilayahOpts },
       ]} onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:"",wilayahId:""})} />
+      <BulkActionBar
+        selectedIds={selectedIds} total={data.length}
+        onSelectAll={()=>toggleSelectAll(data, false)}
+        onClearAll={()=>setSelectedIds([])}
+        onDeleteSelected={deleteSelected} label="rute" />
       <Card padding={0}>
         <Table columns={cols} data={data} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus rute ini?")) deleteRecord("rute",id); }} />
+          onDelete={id=>{ if(confirm("Hapus rute ini?")) deleteRecord("rute",id); }}
+          selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
       {modal && (
         <Modal title={modal==="add"?"Tambah Rute":"Edit Rute"} onClose={()=>setModal(null)}>
@@ -1454,12 +1547,27 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   const [modal, setModal] = useState(null);
   const [stokModal, setStokModal] = useState(null);
   const [form, setForm] = useState({ nama:"", ruteId:"", status:"Aktif", produkIds:[], catatan:"" });
+  const [formWilayahId, setFormWilayahId] = useState(""); // wilayah filter di form toko
   const [stokForm, setStokForm] = useState({});
   const [filter, setFilter] = useState({ q:"", ruteId:"", wilayahId:"", status:"" });
   // Filter untuk panel Daftar Stok Produk
   const [stokFilter, setStokFilter] = useState({ q:"", ruteId:"", wilayahId:"", produkId:"" });
   const [showStokPanel, setShowStokPanel] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
+  }
+  function toggleSelectAll(rows, allChecked) {
+    if (allChecked) setSelectedIds(prev => prev.filter(id => !rows.find(r=>r.id===id)));
+    else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
+  }
+  function deleteSelected() {
+    if (!confirm(`Hapus ${selectedIds.length} toko terpilih? Tindakan ini permanen.`)) return;
+    selectedIds.forEach(id => deleteRecord("toko", id));
+    setSelectedIds([]);
+  }
 
   const enriched = useMemo(() => (db.toko||[]).map(t => {
     const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
@@ -1482,10 +1590,14 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
 
   function openAdd() {
     setForm({ nama:"", ruteId:"", status:"Aktif", produkIds:[], catatan:"" });
+    setFormWilayahId("");
     setModal("add");
   }
   function openEdit(row) {
     const produkIds = produkAktif.filter(p=>row[`produk_${p.id}`]).map(p=>p.id);
+    // Set wilayah filter sesuai rute toko yang sedang diedit
+    const ruteObj = (db.rute||[]).find(r=>r.id===row.ruteId);
+    setFormWilayahId(ruteObj?.wilayahId || "");
     setForm({ ...row, produkIds });
     setModal("edit");
   }
@@ -1545,7 +1657,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   const ruteOpts = useMemo(() => {
     const list = (db.rute||[]).map(r => {
       const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
-      return { value:r.id, label:`${r.nama} (${w?.nama||"?"})`, wilayahNama:w?.nama||"", ruteNama:r.nama };
+      return { value:r.id, label:`${r.nama} (${w?.nama||"?"})`, wilayahNama:w?.nama||"", ruteNama:r.nama, wilayahId:r.wilayahId };
     });
     return list.sort((a,b) => {
       const wCompare = a.wilayahNama.localeCompare(b.wilayahNama, "id", { sensitivity:"base" });
@@ -1553,6 +1665,10 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       return naturalCompare(a.ruteNama, b.ruteNama);
     });
   }, [db.rute, db.wilayah]);
+  // Rute yang difilter sesuai wilayah yang dipilih di form (untuk dropdown form Tambah/Edit Toko)
+  const ruteOptsFiltered = useMemo(() =>
+    formWilayahId ? ruteOpts.filter(r => r.wilayahId === formWilayahId) : ruteOpts
+  , [ruteOpts, formWilayahId]);
   const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
 
   // Import Toko dari Excel
@@ -1628,9 +1744,15 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         { key:"ruteId",   label:"Rute",             value:filter.ruteId,    options:ruteOpts },
         { key:"status",   label:"Status",           value:filter.status,    options:[{value:"Aktif",label:"Aktif"},{value:"Baru",label:"Baru"},{value:"Non-Aktif",label:"Non-Aktif"}] },
       ]} onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:"",ruteId:"",wilayahId:"",status:""})} />
+      <BulkActionBar
+        selectedIds={selectedIds} total={data.length}
+        onSelectAll={()=>toggleSelectAll(data, false)}
+        onClearAll={()=>setSelectedIds([])}
+        onDeleteSelected={deleteSelected} label="toko" />
       <Card padding={0}>
         <Table columns={cols} data={data} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus toko ini?")) deleteRecord("toko",id); }} />
+          onDelete={id=>{ if(confirm("Hapus toko ini?")) deleteRecord("toko",id); }}
+          selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
       {/* Panel Daftar Stok Produk per Toko dengan Filter */}
       <div style={{ marginTop:16 }}>
@@ -1770,7 +1892,10 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       {modal && (
         <Modal title={modal==="add"?"Tambah Toko":"Edit Toko"} onClose={()=>setModal(null)}>
           <Input label="Nama Toko" value={form.nama} onChange={v=>f("nama",v)} required placeholder="cth: Toko Barokah" />
-          <SearchableSelect label="Rute" value={form.ruteId} onChange={v=>f("ruteId",v)} options={ruteOpts} required placeholder="Cari rute / wilayah..." />
+          <SearchableSelect label="Filter Wilayah (opsional)" value={formWilayahId}
+            onChange={v=>{ setFormWilayahId(v); f("ruteId",""); }}
+            options={wilayahOpts} placeholder="Pilih wilayah untuk filter rute..." />
+          <SearchableSelect label="Rute" value={form.ruteId} onChange={v=>f("ruteId",v)} options={ruteOptsFiltered} required placeholder={formWilayahId ? "Pilih rute..." : "Cari rute / wilayah..."} />
           <Input label="Status" value={form.status} onChange={v=>f("status",v)}
             options={[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"},{value:"Baru",label:"Baru (trial)"}]} />
           {form.status === "Baru" && (
@@ -1905,6 +2030,20 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
   const [filter, setFilter] = useState({ wilayahId:"", ruteId:"", bulan:"" });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  function toggleSelect(id) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
+  }
+  function toggleSelectAll(rows, allChecked) {
+    if (allChecked) setSelectedIds(prev => prev.filter(id => !rows.find(r=>r.id===id)));
+    else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
+  }
+  function deleteSelected() {
+    if (!confirm(`Hapus ${selectedIds.length} catatan kontrol terpilih? Tindakan ini permanen.`)) return;
+    selectedIds.forEach(id => deleteRecord("kontrol", id));
+    setSelectedIds([]);
+  }
   // Modal untuk mengubah status toko langsung dari kontrol (tarik/non-aktifkan toko)
   const [tokoStatusModal, setTokoStatusModal] = useState(null); // { toko, mode:"nonaktif"|"aktif" }
   const [stokPenarikan, setStokPenarikan] = useState({}); // stok saat penarikan { produkId: jumlah }
@@ -2628,16 +2767,24 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
           ))}
         </div>
       ) : (
-        <Card padding={0}>
-          <Table columns={cols} data={data} onEdit={openEdit}
-            rowStyle={(row) => {
-              if (!row.catatanStatus) return null;
-              const st = row.catatanStatus;
-              if (CATATAN_STATUS[st]) return CATATAN_STATUS[st].bg;
-              return null;
-            }}
-            onDelete={id=>setDeleteTarget(id)} />
-        </Card>
+        <>
+          <BulkActionBar
+            selectedIds={selectedIds} total={data.length}
+            onSelectAll={()=>toggleSelectAll(data, false)}
+            onClearAll={()=>setSelectedIds([])}
+            onDeleteSelected={deleteSelected} label="catatan kontrol" />
+          <Card padding={0}>
+            <Table columns={cols} data={data} onEdit={openEdit}
+              rowStyle={(row) => {
+                if (!row.catatanStatus) return null;
+                const st = row.catatanStatus;
+                if (CATATAN_STATUS[st]) return CATATAN_STATUS[st].bg;
+                return null;
+              }}
+              onDelete={id=>setDeleteTarget(id)}
+              selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
+          </Card>
+        </>
       )}
 
       {modal && (
@@ -4369,6 +4516,120 @@ export default function GWGSuperApp() {
     setBackupLoading(false);
   }, [listBackups]);
 
+  // ── GOOGLE DRIVE UPLOAD ─────────────────────────────────────────────────
+  // Menggunakan Google Drive REST API v3 (multipart upload) dengan OAuth2
+  // access token yang diperoleh dari Firebase Auth (provider Google).
+  // Tidak memerlukan gapi.js / Google Identity Services terpisah —
+  // token Firebase sudah cukup untuk Drive API selama scope drive.file
+  // dikonfigurasi di Firebase Console → Authentication → Google provider.
+  //
+  // ⚠ SYARAT: Di Google Cloud Console, aktifkan "Google Drive API" untuk
+  //   project Firebase Anda, dan tambahkan scope
+  //   "https://www.googleapis.com/auth/drive.file" ke OAuth consent screen.
+  //   Tanpa langkah ini, upload akan gagal dengan error 403/insufficientScope.
+  // ────────────────────────────────────────────────────────────────────────
+  const [gDriveLoading, setGDriveLoading] = useState(false);
+  const [gDriveMsg, setGDriveMsg] = useState(null); // { ok: bool, text: string }
+
+  const uploadToGDrive = useCallback(async () => {
+    if (!user) { alert("Login dengan Google terlebih dahulu."); return; }
+
+    // Ambil access token dari provider Google yang sudah di-link Firebase Auth.
+    // getIdToken() menghasilkan JWT Firebase — bukan OAuth2 access token untuk
+    // Google API. Kita butuh access token Google, yang disimpan di
+    // providerData / credential saat sign-in. Firebase tidak menyimpannya
+    // langsung di objek user, jadi kita gunakan getIdTokenResult lalu coba
+    // reauthenticate via GoogleAuthProvider.credential() untuk mendapat token
+    // OAuth yang segar via silent sign-in.
+    setGDriveLoading(true);
+    setGDriveMsg(null);
+    try {
+      // Coba dapatkan Google OAuth2 access token via Firebase auth.
+      // Metode: paksa re-link credential Google untuk mendapat accessToken.
+      let accessToken = null;
+
+      if (window.__gwg_gtoken && window.__gwg_gtoken_exp > Date.now()) {
+        // Pakai token cache jika belum expire (token Google valid ~1 jam)
+        accessToken = window.__gwg_gtoken;
+      } else {
+        // Tidak ada cache — minta user re-auth (popup Google) untuk mendapat token OAuth baru.
+        // Popup dibutuhkan pertama kali; setelah itu token di-cache selama sesi.
+        if (!firebaseAuth) throw new Error("Firebase Auth tidak siap.");
+        const provider = new firebaseAuth.GoogleAuthProvider();
+        provider.addScope("https://www.googleapis.com/auth/drive.file");
+        const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
+        // Firebase v9+ menyimpan credential di result
+        const { GoogleAuthProvider } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+        const cred = GoogleAuthProvider.credentialFromResult(result);
+        if (!cred?.accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
+        accessToken = cred.accessToken;
+        // Cache token (expire dalam 55 menit untuk safety margin)
+        window.__gwg_gtoken = accessToken;
+        window.__gwg_gtoken_exp = Date.now() + 55 * 60 * 1000;
+      }
+
+      // Buat konten JSON backup
+      const ts = new Date().toISOString();
+      const filename = `gwg_backup_${ts.slice(0,19).replace(/[:T]/g,"-")}.json`;
+      const content = JSON.stringify({ ts, reason: "gdrive-manual", data: db }, null, 2);
+      const contentBlob = new Blob([content], { type: "application/json" });
+
+      // Metadata file di Drive
+      const metadata = {
+        name: filename,
+        mimeType: "application/json",
+        description: `GWG SuperApp backup - ${ts}`,
+        // Simpan di folder "GWG Backup" jika sudah dibuat, atau di root Drive
+      };
+
+      // Multipart upload ke Drive API v3
+      const boundary = "gwg_backup_boundary_xyz";
+      const delimiter = `\r\n--${boundary}\r\n`;
+      const closeDelimiter = `\r\n--${boundary}--`;
+
+      const multipartBody = new Blob([
+        delimiter,
+        "Content-Type: application/json; charset=UTF-8\r\n\r\n",
+        JSON.stringify(metadata),
+        delimiter,
+        "Content-Type: application/json\r\n\r\n",
+        content,
+        closeDelimiter,
+      ]);
+
+      const resp = await fetch(
+        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": `multipart/related; boundary="${boundary}"`,
+          },
+          body: multipartBody,
+        }
+      );
+
+      if (!resp.ok) {
+        const errJson = await resp.json().catch(() => ({}));
+        const msg = errJson?.error?.message || `HTTP ${resp.status}`;
+        throw new Error(msg);
+      }
+
+      const fileData = await resp.json();
+      const viewLink = fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`;
+      setGDriveMsg({
+        ok: true,
+        text: `✅ Berhasil diunggah ke Google Drive! File: "${fileData.name}"`,
+        link: viewLink,
+      });
+    } catch (e) {
+      console.error("GDrive upload error:", e);
+      setGDriveMsg({ ok: false, text: `❌ Gagal upload ke Google Drive: ${e.message}` });
+    } finally {
+      setGDriveLoading(false);
+    }
+  }, [user, db]);
+
   // Cari role user yang login berdasarkan email di tabel pengguna
   const currentUserRecord = user ? db.pengguna.find(p => p.email?.toLowerCase() === user.email?.toLowerCase()) : null;
 
@@ -4646,9 +4907,54 @@ export default function GWGSuperApp() {
                 setBackupList(await listBackups());
                 setBackupLoading(false);
               }}>
-                ☁️ Simpan Snapshot ke Cloud
+                ☁️ Simpan Snapshot ke Cloud (Firebase)
+              </Btn>
+              {/* ── GOOGLE DRIVE UPLOAD ── */}
+              <Btn
+                variant="secondary"
+                disabled={gDriveLoading}
+                onClick={() => { setGDriveMsg(null); uploadToGDrive(); }}
+                style={{ background:"#fff", color:"#444", border:"1px solid #ddd",
+                  display:"flex", alignItems:"center", gap:6, fontWeight:600,
+                  opacity: gDriveLoading ? 0.7 : 1 }}
+                title={user ? "Upload backup JSON ke Google Drive Anda" : "Login Google diperlukan untuk upload ke Drive"}
+              >
+                {/* Google Drive logo (triangle triskelion) */}
+                <svg width="18" height="16" viewBox="0 0 87.3 78" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M6.6 66.85l3.85 6.65c.8 1.4 1.95 2.5 3.3 3.3l13.75-23.8H.1c0 1.55.4 3.1 1.2 4.5z" fill="#0066DA"/>
+                  <path d="M43.65 25L29.9 1.2C28.55 2 27.4 3.1 26.6 4.5L1.3 48.05c-.8 1.4-1.2 2.95-1.2 4.5h27.5z" fill="#00AC47"/>
+                  <path d="M73.55 76.8c1.35-.8 2.5-1.9 3.3-3.3l1.6-2.75 7.65-13.25c.8-1.4 1.2-2.95 1.2-4.5H59.8z" fill="#EA4335"/>
+                  <path d="M43.65 25L57.4 1.2C56.05.4 54.5 0 52.9 0H34.4c-1.6 0-3.15.45-4.5 1.2z" fill="#00832D"/>
+                  <path d="M59.8 52.55H27.5L13.75 76.35c1.35.8 2.9 1.2 4.5 1.2h50.8c1.6 0 3.15-.4 4.5-1.2z" fill="#2684FC"/>
+                  <path d="M73.4 26.05l-12.65-21.9c-.15-.3-.35-.55-.55-.85L44.45 25 59.8 52.55H87.3c0-1.6-.4-3.1-1.2-4.5z" fill="#FFBA00"/>
+                </svg>
+                {gDriveLoading ? "Mengunggah…" : "Upload ke Google Drive"}
               </Btn>
             </div>
+
+            {/* Status pesan Google Drive upload */}
+            {gDriveMsg && (
+              <div style={{
+                padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:13,
+                background: gDriveMsg.ok ? "#E6F4ED" : "#FEF2F2",
+                color: gDriveMsg.ok ? "#0F4C35" : "#DC2626",
+                border: `1px solid ${gDriveMsg.ok ? "#6EE7B7" : "#FCA5A5"}`,
+                display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap"
+              }}>
+                <span style={{ flex:1 }}>{gDriveMsg.text}</span>
+                {gDriveMsg.ok && gDriveMsg.link && (
+                  <a href={gDriveMsg.link} target="_blank" rel="noopener noreferrer"
+                    style={{ color:"#1D4ED8", fontWeight:600, whiteSpace:"nowrap" }}>
+                    🔗 Buka di Drive
+                  </a>
+                )}
+                {!gDriveMsg.ok && (
+                  <div style={{ fontSize:11, opacity:.8, width:"100%", marginTop:4 }}>
+                    Pastikan <b>Google Drive API</b> aktif di Google Cloud Console dan scope <code>drive.file</code> sudah ditambahkan ke OAuth consent screen project Firebase Anda.
+                  </div>
+                )}
+              </div>
+            )}
 
             <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>Riwayat Backup Cloud</div>
             {!user && (
