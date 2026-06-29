@@ -2586,13 +2586,33 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord }) {
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
   const ROLE_C = { Admin:T.red, Manajer:T.purple, Sales:T.green, Viewer:T.gray600 };
 
+  const jumlahAdmin = (db.pengguna||[]).filter(p => p.role === "Admin").length;
+
   function openAdd() { setForm({ nama:"", email:"", role:"Sales", wilayahId:"" }); setModal("add"); }
   function openEdit(row) { setForm({ ...row }); setModal("edit"); }
   function submit() {
     if (!form.nama || !form.email) return alert("Nama & Email wajib diisi");
+    // Cegah admin terakhir diturunkan rolenya sendiri lewat form edit,
+    // supaya sistem tidak pernah kehilangan akses Admin sama sekali.
+    if (modal === "edit") {
+      const existing = (db.pengguna||[]).find(p => p.id === form.id);
+      const sedangMenurunkanAdminTerakhir =
+        existing?.role === "Admin" && form.role !== "Admin" && jumlahAdmin <= 1;
+      if (sedangMenurunkanAdminTerakhir) {
+        return alert("Tidak bisa mengubah role Admin terakhir. Tambahkan Admin lain dahulu sebelum menurunkan role ini.");
+      }
+    }
     if (modal==="add") addRecord("pengguna", { ...form, id:genId("U",db.pengguna) });
     else updateRecord("pengguna", form.id, form);
     setModal(null);
+  }
+  function hapusPengguna(id) {
+    const row = (db.pengguna||[]).find(p => p.id === id);
+    if (row?.role === "Admin" && jumlahAdmin <= 1) {
+      alert("Tidak bisa menghapus Admin terakhir. Tambahkan Admin lain dahulu.");
+      return;
+    }
+    deleteRecord("pengguna", id);
   }
 
   const wilayahOpts = [{ value:"", label:"Semua Wilayah" }, ...(db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }))];
@@ -2617,9 +2637,15 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord }) {
           <Btn onClick={openAdd} icon="＋">Tambah Pengguna</Btn>
         </div>
       </div>
+      <div style={{ background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:10, padding:"10px 14px",
+        marginBottom:16, fontSize:12, color:T.gray600, lineHeight:1.6 }}>
+        ℹ️ Akun Google baru yang login otomatis menjadi role <b>Sales</b>. Admin atau Manajer dapat
+        mengubah role pengguna (Admin/Manajer/Sales/Viewer) lewat tabel di bawah. Role <b>Sales</b> hanya
+        bisa mengakses tab Dashboard, Kontrol, dan Rekap; tab ini (Pengguna) khusus untuk <b>Admin</b>.
+      </div>
       <Card padding={0}>
         <Table columns={cols} data={db.pengguna||[]} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus pengguna ini?")) deleteRecord("pengguna",id); }} />
+          onDelete={hapusPengguna} />
       </Card>
       {modal && (
         <Modal title={modal==="add"?"Tambah Pengguna":"Edit Pengguna"} onClose={()=>setModal(null)}>
@@ -2705,7 +2731,9 @@ function LoginPage({ onLoginGoogle, fbReady, error }) {
             )}
 
             <p style={{ fontSize:12, color:T.gray400, marginTop:20 }}>
-              Hanya akun Google yang terdaftar dapat mengakses aplikasi ini.
+              Hanya akun Google yang terdaftar dapat mengakses aplikasi ini.<br/>
+              Akun baru otomatis masuk sebagai <b>Sales</b>; Admin/Manajer dapat
+              mengubah role di tab <b>Pengguna</b>.
             </p>
           </>
         ) : (
@@ -2727,6 +2755,10 @@ function LoginPage({ onLoginGoogle, fbReady, error }) {
   );
 }
 
+// Tab yang boleh diakses oleh role Sales (terbatas: hanya operasional harian).
+// Admin & Manajer otomatis bisa mengakses SEMUA tab (lihat fungsi canAccessTab).
+const SALES_ALLOWED_TABS = ["dashboard", "kontrol", "rekap"];
+
 const TABS = [
   { key:"dashboard", label:"📈 Dashboard" },
   { key:"wilayah",   label:"📍 Wilayah" },
@@ -2737,6 +2769,15 @@ const TABS = [
   { key:"rekap",     label:"📑 Rekap" },
   { key:"pengguna",  label:"👤 Pengguna" },
 ];
+
+// Aturan akses tab berdasarkan role:
+// - Admin & Manajer  → semua tab (termasuk Pengguna untuk Admin, lihat pengecualian di bawah)
+// - Sales & lainnya  → hanya tab di SALES_ALLOWED_TABS, dan tab "pengguna" tidak pernah terlihat kecuali Admin
+function canAccessTab(tabKey, { isAdmin, isManajer }) {
+  if (tabKey === "pengguna") return isAdmin; // Pengguna selalu khusus Admin
+  if (isManajer) return true; // Admin & Manajer bebas akses tab lain
+  return SALES_ALLOWED_TABS.includes(tabKey); // Sales/Viewer/lainnya: dibatasi
+}
 
 export default function GWGSuperApp() {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -2756,6 +2797,15 @@ export default function GWGSuperApp() {
   const userRole = currentUserRecord?.role || (isBootstrapAdmin ? "Admin" : "Sales"); // default Sales jika tidak ditemukan
   const isAdmin = userRole === "Admin";
   const isManajer = userRole === "Manajer" || isAdmin;
+
+  // Jaga-jaga: jika tab yang aktif sekarang tidak boleh diakses oleh role
+  // pengguna saat ini (misal role baru saja diturunkan oleh Admin, atau
+  // pengguna Sales mencoba membuka URL/state tab terlarang), alihkan ke Dashboard.
+  useEffect(() => {
+    if (!canAccessTab(activeTab, { isAdmin, isManajer })) {
+      setActiveTab("dashboard");
+    }
+  }, [activeTab, isAdmin, isManajer]);
 
   const handleLoginGoogle = async () => {
     setLoginError("");
@@ -2853,7 +2903,7 @@ export default function GWGSuperApp() {
           )}
 
           <div style={{ display:"flex", gap:2, overflowX:"auto", paddingBottom:0 }}>
-            {TABS.filter(t => t.key !== "pengguna" || isAdmin).map(t=>(
+            {TABS.filter(t => canAccessTab(t.key, { isAdmin, isManajer })).map(t=>(
               <button key={t.key} onClick={()=>setActiveTab(t.key)}
                 style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontFamily:"inherit",
                   fontWeight:600, fontSize:13, whiteSpace:"nowrap", borderRadius:"10px 10px 0 0", transition:"all .15s",
@@ -2869,13 +2919,13 @@ export default function GWGSuperApp() {
       {/* CONTENT */}
       <div style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
         {activeTab==="dashboard" && <Dashboard db={db} analytics={analytics} />}
-        {activeTab==="wilayah"   && <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="rute"      && <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="toko"      && <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
-        {activeTab==="produk"    && <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="kontrol"   && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
-        {activeTab==="rekap"     && <TabRekap     db={db} analytics={analytics} />}
-        {activeTab==="pengguna"  && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
+        {activeTab==="wilayah"   && canAccessTab("wilayah",  { isAdmin, isManajer }) && <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
+        {activeTab==="rute"      && canAccessTab("rute",     { isAdmin, isManajer }) && <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
+        {activeTab==="toko"      && canAccessTab("toko",     { isAdmin, isManajer }) && <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
+        {activeTab==="produk"    && canAccessTab("produk",   { isAdmin, isManajer }) && <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
+        {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
+        {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} />}
+        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
       </div>
 
       {/* RESET CONFIRM */}
