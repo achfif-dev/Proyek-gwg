@@ -1738,6 +1738,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
   const [filter, setFilter] = useState({ wilayahId:"", ruteId:"", bulan:"" });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
+  // Modal untuk mengubah status toko langsung dari kontrol (tarik/non-aktifkan toko)
+  const [tokoStatusModal, setTokoStatusModal] = useState(null); // { toko, mode:"nonaktif"|"aktif" }
+  const [stokPenarikan, setStokPenarikan] = useState({}); // stok saat penarikan { produkId: jumlah }
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
@@ -1868,6 +1871,38 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
     setModal(null);
   }
 
+  // ─── NONAKTIFKAN TOKO DARI KONTROL (logika penarikan toko) ───
+  // Dipanggil saat petugas menandai toko sebagai "ditarik" / Non-Aktif langsung dari menu kontrol.
+  // Proses:
+  // 1. Update status toko di master toko → Non-Aktif (tersinkron ke tab Toko)
+  // 2. Jika ada produk terjual di entri kontrol terakhir, stok toko otomatis dikembalikan
+  //    ke stok awal (dikurangi terjual = sisa stok dikembalikan ke gudang)
+  // 3. Toko tidak lagi muncul di dropdown kontrol bulan berikutnya
+  // 4. Stok bisa disesuaikan manual (ditambah/dikurangi) sebelum konfirmasi
+  function openTokoStatusModal(toko) {
+    // Ambil stok saat ini dari master toko sebagai nilai awal form
+    const stokInit = {};
+    produkAktif.forEach(p => {
+      stokInit[p.id] = toko[] || 0;
+    });
+    setStokPenarikan(stokInit);
+    setTokoStatusModal({ toko });
+  }
+
+  function konfirmasiNonaktifkanToko() {
+    if (!tokoStatusModal) return;
+    const { toko } = tokoStatusModal;
+    // Update status toko → Non-Aktif di master toko, sekaligus update stok saat penarikan
+    const tokoUpdates = { status: "Non-Aktif" };
+    produkAktif.forEach(p => {
+      // Stok dikembalikan ke nilai yang diisikan di form (bisa 0 atau sisa stok)
+      tokoUpdates[] = Number(stokPenarikan[p.id] || 0);
+    });
+    updateRecord("toko", toko.id, tokoUpdates);
+    setTokoStatusModal(null);
+    setStokPenarikan({});
+  }
+
   const ruteOpts = ruteFiltered.map(r=>({ value:r.id, label:r.nama }));
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
 
@@ -1976,6 +2011,49 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
           onConfirm={() => { deleteRecord("kontrol", deleteTarget); setDeleteTarget(null); }}
           onCancel={() => setDeleteTarget(null)}
         />
+      )}
+
+      {/* Modal Konfirmasi Penarikan / Non-Aktifkan Toko dari Kontrol */}
+      {tokoStatusModal && (
+        <Modal title="🏪 Tarik / Non-Aktifkan Toko" onClose={() => { setTokoStatusModal(null); setStokPenarikan({}); }} width={520}>
+          <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10, padding:"12px 16px", marginBottom:16 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:"#DC2626", marginBottom:4 }}>⚠️ Toko akan ditarik / dinonaktifkan</div>
+            <div style={{ fontSize:13, color:"#6B7280", lineHeight:1.6 }}>
+              Toko <b>{tokoStatusModal.toko.nama}</b> akan diubah statusnya menjadi <b>Non-Aktif</b>.<br/>
+              Toko ini <b>tidak akan muncul</b> di dropdown kontrol bulan berikutnya.<br/>
+              Untuk mengaktifkan kembali, buka tab <b>Toko</b> dan edit status toko tersebut.
+            </div>
+          </div>
+          <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6 }}>📦 Stok Produk Saat Penarikan</div>
+            <div style={{ fontSize:12, color:"#6B7280", marginBottom:10, lineHeight:1.5 }}>
+              Isi stok produk yang dikembalikan ke gudang saat toko ini ditarik. Stok ini akan disimpan ke master toko sebagai referensi.<br/>
+              <span style={{ color:"#D97706", fontWeight:600 }}>Isi 0 jika semua stok sudah habis terjual atau tidak ada yang dikembalikan.</span>
+            </div>
+            <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:10 }}>
+              {produkAktif.map(p => (
+                <div key={p.id} style={{ background:"#F9FAFB", border:"1.5px solid #E5E7EB", borderRadius:10, padding:12 }}>
+                  <div style={{ fontSize:12, fontWeight:700, color:"#1F2937", marginBottom:8 }}>{p.nama}</div>
+                  <div style={{ fontSize:11, color:"#9CA3AF", marginBottom:4 }}>Stok dikembalikan (pcs)</div>
+                  <input
+                    type="number" min={0}
+                    value={stokPenarikan[p.id] || 0}
+                    onChange={e => setStokPenarikan(prev => ({ ...prev, [p.id]: e.target.value }))}
+                    style={{ width:"100%", padding:"7px 10px", border:"1.5px solid #E5E7EB",
+                      borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+          <div style={{ background:"#EFF6FF", border:"1px solid #BFDBFE", borderRadius:8, padding:"10px 14px", marginBottom:16, fontSize:12 }}>
+            ℹ️ Data kontrol yang sudah ada untuk toko ini <b>tidak akan dihapus</b> — hanya status toko yang diubah menjadi Non-Aktif dan stok diperbarui.
+          </div>
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
+            <Btn variant="secondary" onClick={() => { setTokoStatusModal(null); setStokPenarikan({}); }}>Batal</Btn>
+            <Btn variant="danger" onClick={konfirmasiNonaktifkanToko}>🔴 Nonaktifkan Toko & Perbarui Stok</Btn>
+          </div>
+        </Modal>
       )}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <div>
@@ -2093,6 +2171,11 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
                           setModalFilter({ wilayahId: wilayah?.id||"", ruteId: rute.id });
                           setModal("add");
                         }}>Tambah</Btn>
+                        {toko.status !== "Non-Aktif" && (
+                          <Btn size="sm" variant="danger" icon="🔴" onClick={() => openTokoStatusModal(toko)}>
+                            Tarik Toko
+                          </Btn>
+                        )}
                       </div>
                     </div>
 
@@ -4082,7 +4165,7 @@ export default function GWGSuperApp() {
                   </Btn>
                 </div>
               )}
-              {isAdmin && (
+              {isAdmin && currentUserRecord?.role === "Admin" && (
                 <Btn variant="secondary" size="sm" onClick={()=>{ setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); }}
                   style={{ background:"rgba(220,38,38,.25)", color:"#FCA5A5", border:"1px solid rgba(220,38,38,.4)" }}>
                   ⚠️ Reset DB
