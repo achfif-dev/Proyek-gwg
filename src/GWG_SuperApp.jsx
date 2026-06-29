@@ -734,9 +734,9 @@ function exportHTML(data, columns, title, filename) {
 function downloadTokoTemplate(db) {
   try {
     const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
-    const header = ["Nama Toko*", "Rute*", "Status", "Catatan", ...produkAktif.map(p=>`Jual: ${p.nama}`)];
+    const header = ["Nama Toko*", "Rute*", "Status", "Catatan", ...produkAktif.map(p=>`Jual: ${p.nama}`), ...produkAktif.map(p=>`Stok: ${p.nama}`)];
     const sample = ["Toko Barokah", (db.rute||[])[0]?.nama || "Rute Utara A", "Aktif", "",
-      ...produkAktif.map(()=>"Ya")];
+      ...produkAktif.map(()=>"Ya"), ...produkAktif.map(()=>0)];
     const ws = XLSX.utils.aoa_to_sheet([header, sample]);
     ws["!cols"] = header.map(h=>({ wch: Math.max(String(h).length+2, 14) }));
     const wb = XLSX.utils.book_new();
@@ -753,8 +753,9 @@ function downloadTokoTemplate(db) {
       ["2. Kolom 'Rute' harus sama persis (tidak case-sensitive) dengan nama rute yang sudah ada di Master Rute."],
       ["3. Kolom 'Status' isi salah satu: Aktif / Non-Aktif / Baru (default Aktif jika kosong)."],
       ["4. Kolom 'Jual: <produk>' isi Ya / Tidak untuk menandai produk yang dijual toko tersebut."],
-      ["5. Jangan mengubah urutan atau nama header kolom pada sheet 'Template Toko'."],
-      ["6. Tambahkan satu baris untuk setiap toko, mulai dari baris ke-2."],
+      ["5. Kolom 'Stok: <produk>' isi angka stok awal untuk masing-masing produk di toko tersebut (boleh dikosongkan, default 0)."],
+      ["6. Jangan mengubah urutan atau nama header kolom pada sheet 'Template Toko'."],
+      ["7. Tambahkan satu baris untuk setiap toko, mulai dari baris ke-2."],
       [""],
       ["Daftar Rute & Wilayah yang tersedia saat ini:"],
       ["Nama Rute", "Wilayah"],
@@ -1429,12 +1430,35 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
 // ─────────────────────────────────────────────
 //  TAB TOKO (dengan stok terintegrasi)
 // ─────────────────────────────────────────────
+// ─────────────────────────────────────────────
+//  AUTO-UPGRADE: Toko status "Baru" → "Aktif" setelah 1 bulan (30 hari)
+// ─────────────────────────────────────────────
+function autoUpgradeBaruToAktif(db, updateRecord) {
+  const today = new Date();
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  (db.toko||[]).forEach(toko => {
+    if (toko.status !== "Baru") return;
+    if (!toko.tanggalMasuk) return;
+    const masuk = new Date(toko.tanggalMasuk);
+    if (isNaN(masuk.getTime())) return;
+    if (masuk <= thirtyDaysAgo) {
+      // Sudah lebih dari 30 hari, upgrade ke Aktif
+      updateRecord("toko", toko.id, { status: "Aktif" });
+    }
+  });
+}
+
 function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   const [modal, setModal] = useState(null);
   const [stokModal, setStokModal] = useState(null);
   const [form, setForm] = useState({ nama:"", ruteId:"", status:"Aktif", produkIds:[], catatan:"" });
   const [stokForm, setStokForm] = useState({});
   const [filter, setFilter] = useState({ q:"", ruteId:"", wilayahId:"", status:"" });
+  // Filter untuk panel Daftar Stok Produk
+  const [stokFilter, setStokFilter] = useState({ q:"", ruteId:"", wilayahId:"", produkId:"" });
+  const [showStokPanel, setShowStokPanel] = useState(false);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
   const enriched = useMemo(() => (db.toko||[]).map(t => {
@@ -1483,9 +1507,15 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
     if (modal==="add") {
       const newId = genId("T", db.toko);
       const counter = newId.replace("T","");
-      addRecord("toko", { ...form, ...produkFlags, id:newId, kode:prefix+counter });
+      const today = new Date().toISOString().slice(0,10);
+      const tanggalMasuk = form.status === "Baru" ? (form.tanggalMasuk || today) : (form.tanggalMasuk || null);
+      addRecord("toko", { ...form, ...produkFlags, id:newId, kode:prefix+counter, tanggalMasuk });
     } else {
-      updateRecord("toko", form.id, { ...form, ...produkFlags });
+      // Jika status diubah ke Baru dan belum ada tanggalMasuk, isi sekarang
+      const existing = (db.toko||[]).find(t=>t.id===form.id);
+      const tanggalMasuk = form.tanggalMasuk || (form.status === "Baru" && !existing?.tanggalMasuk
+        ? new Date().toISOString().slice(0,10) : existing?.tanggalMasuk || null);
+      updateRecord("toko", form.id, { ...form, ...produkFlags, tanggalMasuk });
     }
     setModal(null);
   }
@@ -1552,7 +1582,15 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       const newId = genId("T", newToko);
       const prefix = "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-";
       const counter = newId.replace("T","");
-      newToko.push({ id:newId, nama, ruteId:ruteObj.id, status, catatan, kode:prefix+counter, ...produkFlags });
+      const today = new Date().toISOString().slice(0,10);
+      const tanggalMasukImport = status === "Baru" ? today : null;
+      // Baca stok produk dari kolom Excel jika ada (Stok: <nama produk>)
+      const stokFromExcel = {};
+      produkAktif.forEach(p => {
+        const stokVal = Number(row[`Stok: ${p.nama}`] ?? row[`Stok ${p.nama}`] ?? 0);
+        stokFromExcel[`stok_${p.id}`] = isNaN(stokVal) ? 0 : stokVal;
+      });
+      newToko.push({ id:newId, nama, ruteId:ruteObj.id, status, catatan, kode:prefix+counter, tanggalMasuk:tanggalMasukImport, ...produkFlags, ...stokFromExcel });
       added++;
     });
     if (added > 0) save({ ...db, toko:newToko });
@@ -1564,7 +1602,10 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
     { key:"nama",       label:"Nama Toko", render:v=><b>{v}</b> },
     { key:"ruteNama",   label:"Rute",    render:v=><Badge color={T.teal}>{v}</Badge> },
     { key:"wilayahNama",label:"Wilayah" },
-    { key:"status",     label:"Status",  render:v=><Badge color={v==="Aktif"?T.green:T.red}>{v}</Badge> },
+    { key:"status",     label:"Status",  render:v=><Badge color={v==="Aktif"?T.green:v==="Baru"?T.blue:T.red}>{v}</Badge> },
+    { key:"tanggalMasuk", label:"Tgl Masuk", render:(v,row)=> row.status==="Baru" && v
+      ? <span style={{ fontSize:11, color:T.blue }}>{v}</span>
+      : <span style={{ color:T.gray400 }}>—</span> },
     ...produkAktif.map(p=>({ key:`produk_${p.id}`, label:p.nama, render:v=><span>{v?"✅":"—"}</span> })),
   ];
 
@@ -1585,32 +1626,158 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         { key:"q",        label:"Cari Nama Toko / Kode", value:filter.q, placeholder:"Ketik untuk mencari..." },
         { key:"wilayahId",label:"Wilayah",          value:filter.wilayahId, options:wilayahOpts },
         { key:"ruteId",   label:"Rute",             value:filter.ruteId,    options:ruteOpts },
-        { key:"status",   label:"Status",           value:filter.status,    options:[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"}] },
+        { key:"status",   label:"Status",           value:filter.status,    options:[{value:"Aktif",label:"Aktif"},{value:"Baru",label:"Baru"},{value:"Non-Aktif",label:"Non-Aktif"}] },
       ]} onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:"",ruteId:"",wilayahId:"",status:""})} />
       <Card padding={0}>
         <Table columns={cols} data={data} onEdit={openEdit}
           onDelete={id=>{ if(confirm("Hapus toko ini?")) deleteRecord("toko",id); }} />
       </Card>
-      {/* Tombol Update Stok per baris */}
-      {data.length > 0 && (
-        <div style={{ marginTop:10 }}>
-          <div style={{ fontSize:12, color:T.gray400, marginBottom:8 }}>💡 Klik toko untuk update stok awal (terurut abjad):</div>
-          <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            {data.map(t => (
-              <Btn key={t.id} variant="secondary" size="sm" icon="📦" onClick={()=>openStok(t)}>
-                {t.nama}
-              </Btn>
-            ))}
+      {/* Panel Daftar Stok Produk per Toko dengan Filter */}
+      <div style={{ marginTop:16 }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+          marginBottom: showStokPanel ? 12 : 0 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div style={{ fontSize:14, fontWeight:700, color:T.gray800 }}>📦 Daftar Stok Produk per Toko</div>
+            <Badge color={T.teal}>{data.length} toko</Badge>
           </div>
+          <Btn variant="secondary" size="sm"
+            onClick={()=>setShowStokPanel(v=>!v)}>
+            {showStokPanel ? "▲ Sembunyikan" : "▼ Tampilkan"}
+          </Btn>
         </div>
-      )}
+        {showStokPanel && (() => {
+          // Filter stok panel
+          const stokData = data.filter(t =>
+            (!stokFilter.q || t.nama.toLowerCase().includes(stokFilter.q.toLowerCase()) || t.kode?.toLowerCase().includes(stokFilter.q.toLowerCase())) &&
+            (!stokFilter.ruteId || t.ruteId === stokFilter.ruteId) &&
+            (!stokFilter.wilayahId || t.wilayahId === stokFilter.wilayahId)
+          ).filter(t =>
+            // Filter by produk stok: hanya tampilkan toko yang punya stok > 0 untuk produk terpilih
+            !stokFilter.produkId || (t[`stok_${stokFilter.produkId}`]||0) > 0
+          );
+
+          return (
+            <div>
+              {/* Filter Bar Stok */}
+              <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-end",
+                background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10, padding:"12px 16px", marginBottom:12 }}>
+                <div style={{ minWidth:180, flex:1 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>🔍 Cari Toko</div>
+                  <input value={stokFilter.q} onChange={e=>setStokFilter(p=>({...p,q:e.target.value}))}
+                    placeholder="Nama toko / kode..."
+                    style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                      borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white, boxSizing:"border-box" }} />
+                </div>
+                <div style={{ minWidth:140, flex:1 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Wilayah</div>
+                  <select value={stokFilter.wilayahId}
+                    onChange={e=>setStokFilter(p=>({...p, wilayahId:e.target.value, ruteId:""}))}
+                    style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                      borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                    <option value="">Semua</option>
+                    {wilayahOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div style={{ minWidth:140, flex:1 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Rute</div>
+                  <select value={stokFilter.ruteId}
+                    onChange={e=>setStokFilter(p=>({...p, ruteId:e.target.value}))}
+                    style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                      borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                    <option value="">Semua</option>
+                    {(stokFilter.wilayahId
+                      ? ruteOpts.filter(r => {
+                          const rObj = (db.rute||[]).find(x=>x.id===r.value);
+                          return rObj?.wilayahId === stokFilter.wilayahId;
+                        })
+                      : ruteOpts
+                    ).map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+                <div style={{ minWidth:160, flex:1 }}>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Filter Produk (stok &gt; 0)</div>
+                  <select value={stokFilter.produkId}
+                    onChange={e=>setStokFilter(p=>({...p, produkId:e.target.value}))}
+                    style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                      borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                    <option value="">Semua produk</option>
+                    {produkAktif.map(p=><option key={p.id} value={p.id}>{p.nama}</option>)}
+                  </select>
+                </div>
+                <Btn variant="secondary" size="sm"
+                  onClick={()=>setStokFilter({q:"",ruteId:"",wilayahId:"",produkId:""})}>
+                  Reset
+                </Btn>
+              </div>
+
+              {stokData.length === 0 ? (
+                <div style={{ textAlign:"center", color:T.gray400, padding:24, fontSize:13 }}>
+                  Tidak ada toko dengan stok yang sesuai filter.
+                </div>
+              ) : (
+                <div style={{ overflowX:"auto" }}>
+                  <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                    <thead>
+                      <tr style={{ background:T.gray50, borderBottom:`2px solid ${T.gray200}` }}>
+                        <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, color:T.gray600, fontSize:11, textTransform:"uppercase" }}>Toko</th>
+                        <th style={{ padding:"8px 12px", textAlign:"left", fontWeight:700, color:T.gray600, fontSize:11, textTransform:"uppercase" }}>Rute</th>
+                        {produkAktif.map(p=>(
+                          <th key={p.id} style={{ padding:"8px 12px", textAlign:"center", fontWeight:700,
+                            color: stokFilter.produkId === p.id ? T.green : T.gray600,
+                            fontSize:11, textTransform:"uppercase" }}>
+                            📦 {p.nama}
+                          </th>
+                        ))}
+                        <th style={{ padding:"8px 12px", textAlign:"right", fontWeight:700, color:T.gray600, fontSize:11 }}>AKSI</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stokData.map((t,i) => (
+                        <tr key={t.id} style={{ background:i%2===0?T.white:T.gray50, borderBottom:`1px solid ${T.gray100}` }}>
+                          <td style={{ padding:"8px 12px", fontWeight:700 }}>
+                            {t.nama}
+                            {t.status === "Baru" && <span style={{ marginLeft:6, fontSize:9, background:T.blue, color:"#fff", borderRadius:99, padding:"1px 6px" }}>BARU</span>}
+                          </td>
+                          <td style={{ padding:"8px 12px", color:T.teal }}>{t.ruteNama}</td>
+                          {produkAktif.map(p=>{
+                            const stok = t[`stok_${p.id}`]||0;
+                            return (
+                              <td key={p.id} style={{ padding:"8px 12px", textAlign:"center",
+                                fontWeight: stok > 0 ? 700 : 400,
+                                color: stok > 0 ? T.green : T.gray400,
+                                background: stokFilter.produkId === p.id ? (stok > 0 ? T.greenLt : T.redLt) : "transparent" }}>
+                                {stok > 0 ? `✅ ${fmt(stok)}` : "—"}
+                              </td>
+                            );
+                          })}
+                          <td style={{ padding:"8px 12px", textAlign:"right" }}>
+                            <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>openStok(t)}>Update</Btn>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ fontSize:11, color:T.gray400, marginTop:8, textAlign:"right" }}>
+                    Menampilkan {stokData.length} dari {data.length} toko
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+      </div>
 
       {modal && (
         <Modal title={modal==="add"?"Tambah Toko":"Edit Toko"} onClose={()=>setModal(null)}>
           <Input label="Nama Toko" value={form.nama} onChange={v=>f("nama",v)} required placeholder="cth: Toko Barokah" />
           <SearchableSelect label="Rute" value={form.ruteId} onChange={v=>f("ruteId",v)} options={ruteOpts} required placeholder="Cari rute / wilayah..." />
           <Input label="Status" value={form.status} onChange={v=>f("status",v)}
-            options={[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"},{value:"Baru",label:"Baru"}]} />
+            options={[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"},{value:"Baru",label:"Baru (trial)"}]} />
+          {form.status === "Baru" && (
+            <Input label="Tanggal Masuk (Baru)" value={form.tanggalMasuk||new Date().toISOString().slice(0,10)}
+              onChange={v=>f("tanggalMasuk",v)} type="date"
+              hint="Dipakai untuk auto-upgrade ke Aktif setelah 30 hari" />
+          )}
           <div style={{ marginBottom:14 }}>
             <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>Produk yang Dijual:</div>
             <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
@@ -1741,6 +1908,14 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
   // Modal untuk mengubah status toko langsung dari kontrol (tarik/non-aktifkan toko)
   const [tokoStatusModal, setTokoStatusModal] = useState(null); // { toko, mode:"nonaktif"|"aktif" }
   const [stokPenarikan, setStokPenarikan] = useState({}); // stok saat penarikan { produkId: jumlah }
+  // ✅ BARU: Modal Edit Status Toko — ubah Aktif/Baru/Non-Aktif langsung dari TabKontrol
+  const [editStatusModal, setEditStatusModal] = useState(null); // { toko } | null
+  const [editStatusValue, setEditStatusValue] = useState(""); // "Aktif" | "Baru" | "Non-Aktif"
+  const [editStatusCatatan, setEditStatusCatatan] = useState("");
+  // ✅ Modal Tambah Toko Cepat dari Kontrol
+  const [tambahTokoModal, setTambahTokoModal] = useState(false);
+  const [tambahTokoForm, setTambahTokoForm] = useState({ nama:"", ruteId:"", status:"Aktif", catatan:"" });
+  const ttf = (k,v) => setTambahTokoForm(p=>({...p,[k]:v}));
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
@@ -1879,6 +2054,26 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
   //    ke stok awal (dikurangi terjual = sisa stok dikembalikan ke gudang)
   // 3. Toko tidak lagi muncul di dropdown kontrol bulan berikutnya
   // 4. Stok bisa disesuaikan manual (ditambah/dikurangi) sebelum konfirmasi
+  // ✅ Submit modal Tambah Toko cepat dari Kontrol — rute/wilayah otomatis dari filter aktif
+  function submitTambahToko() {
+    const { nama, ruteId, status, catatan } = tambahTokoForm;
+    if (!nama || !ruteId) return alert("Nama & Rute wajib diisi");
+    const isDup = (db.toko||[]).some(t =>
+      t.nama.toLowerCase().trim() === nama.toLowerCase().trim() && t.ruteId === ruteId
+    );
+    if (isDup) return alert(`Toko "${nama}" sudah terdaftar di rute ini.`);
+    const ruteObj = (db.rute||[]).find(r=>r.id===ruteId);
+    const prefix = ruteObj ? "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-" : "GW-XXX-";
+    const newId = genId("T", db.toko);
+    const counter = newId.replace("T","");
+    const today = new Date().toISOString().slice(0,10);
+    const tanggalMasuk = status === "Baru" ? today : null;
+    addRecord("toko", { id:newId, nama, ruteId, status, catatan, kode:prefix+counter, tanggalMasuk });
+    setTambahTokoModal(false);
+    setTambahTokoForm({ nama:"", ruteId:"", status:"Aktif", catatan:"" });
+    alert(`✅ Toko "${nama}" berhasil ditambahkan!`);
+  }
+
   function openTokoStatusModal(toko) {
     // Ambil stok saat ini dari master toko sebagai nilai awal form
     const stokInit = {};
@@ -1901,6 +2096,27 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
     updateRecord("toko", toko.id, tokoUpdates);
     setTokoStatusModal(null);
     setStokPenarikan({});
+  }
+
+  // ✅ BARU: Buka modal Edit Status Toko
+  function openEditStatusModal(toko) {
+    setEditStatusValue(toko.status || "Aktif");
+    setEditStatusCatatan("");
+    setEditStatusModal({ toko });
+  }
+
+  // ✅ BARU: Simpan perubahan status toko dari modal EditStatus
+  function konfirmasiEditStatusToko() {
+    if (!editStatusModal) return;
+    const { toko } = editStatusModal;
+    if (!editStatusValue) return alert("Pilih status toko terlebih dahulu.");
+    const updates = { status: editStatusValue };
+    // Jika diubah ke Non-Aktif via jalur ini (bukan via "Tarik Toko"),
+    // stok TIDAK diubah — tetap seperti semula di master toko.
+    updateRecord("toko", toko.id, updates);
+    setEditStatusModal(null);
+    setEditStatusValue("");
+    setEditStatusCatatan("");
   }
 
   const ruteOpts = ruteFiltered.map(r=>({ value:r.id, label:r.nama }));
@@ -1987,7 +2203,25 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
 
   const cols = [
     { key:"id",           label:"ID",         render:v=><code style={{ fontSize:10 }}>{v}</code> },
-    { key:"tokoNama",     label:"Toko",       render:v=><b>{v}</b> },
+    { key:"tokoNama",     label:"Toko",       render:(v,row)=>{
+      const tkObj = (db.toko||[]).find(t=>t.id===row.tokoId);
+      const stMap = { "Aktif": { icon:"✅", color:T.green }, "Baru": { icon:"🆕", color:T.blue }, "Non-Aktif": { icon:"🔴", color:T.red } };
+      const st = tkObj ? (stMap[tkObj.status]||stMap["Aktif"]) : null;
+      return (
+        <div style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <b>{v}</b>
+          {st && tkObj && (
+            <span
+              title={`Status toko: ${tkObj.status} — klik untuk edit`}
+              onClick={e=>{ e.stopPropagation(); openEditStatusModal(tkObj); }}
+              style={{ cursor:"pointer", fontSize:10, background:st.color+"22", color:st.color,
+                border:`1px solid ${st.color}44`, borderRadius:99, padding:"1px 7px", fontWeight:700, lineHeight:1.6,
+                userSelect:"none", flexShrink:0 }}
+            >{st.icon} {tkObj.status}</span>
+          )}
+        </div>
+      );
+    }},
     { key:"wilayahNama",  label:"Wilayah",    render:v=><Badge color={T.green}>{v}</Badge> },
     { key:"ruteNama",     label:"Rute",       render:v=><Badge color={T.teal}>{v}</Badge> },
     { key:"tanggal",      label:"Tanggal" },
@@ -2055,6 +2289,113 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
           </div>
         </Modal>
       )}
+
+      {/* ✅ BARU: Modal Edit Status Toko — terintegrasi dengan master toko */}
+      {editStatusModal && (() => {
+        const { toko } = editStatusModal;
+        const STATUS_OPTS = [
+          { value: "Aktif",     label: "Aktif",      icon: "✅", desc: "Toko aktif & muncul di dropdown kontrol.", color: T.green,  bg: T.greenLt,  border: T.green+"44" },
+          { value: "Baru",      label: "Baru",       icon: "🆕", desc: "Toko baru, akan muncul di kontrol & ditandai BARU.", color: T.blue,   bg: T.blueLt,   border: "#93C5FD" },
+          { value: "Non-Aktif", label: "Non-Aktif",  icon: "🔴", desc: "Toko tidak aktif, tersembunyi dari dropdown kontrol.", color: T.red,    bg: T.redLt,    border: "#FCA5A5" },
+        ];
+        const currentOpt = STATUS_OPTS.find(o => o.value === toko.status) || STATUS_OPTS[0];
+        const selectedOpt = STATUS_OPTS.find(o => o.value === editStatusValue) || null;
+        const changed = editStatusValue && editStatusValue !== toko.status;
+        return (
+          <Modal title="🏷️ Edit Status Toko" onClose={() => { setEditStatusModal(null); setEditStatusValue(""); setEditStatusCatatan(""); }} width={480}>
+            {/* Info toko */}
+            <div style={{ background: T.gray50, border: `1px solid ${T.gray200}`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 28 }}>🏪</span>
+              <div>
+                <div style={{ fontWeight: 800, fontSize: 15, color: T.gray800 }}>{toko.nama}</div>
+                <div style={{ fontSize: 12, color: T.gray400 }}>
+                  {toko.kode && <span style={{ marginRight: 8 }}>Kode: <b>{toko.kode}</b></span>}
+                  Status saat ini:{" "}
+                  <span style={{ fontWeight: 700, color: currentOpt.color, background: currentOpt.bg, borderRadius: 99, padding: "1px 8px", fontSize: 11 }}>
+                    {currentOpt.icon} {toko.status || "Aktif"}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* Pilihan status */}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: T.gray700, marginBottom: 10 }}>Ubah status toko menjadi:</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {STATUS_OPTS.map(opt => {
+                  const isSelected = editStatusValue === opt.value;
+                  const isCurrent = toko.status === opt.value;
+                  return (
+                    <div
+                      key={opt.value}
+                      onClick={() => setEditStatusValue(opt.value)}
+                      style={{
+                        cursor: "pointer",
+                        border: `2px solid ${isSelected ? opt.color : T.gray200}`,
+                        borderRadius: 10,
+                        padding: "12px 16px",
+                        background: isSelected ? opt.bg : T.white,
+                        display: "flex", alignItems: "center", gap: 12,
+                        transition: "all .15s",
+                        opacity: isCurrent && !isSelected ? 0.6 : 1,
+                      }}
+                    >
+                      <span style={{ fontSize: 22 }}>{opt.icon}</span>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontWeight: 700, fontSize: 14, color: isSelected ? opt.color : T.gray800 }}>
+                          {opt.label}
+                          {isCurrent && (
+                            <span style={{ marginLeft: 8, fontSize: 10, background: T.gray200, color: T.gray600, borderRadius: 99, padding: "1px 7px" }}>
+                              Status saat ini
+                            </span>
+                          )}
+                        </div>
+                        <div style={{ fontSize: 12, color: T.gray500, marginTop: 2 }}>{opt.desc}</div>
+                      </div>
+                      <div style={{
+                        width: 20, height: 20, borderRadius: "50%",
+                        border: `2px solid ${isSelected ? opt.color : T.gray300}`,
+                        background: isSelected ? opt.color : "transparent",
+                        flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center"
+                      }}>
+                        {isSelected && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#fff" }} />}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Peringatan khusus jika pilih Non-Aktif lewat jalur ini */}
+            {editStatusValue === "Non-Aktif" && toko.status !== "Non-Aktif" && (
+              <div style={{ background: T.orangeLt, border: `1px solid ${T.orange}55`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
+                ⚠️ <b>Catatan:</b> Mengubah status ke <b>Non-Aktif</b> via menu ini <b>tidak akan mengubah stok toko</b>.<br/>
+                Jika ingin mencatat pengembalian stok, gunakan tombol <b>🔴 Tarik Toko</b> di view per Rute.
+              </div>
+            )}
+
+            {/* Pesan info jika status tidak berubah */}
+            {!changed && editStatusValue && (
+              <div style={{ background: T.blueLt, border: `1px solid #BFDBFE`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: T.blue }}>
+                ℹ️ Status toko sudah <b>{editStatusValue}</b>. Tidak ada perubahan yang akan disimpan.
+              </div>
+            )}
+
+            {/* Tombol aksi */}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <Btn variant="secondary" onClick={() => { setEditStatusModal(null); setEditStatusValue(""); setEditStatusCatatan(""); }}>Batal</Btn>
+              <Btn
+                onClick={konfirmasiEditStatusToko}
+                disabled={!editStatusValue || !changed}
+                style={{ opacity: (!editStatusValue || !changed) ? 0.5 : 1, cursor: (!editStatusValue || !changed) ? "not-allowed" : "pointer" }}
+              >
+                {selectedOpt ? `${selectedOpt.icon} Simpan — Ubah ke ${selectedOpt.label}` : "Simpan Perubahan"}
+              </Btn>
+            </div>
+          </Modal>
+        );
+      })()}
+
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
@@ -2070,11 +2411,47 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
             onClick={()=>setViewMode(v=>v==="table"?"monthly":"table")}>
             {viewMode==="table"?"🗺️ View per Rute":"📋 View Tabel"}
           </Btn>
+          <Btn variant="secondary" onClick={()=>{
+            // Pre-fill rute dari filter aktif jika ada
+            setTambahTokoForm({ nama:"", ruteId:filter.ruteId||"", status:"Aktif", catatan:"" });
+            setTambahTokoModal(true);
+          }} icon="🏪">Tambah Toko</Btn>
           <Btn onClick={openAdd} icon="＋">Tambah Kontrol</Btn>
         </div>
       </div>
 
-      {/* Filter: Wilayah → Rute → Bulan */}
+      {/* Modal Tambah Toko Cepat */}
+      {tambahTokoModal && (() => {
+        const ruteOptsForToko = (db.rute||[]).map(r => {
+          const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
+          return { value:r.id, label:`${r.nama} (${w?.nama||"?"})` };
+        });
+        return (
+          <Modal title="🏪 Tambah Toko Baru" onClose={()=>setTambahTokoModal(false)} width={480}>
+            <div style={{ fontSize:12, color:T.gray400, marginBottom:16, background:T.blueLt,
+              border:`1px solid #BFDBFE`, borderRadius:8, padding:"8px 12px" }}>
+              💡 Toko baru langsung bisa dipilih di input Kontrol tanpa menutup halaman ini.
+              Jika status <b>Baru</b>, sistem otomatis mencatat tanggal masuk dan akan upgrade ke <b>Aktif</b> setelah 30 hari.
+            </div>
+            <Input label="Nama Toko" value={tambahTokoForm.nama}
+              onChange={v=>ttf("nama",v)} required placeholder="cth: Toko Barokah" />
+            <SearchableSelect label="Rute" value={tambahTokoForm.ruteId}
+              onChange={v=>ttf("ruteId",v)} options={ruteOptsForToko} required
+              placeholder="Cari rute / wilayah..." />
+            <Input label="Status Awal" value={tambahTokoForm.status}
+              onChange={v=>ttf("status",v)}
+              options={[{value:"Aktif",label:"Aktif"},{value:"Baru",label:"Baru (trial)"},{value:"Non-Aktif",label:"Non-Aktif"}]} />
+            <Input label="Catatan" value={tambahTokoForm.catatan||""} onChange={v=>ttf("catatan",v)}
+              type="textarea" placeholder="Opsional" />
+            <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
+              <Btn variant="secondary" onClick={()=>setTambahTokoModal(false)}>Batal</Btn>
+              <Btn onClick={submitTambahToko}>✅ Simpan Toko</Btn>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* Filter: Wilayah → Rute → Bulan */}}
       <FilterBar filters={[
         { key:"bulan",     label:"Bulan",    value:filter.bulan,     type:"month", placeholder:"2026-06" },
         { key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts },
@@ -2171,6 +2548,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
                           setModalFilter({ wilayahId: wilayah?.id||"", ruteId: rute.id });
                           setModal("add");
                         }}>Tambah</Btn>
+                        <Btn size="sm" variant="secondary" icon="🏷️" onClick={() => openEditStatusModal(toko)}>
+                          Status
+                        </Btn>
                         {toko.status !== "Non-Aktif" && (
                           <Btn size="sm" variant="danger" icon="🔴" onClick={() => openTokoStatusModal(toko)}>
                             Tarik Toko
@@ -4057,6 +4437,15 @@ export default function GWGSuperApp() {
       setActiveTab("dashboard");
     }
   }, [activeTab, isAdmin, isManajer]);
+
+  // Auto-upgrade toko "Baru" → "Aktif" setelah 30 hari sejak tanggalMasuk
+  // Dijalankan sekali saat data cloud sudah selesai dimuat.
+  const autoUpgradeDone = useRef(false);
+  useEffect(() => {
+    if (!cloudLoaded || autoUpgradeDone.current) return;
+    autoUpgradeDone.current = true;
+    autoUpgradeBaruToAktif(db, updateRecord);
+  }, [cloudLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleLoginGoogle = async () => {
     setLoginError("");
