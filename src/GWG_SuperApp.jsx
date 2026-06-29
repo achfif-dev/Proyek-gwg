@@ -2580,7 +2580,7 @@ function TabRekap({ db, analytics }) {
 // ─────────────────────────────────────────────
 //  TAB PENGGUNA
 // ─────────────────────────────────────────────
-function TabPengguna({ db, addRecord, updateRecord, deleteRecord }) {
+function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", email:"", role:"Sales", wilayahId:"" });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
@@ -2637,6 +2637,15 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord }) {
           <Btn onClick={openAdd} icon="＋">Tambah Pengguna</Btn>
         </div>
       </div>
+      {isEmergencyAdmin && (
+        <div style={{ background:T.redLt, border:`1.5px solid #FCA5A5`, borderRadius:10, padding:"12px 16px",
+          marginBottom:16, fontSize:13, color:T.red, lineHeight:1.6, fontWeight:600 }}>
+          🚨 Sistem mendeteksi tidak ada satupun pengguna dengan role <b>Admin</b> di database — Anda
+          diberi akses Admin <b>sementara</b> agar bisa memperbaiki ini. Segera ubah role akun Anda
+          (atau pengguna lain yang tepat) kembali menjadi <b>Admin</b> di tabel di bawah, supaya akses
+          Admin permanen tidak hilang lagi.
+        </div>
+      )}
       <div style={{ background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:10, padding:"10px 14px",
         marginBottom:16, fontSize:12, color:T.gray600, lineHeight:1.6 }}>
         ℹ️ Akun Google baru yang login otomatis menjadi role <b>Sales</b>. Admin atau Manajer dapat
@@ -2789,12 +2798,59 @@ export default function GWGSuperApp() {
 
   // Cari role user yang login berdasarkan email di tabel pengguna
   const currentUserRecord = user ? db.pengguna.find(p => p.email?.toLowerCase() === user.email?.toLowerCase()) : null;
-  // Jika tabel pengguna masih kosong (belum ada satupun yang ditambahkan),
-  // anggap orang yang login sekarang sebagai Admin sementara, supaya dia bisa
-  // membuka tab Pengguna dan menambahkan dirinya + tim secara permanen.
-  // Setelah ada minimal 1 baris di tabel pengguna, aturan ini tidak berlaku lagi.
-  const isBootstrapAdmin = (db.pengguna||[]).length === 0;
-  const userRole = currentUserRecord?.role || (isBootstrapAdmin ? "Admin" : "Sales"); // default Sales jika tidak ditemukan
+
+  // BOOTSTRAP ADMIN: jika tabel pengguna masih kosong, orang yang login sekarang
+  // harus PERMANEN didaftarkan sebagai Admin (bukan cuma status sementara di memori).
+  // Sebelumnya status Admin ini hanya logika "jika tabel kosong → anggap Admin", yang
+  // berarti begitu ADA baris lain di tabel (atau baris admin ini terhapus), status
+  // bootstrap ini hilang dan TIDAK ADA cara lagi membuat Admin baru — semua orang
+  // (termasuk yang login pertama) jatuh ke default "Sales" dan terkunci dari tab
+  // Pengguna untuk memperbaikinya. Dengan auto-simpan ke tabel di bawah, baris Admin
+  // pertama ini permanen tersimpan di database sejak awal sehingga tidak bisa hilang
+  // hanya karena ada penambahan/penghapusan pengguna lain.
+  const bootstrapDone = useRef(false);
+  useEffect(() => {
+    if (!user || bootstrapDone.current) return;
+    const tabelMasihKosong = (db.pengguna||[]).length === 0;
+    const belumTerdaftar = !currentUserRecord;
+    if (tabelMasihKosong && belumTerdaftar) {
+      bootstrapDone.current = true; // cegah panggilan ganda selama addRecord belum sinkron
+      addRecord("pengguna", {
+        id: genId("U", db.pengguna),
+        nama: user.displayName || user.email,
+        email: user.email,
+        role: "Admin",
+        wilayahId: "",
+      });
+    }
+  }, [user, db.pengguna, currentUserRecord, addRecord]);
+
+  // Selama proses penyimpanan baris Admin pertama di atas belum selesai (delay
+  // sinkron Firebase/localStorage), tetap anggap pengguna ini Admin agar tidak
+  // ada momen "jatuh ke Sales" sesaat sebelum baris tersimpan.
+  const isBootstrapAdmin = (db.pengguna||[]).length === 0 || (bootstrapDone.current && !currentUserRecord);
+
+  // JALUR DARURAT ANTI-DEADLOCK: jika tabel pengguna SUDAH berisi data, tapi
+  // TIDAK ADA satupun baris dengan role "Admin" (misalnya baris Admin pertama
+  // sempat terhapus/hilang), sistem akan terkunci selamanya karena tab Pengguna
+  // cuma bisa dibuka Admin — tidak ada Admin berarti tidak ada yang bisa
+  // memperbaikinya lagi. Untuk mencegah hal ini, siapapun yang login saat
+  // kondisi ini terjadi otomatis diberi akses Admin sementara, supaya dia bisa
+  // membuka tab Pengguna dan menetapkan ulang Admin yang benar.
+  const tidakAdaAdminSamaSekali = (db.pengguna||[]).length > 0 && !(db.pengguna||[]).some(p => p.role === "Admin");
+  const isEmergencyAdmin = tidakAdaAdminSamaSekali;
+
+  // PENTING: jika sistem sedang dalam kondisi darurat (bootstrap atau tidak ada
+  // Admin sama sekali), status Admin sementara ini HARUS menang meskipun baris
+  // pengguna ini sudah tercatat sebagai "Sales" di tabel — karena itulah skenario
+  // deadlock yang sebenarnya terjadi (akun pertama sempat tercatat/jatuh jadi
+  // Sales, sehingga currentUserRecord?.role akan selalu "Sales" dan tidak pernah
+  // memberi kesempatan perbaikan). Role Admin/Manajer yang SUDAH tercatat tetap
+  // dihormati dan tidak pernah diturunkan oleh logika ini.
+  const daruratAktif = isBootstrapAdmin || isEmergencyAdmin;
+  const userRole = (daruratAktif && currentUserRecord?.role !== "Admin" && currentUserRecord?.role !== "Manajer")
+    ? "Admin"
+    : (currentUserRecord?.role || "Sales"); // default Sales jika tidak ditemukan & tidak darurat
   const isAdmin = userRole === "Admin";
   const isManajer = userRole === "Manajer" || isAdmin;
 
@@ -2865,8 +2921,8 @@ export default function GWGSuperApp() {
                       {user.displayName?.split(" ")[0]}
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400 }}>
                         ☁️ {syncing ? "Sinkronisasi..." : "Sinkron aktif"} ·{" "}
-                        <span style={{ background:"rgba(255,255,255,.2)", borderRadius:4, padding:"0 5px", fontWeight:700 }}>
-                          {userRole}
+                        <span style={{ background: daruratAktif ? "#DC2626" : "rgba(255,255,255,.2)", borderRadius:4, padding:"0 5px", fontWeight:700 }}>
+                          {userRole}{daruratAktif && " ⚠️"}
                         </span>
                       </div>
                     </div>
@@ -2925,7 +2981,7 @@ export default function GWGSuperApp() {
         {activeTab==="produk"    && canAccessTab("produk",   { isAdmin, isManajer }) && <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
         {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
         {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} />}
-        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
+        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} />}
       </div>
 
       {/* RESET CONFIRM */}
