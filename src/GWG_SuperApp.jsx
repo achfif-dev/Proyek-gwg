@@ -743,6 +743,69 @@ function Input({ label, value, onChange, type="text", placeholder="", required, 
   );
 }
 
+// Dropdown dengan kotak pencarian di dalamnya — dipakai untuk Wilayah/Rute
+// yang opsinya bisa banyak, agar lebih mudah mencari saat input data.
+function SearchableSelect({ label, value, onChange, options, required, placeholder="Cari...", hint, disabled }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const boxRef = useRef(null);
+
+  useEffect(() => {
+    function handleClickOutside(e) {
+      if (boxRef.current && !boxRef.current.contains(e.target)) { setOpen(false); setQ(""); }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  const selected = options.find(o => o.value === value);
+  const filtered = q
+    ? options.filter(o => o.label.toLowerCase().includes(q.toLowerCase()))
+    : options;
+
+  const s = { width:"100%", padding:"9px 12px", border:`1.5px solid ${T.gray200}`,
+    borderRadius:8, fontSize:13, fontFamily:"inherit", outline:"none",
+    background: disabled ? T.gray50 : T.white, boxSizing:"border-box", color:T.gray800,
+    cursor: disabled ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"space-between" };
+
+  return (
+    <div style={{ marginBottom:14, position:"relative" }} ref={boxRef}>
+      <label style={{ display:"block", fontSize:12, fontWeight:600, color:T.gray600, marginBottom:5 }}>
+        {label}{required && <span style={{ color:T.red }}> *</span>}
+      </label>
+      <div style={s} onClick={()=>{ if(!disabled){ setOpen(o=>!o); } }}>
+        <span style={{ color: selected ? T.gray800 : T.gray400 }}>{selected ? selected.label : "— Pilih —"}</span>
+        <span style={{ color:T.gray400, fontSize:11 }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && !disabled && (
+        <div style={{ position:"absolute", top:"100%", left:0, right:0, marginTop:4, background:T.white,
+          border:`1.5px solid ${T.gray200}`, borderRadius:8, boxShadow:"0 8px 24px rgba(0,0,0,.12)",
+          zIndex:50, maxHeight:260, overflow:"hidden", display:"flex", flexDirection:"column" }}>
+          <div style={{ padding:8, borderBottom:`1px solid ${T.gray100}` }}>
+            <input autoFocus value={q} onChange={e=>setQ(e.target.value)} placeholder={placeholder}
+              style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                borderRadius:7, fontSize:12, fontFamily:"inherit", outline:"none", boxSizing:"border-box" }} />
+          </div>
+          <div style={{ overflowY:"auto" }}>
+            {filtered.length === 0 ? (
+              <div style={{ padding:"12px", fontSize:12, color:T.gray400, textAlign:"center" }}>Tidak ditemukan</div>
+            ) : filtered.map(o => (
+              <div key={o.value} onClick={()=>{ onChange(o.value); setOpen(false); setQ(""); }}
+                style={{ padding:"9px 12px", fontSize:13, cursor:"pointer", color:T.gray800,
+                  background: o.value===value ? T.greenLt : T.white }}
+                onMouseEnter={e=>e.currentTarget.style.background=T.gray50}
+                onMouseLeave={e=>e.currentTarget.style.background = o.value===value ? T.greenLt : T.white}>
+                {o.label}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {hint && <div style={{ fontSize:11, color:T.gray400, marginTop:3 }}>{hint}</div>}
+    </div>
+  );
+}
+
 function Modal({ title, children, onClose, width=480 }) {
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", zIndex:1000,
@@ -890,6 +953,18 @@ function genId(prefix, arr) {
   return `${prefix}${String(next).padStart(3,"0")}`;
 }
 
+// Normalisasi teks untuk perbandingan duplikat: lowercase + trim +
+// rapikan spasi ganda, supaya "Toko  Barokah" dan "toko barokah" terdeteksi sama.
+function normTxt(s) {
+  return String(s||"").trim().toLowerCase().replace(/\s+/g," ");
+}
+// Sort alfabetis (case-insensitive, locale Indonesia) — dipakai supaya
+// Master Wilayah, Master Rute, dan Master Toko selalu terurut otomatis
+// walau ada penambahan data baru di kemudian hari.
+function sortByNama(arr, key="nama") {
+  return [...(arr||[])].sort((a,b) => String(a[key]||"").localeCompare(String(b[key]||""), "id", { sensitivity:"base" }));
+}
+
 // ─────────────────────────────────────────────
 //  TAB WILAYAH
 // ─────────────────────────────────────────────
@@ -899,9 +974,13 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
   const [filter, setFilter] = useState({ q:"" });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
-  const data = useMemo(() => (db.wilayah||[]).filter(w =>
+  // Urutkan Master Wilayah berdasarkan abjad nama wilayah, otomatis
+  // mengikutkan data baru kapan pun ditambahkan.
+  const sorted = useMemo(() => sortByNama(db.wilayah), [db.wilayah]);
+
+  const data = useMemo(() => sorted.filter(w =>
     !filter.q || w.nama.toLowerCase().includes(filter.q.toLowerCase())
-  ), [db.wilayah, filter]);
+  ), [sorted, filter]);
 
   const enriched = data.map(w => ({
     ...w,
@@ -916,6 +995,15 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
   function openEdit(row) { setForm({ ...row }); setModal("edit"); }
   function submit() {
     if (!form.nama) return alert("Nama wajib diisi");
+    // Validasi duplikat: nama wilayah yang sama (tidak case-sensitive, abaikan spasi
+    // berlebih) dengan data yang sudah ada tidak boleh disimpan.
+    const isDup = (db.wilayah||[]).some(w =>
+      normTxt(w.nama) === normTxt(form.nama) && w.id !== form.id
+    );
+    if (isDup) {
+      alert(`⚠️ Nama wilayah "${form.nama}" sudah ada di data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama wilayah yang berbeda.`);
+      return;
+    }
     if (modal==="add") addRecord("wilayah", { ...form, id:genId("WIL-",db.wilayah) });
     else updateRecord("wilayah", form.id, form);
     setModal(null);
@@ -934,7 +1022,7 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📍 Master Wilayah</div>
-          <div style={{ fontSize:12, color:T.gray400 }}>{(db.wilayah||[]).length} wilayah terdaftar</div>
+          <div style={{ fontSize:12, color:T.gray400 }}>{(db.wilayah||[]).length} wilayah terdaftar · terurut abjad</div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
           <ExportMenu data={enriched} columns={cols} title="Data Wilayah" filename="wilayah" />
@@ -976,21 +1064,38 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
     jumlahToko: (db.toko||[]).filter(t=>t.ruteId===r.id).length,
   })), [db]);
 
-  const data = useMemo(() => enriched.filter(r =>
+  // Urutkan Master Rute berdasarkan Wilayah dahulu (abjad), lalu Nama Rute (abjad).
+  // Otomatis berlaku untuk rute baru yang ditambahkan kapan pun.
+  const sorted = useMemo(() => [...enriched].sort((a,b) => {
+    const wCompare = a.wilayahNama.localeCompare(b.wilayahNama, "id", { sensitivity:"base" });
+    if (wCompare !== 0) return wCompare;
+    return a.nama.localeCompare(b.nama, "id", { sensitivity:"base" });
+  }), [enriched]);
+
+  const data = useMemo(() => sorted.filter(r =>
     (!filter.q || r.nama.toLowerCase().includes(filter.q.toLowerCase())) &&
     (!filter.wilayahId || r.wilayahId===filter.wilayahId)
-  ), [enriched, filter]);
+  ), [sorted, filter]);
 
   function openAdd() { setForm({ nama:"", wilayahId:"", keterangan:"" }); setModal("add"); }
   function openEdit(row) { setForm({ ...row }); setModal("edit"); }
   function submit() {
     if (!form.nama || !form.wilayahId) return alert("Nama & Wilayah wajib diisi");
+    // Validasi duplikat: nama rute yang sama (tidak case-sensitive) DI DALAM
+    // wilayah yang sama dengan data yang sudah ada tidak boleh disimpan.
+    const isDup = (db.rute||[]).some(r =>
+      normTxt(r.nama) === normTxt(form.nama) && r.wilayahId === form.wilayahId && r.id !== form.id
+    );
+    if (isDup) {
+      alert(`⚠️ Nama rute "${form.nama}" sudah ada di wilayah ini pada data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama rute yang berbeda.`);
+      return;
+    }
     if (modal==="add") addRecord("rute", { ...form, id:genId("RTE-",db.rute) });
     else updateRecord("rute", form.id, form);
     setModal(null);
   }
 
-  const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
+  const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
 
   const cols = [
     { key:"id",          label:"ID",         render:v=><Badge color={T.teal}>{v}</Badge> },
@@ -1005,7 +1110,7 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🛣️ Master Rute</div>
-          <div style={{ fontSize:12, color:T.gray400 }}>{(db.rute||[]).length} rute aktif</div>
+          <div style={{ fontSize:12, color:T.gray400 }}>{(db.rute||[]).length} rute aktif · terurut per wilayah & abjad</div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
           <ExportMenu data={data} columns={cols} title="Data Rute" filename="rute" />
@@ -1023,7 +1128,7 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
       {modal && (
         <Modal title={modal==="add"?"Tambah Rute":"Edit Rute"} onClose={()=>setModal(null)}>
           <Input label="Nama Rute" value={form.nama} onChange={v=>f("nama",v)} required placeholder="cth: Rute Utara A" />
-          <Input label="Wilayah" value={form.wilayahId} onChange={v=>f("wilayahId",v)} options={wilayahOpts} required />
+          <SearchableSelect label="Wilayah" value={form.wilayahId} onChange={v=>f("wilayahId",v)} options={wilayahOpts} required placeholder="Cari wilayah..." />
           <Input label="Keterangan" value={form.keterangan} onChange={v=>f("keterangan",v)} type="textarea" />
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
@@ -1052,12 +1157,16 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
     return { ...t, ruteNama:rute?.nama||"—", wilayahNama:wilayah?.nama||"—", wilayahId:wilayah?.id||"" };
   }), [db]);
 
-  const data = useMemo(() => enriched.filter(t =>
+  // Urutkan Master Toko berdasarkan abjad Nama Toko sebagai default,
+  // agar lebih mudah dicari/diinput meski data terus bertambah.
+  const sorted = useMemo(() => sortByNama(enriched), [enriched]);
+
+  const data = useMemo(() => sorted.filter(t =>
     (!filter.q || t.nama.toLowerCase().includes(filter.q.toLowerCase()) || t.kode?.toLowerCase().includes(filter.q.toLowerCase())) &&
     (!filter.ruteId || t.ruteId===filter.ruteId) &&
     (!filter.wilayahId || t.wilayahId===filter.wilayahId) &&
     (!filter.status || t.status===filter.status)
-  ), [enriched, filter]);
+  ), [sorted, filter]);
 
   const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
 
@@ -1072,6 +1181,15 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   }
   function submit() {
     if (!form.nama || !form.ruteId) return alert("Nama & Rute wajib diisi");
+    // Validasi duplikat toko: nama toko yang sama (tidak case-sensitive) DI
+    // DALAM rute yang sama dengan data yang sudah ada tidak boleh disimpan.
+    const isDup = (db.toko||[]).some(t =>
+      normTxt(t.nama) === normTxt(form.nama) && t.ruteId === form.ruteId && t.id !== form.id
+    );
+    if (isDup) {
+      alert(`⚠️ Nama toko "${form.nama}" sudah terdaftar di rute ini pada data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama toko yang berbeda (atau periksa kembali apakah ini toko duplikat).`);
+      return;
+    }
     const ruteObj = (db.rute||[]).find(r=>r.id===form.ruteId);
     const prefix = ruteObj ? "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-" : "GW-XXX-";
     const produkFlags = {};
@@ -1105,11 +1223,20 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
     setStokModal(false);
   }
 
-  const ruteOpts = (db.rute||[]).map(r => {
-    const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
-    return { value:r.id, label:`${r.nama} (${w?.nama||"?"})` };
-  });
-  const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
+  // Opsi Rute & Wilayah diurutkan per wilayah lalu nama rute (abjad),
+  // dan nama wilayah (abjad), agar mudah dicari di dropdown pencarian.
+  const ruteOpts = useMemo(() => {
+    const list = (db.rute||[]).map(r => {
+      const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
+      return { value:r.id, label:`${r.nama} (${w?.nama||"?"})`, wilayahNama:w?.nama||"", ruteNama:r.nama };
+    });
+    return list.sort((a,b) => {
+      const wCompare = a.wilayahNama.localeCompare(b.wilayahNama, "id", { sensitivity:"base" });
+      if (wCompare !== 0) return wCompare;
+      return a.ruteNama.localeCompare(b.ruteNama, "id", { sensitivity:"base" });
+    });
+  }, [db.rute, db.wilayah]);
+  const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
 
   // Import Toko dari Excel
   function importTokoFromRows(rows) {
@@ -1123,6 +1250,10 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       if (!nama || !ruteNama) { errors.push(`Baris ${rowNum}: Nama Toko & Rute wajib diisi`); skipped++; return; }
       const ruteObj = (db.rute||[]).find(r => r.nama.toLowerCase() === ruteNama.toLowerCase());
       if (!ruteObj) { errors.push(`Baris ${rowNum}: Rute "${ruteNama}" tidak ditemukan di Master Rute`); skipped++; return; }
+      // Validasi duplikat toko saat import: nama toko sama dalam rute yang sama
+      // (baik sudah ada di data sebelumnya, maupun duplikat antar baris import ini).
+      const isDup = newToko.some(t => normTxt(t.nama) === normTxt(nama) && t.ruteId === ruteObj.id);
+      if (isDup) { errors.push(`Baris ${rowNum}: Toko "${nama}" sudah ada (duplikat) di rute "${ruteObj.nama}"`); skipped++; return; }
       let status = String(row["Status"] ?? "Aktif").trim();
       if (!["Aktif","Non-Aktif","Baru"].includes(status)) status = "Aktif";
       const catatan = String(row["Catatan"] ?? "").trim();
@@ -1155,7 +1286,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🏪 Master Toko</div>
-          <div style={{ fontSize:12, color:T.gray400 }}>{(db.toko||[]).length} toko · {(db.toko||[]).filter(t=>t.status==="Aktif").length} aktif</div>
+          <div style={{ fontSize:12, color:T.gray400 }}>{(db.toko||[]).length} toko · {(db.toko||[]).filter(t=>t.status==="Aktif").length} aktif · terurut abjad</div>
         </div>
         <div style={{ display:"flex", gap:8 }}>
           <ImportMenu label="Import Toko" onTemplate={()=>downloadTokoTemplate(db)} onParseRows={importTokoFromRows} />
@@ -1164,7 +1295,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         </div>
       </div>
       <FilterBar filters={[
-        { key:"q",        label:"Cari Toko / Kode", value:filter.q },
+        { key:"q",        label:"Cari Nama Toko / Kode", value:filter.q, placeholder:"Ketik untuk mencari..." },
         { key:"wilayahId",label:"Wilayah",          value:filter.wilayahId, options:wilayahOpts },
         { key:"ruteId",   label:"Rute",             value:filter.ruteId,    options:ruteOpts },
         { key:"status",   label:"Status",           value:filter.status,    options:[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"}] },
@@ -1176,7 +1307,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       {/* Tombol Update Stok per baris */}
       {data.length > 0 && (
         <div style={{ marginTop:10 }}>
-          <div style={{ fontSize:12, color:T.gray400, marginBottom:8 }}>💡 Klik toko untuk update stok awal:</div>
+          <div style={{ fontSize:12, color:T.gray400, marginBottom:8 }}>💡 Klik toko untuk update stok awal (terurut abjad):</div>
           <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
             {data.map(t => (
               <Btn key={t.id} variant="secondary" size="sm" icon="📦" onClick={()=>openStok(t)}>
@@ -1190,7 +1321,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       {modal && (
         <Modal title={modal==="add"?"Tambah Toko":"Edit Toko"} onClose={()=>setModal(null)}>
           <Input label="Nama Toko" value={form.nama} onChange={v=>f("nama",v)} required placeholder="cth: Toko Barokah" />
-          <Input label="Rute" value={form.ruteId} onChange={v=>f("ruteId",v)} options={ruteOpts} required />
+          <SearchableSelect label="Rute" value={form.ruteId} onChange={v=>f("ruteId",v)} options={ruteOpts} required placeholder="Cari rute / wilayah..." />
           <Input label="Status" value={form.status} onChange={v=>f("status",v)}
             options={[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"},{value:"Baru",label:"Baru"}]} />
           <div style={{ marginBottom:14 }}>
@@ -3238,9 +3369,10 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdm
       )}
       <div style={{ background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:10, padding:"10px 14px",
         marginBottom:16, fontSize:12, color:T.gray600, lineHeight:1.6 }}>
-        ℹ️ Akun Google baru yang login otomatis menjadi role <b>Sales</b>. Admin atau Manajer dapat
-        mengubah role pengguna (Admin/Manajer/Sales/Viewer) lewat tabel di bawah. Role <b>Sales</b> hanya
-        bisa mengakses tab Dashboard, Kontrol, dan Rekap; tab ini (Pengguna) khusus untuk <b>Admin</b>.
+        ℹ️ Akun Google baru yang login langsung muncul otomatis di tabel di bawah dengan role <b>Sales</b> —
+        tidak perlu input manual nama/email. Admin atau Manajer cukup ubah role-nya (Admin/Manajer/Sales/Viewer)
+        lewat tombol edit. Role <b>Sales</b> hanya bisa mengakses tab Dashboard, Kontrol, dan Rekap; tab ini
+        (Pengguna) khusus untuk <b>Admin</b>.
       </div>
       <Card padding={0}>
         <Table columns={cols} data={db.pengguna||[]} onEdit={openEdit}
@@ -3391,18 +3523,24 @@ export default function GWGSuperApp() {
   // Cari role user yang login berdasarkan email di tabel pengguna
   const currentUserRecord = user ? db.pengguna.find(p => p.email?.toLowerCase() === user.email?.toLowerCase()) : null;
 
-  // BOOTSTRAP ADMIN: jika tabel pengguna masih kosong, orang yang login sekarang
-  // harus PERMANEN didaftarkan sebagai Admin (bukan cuma status sementara di memori).
-  // Sebelumnya status Admin ini hanya logika "jika tabel kosong → anggap Admin", yang
-  // berarti begitu ADA baris lain di tabel (atau baris admin ini terhapus), status
-  // bootstrap ini hilang dan TIDAK ADA cara lagi membuat Admin baru — semua orang
-  // (termasuk yang login pertama) jatuh ke default "Sales" dan terkunci dari tab
-  // Pengguna untuk memperbaikinya. Dengan auto-simpan ke tabel di bawah, baris Admin
-  // pertama ini permanen tersimpan di database sejak awal sehingga tidak bisa hilang
-  // hanya karena ada penambahan/penghapusan pengguna lain.
+  // BOOTSTRAP ADMIN & AUTO-DAFTAR PENGGUNA BARU:
+  // 1) Jika tabel pengguna masih kosong, orang yang login sekarang PERMANEN
+  //    didaftarkan sebagai Admin (bukan cuma status sementara di memori).
+  //    Tanpa auto-simpan ini, status Admin hanya berlaku selama tabel kosong —
+  //    begitu ada baris lain (atau baris ini terhapus), tidak ada lagi cara
+  //    membuat Admin baru karena semua orang jatuh ke default "Sales" dan
+  //    terkunci dari tab Pengguna untuk memperbaikinya.
+  // 2) Jika tabel SUDAH berisi data tapi email akun yang login belum ada di
+  //    tabel pengguna sama sekali (kasus: orang lain login dari perangkat
+  //    baru/akun Google baru), akun itu otomatis didaftarkan dengan role
+  //    "Sales" (role paling rendah/aman secara default). Dengan ini, Admin
+  //    tinggal membuka tab Pengguna dan mengubah role-nya lewat tabel — tidak
+  //    perlu lagi mengetik manual nama & email orang tersebut.
   const bootstrapDone = useRef(false);
+  const bootstrapJadiAdmin = useRef(false); // true hanya jika bootstrap ini untuk Admin pertama (tabel kosong)
+  const autoDaftarSet = useRef(new Set()); // cegah auto-daftar dobel untuk email yang sama selagi addRecord belum sinkron
   useEffect(() => {
-    if (!user || bootstrapDone.current) return;
+    if (!user || !cloudLoaded) return;
     // PENTING: jangan jalankan pengecekan ini sebelum data dari Firebase (cloud)
     // benar-benar selesai diterima minimal sekali. Tanpa penundaan ini, dua
     // perangkat yang login hampir bersamaan bisa SAMA-SAMA melihat db.pengguna
@@ -3410,11 +3548,16 @@ export default function GWGSuperApp() {
     // snapshot cloud turun) dan masing-masing menambahkan dirinya sendiri
     // sebagai Admin baru → muncul 2 baris Admin di satu perangkat dan baris
     // yang berbeda di perangkat lain, padahal harusnya satu data yang sama.
-    if (!cloudLoaded) return;
+    if (currentUserRecord) return; // sudah terdaftar, tidak perlu apa-apa
+
     const tabelMasihKosong = (db.pengguna||[]).length === 0;
-    const belumTerdaftar = !currentUserRecord;
-    if (tabelMasihKosong && belumTerdaftar) {
+    const emailKey = user.email?.toLowerCase();
+    if (!emailKey || autoDaftarSet.current.has(emailKey)) return;
+
+    if (tabelMasihKosong && !bootstrapDone.current) {
       bootstrapDone.current = true; // cegah panggilan ganda selama addRecord belum sinkron
+      bootstrapJadiAdmin.current = true;
+      autoDaftarSet.current.add(emailKey);
       addRecord("pengguna", {
         id: genId("U", db.pengguna),
         nama: user.displayName || user.email,
@@ -3422,13 +3565,26 @@ export default function GWGSuperApp() {
         role: "Admin",
         wilayahId: "",
       });
+    } else if (!tabelMasihKosong) {
+      // Akun baru yang belum pernah login sebelumnya → daftarkan otomatis
+      // sebagai Sales supaya langsung muncul di tabel Pengguna.
+      autoDaftarSet.current.add(emailKey);
+      addRecord("pengguna", {
+        id: genId("U", db.pengguna),
+        nama: user.displayName || user.email,
+        email: user.email,
+        role: "Sales",
+        wilayahId: "",
+      });
     }
   }, [user, db.pengguna, currentUserRecord, addRecord, cloudLoaded]);
 
   // Selama proses penyimpanan baris Admin pertama di atas belum selesai (delay
   // sinkron Firebase/localStorage), tetap anggap pengguna ini Admin agar tidak
-  // ada momen "jatuh ke Sales" sesaat sebelum baris tersimpan.
-  const isBootstrapAdmin = (db.pengguna||[]).length === 0 || (bootstrapDone.current && !currentUserRecord);
+  // ada momen "jatuh ke Sales" sesaat sebelum baris tersimpan. Khusus untuk
+  // skenario tabel kosong (Admin pertama) — BUKAN untuk akun yang auto-terdaftar
+  // sebagai Sales, supaya akun baru itu tidak salah dapat akses Admin sementara.
+  const isBootstrapAdmin = (db.pengguna||[]).length === 0 || (bootstrapJadiAdmin.current && !currentUserRecord);
 
   // JALUR DARURAT ANTI-DEADLOCK: jika tabel pengguna SUDAH berisi data, tapi
   // TIDAK ADA satupun baris dengan role "Admin" (misalnya baris Admin pertama
