@@ -155,8 +155,23 @@ function arrToMap(arr) {
 // UI yang masih mengasumsikan bentuk array seperti semula.
 function mapToArr(map) {
   if (!map) return [];
-  if (Array.isArray(map)) return map.filter(Boolean); // jaga-jaga data lama format array
+  if (Array.isArray(map)) {
+    // Dedup by id untuk menghindari entri dobel dari data lama format array
+    const seen = new Set();
+    return map.filter(r => r && r.id != null && !seen.has(r.id) && seen.add(r.id));
+  }
   return Object.values(map);
+}
+
+// Encode email menjadi key Firebase yang valid (tidak boleh ada ., #, $, [, ], /)
+function encodeEmailKey(email) {
+  return (email || "").toLowerCase().replace(/\./g, "_dot_").replace(/@/g, "_at_").replace(/[#$\[\]/]/g, "_");
+}
+// Kebalikan dari encodeEmailKey, untuk ditampilkan kembali sebagai email asli di UI.
+// Catatan: karakter selain titik dan @ yang di-escape jadi "_" tidak bisa
+// direkonstruksi sempurna, tapi ini cukup untuk kasus email pada umumnya.
+function decodeEmailKey(key) {
+  return (key || "").replace(/_dot_/g, ".").replace(/_at_/g, "@");
 }
 
 // Memicu unduhan file JSON ke perangkat pengguna (dipakai fitur Backup).
@@ -194,6 +209,7 @@ function useDB(user) {
   // tidak perlu menulis ulang tabel yang tidak berubah.
   const remoteRef = useRef({}); // { wilayah: {...}, rute: {...}, ... , stokAwal: {...}, bagiHasilConfig: {...} }
   const basePathRef = useRef(null); // ref ke `gwg_data/shared`
+  const deletedUsersRef = useRef({}); // { "email_encoded": true } — email yang sengaja dihapus admin
 
   // Subscribe Firebase realtime jika user login — SATU listener PER PATH
   // (per tabel), bukan satu listener di root yang mendownload semuanya
@@ -252,6 +268,13 @@ function useDB(user) {
 
     const unsubs = [];
     migrateIfNeeded().finally(() => {
+      // Subscribe listener untuk daftar email yang sudah dihapus admin,
+      // agar auto-register tidak mendaftarkan ulang pengguna yang dihapus.
+      const deletedRef = ref(rtdb, `gwg_data/deletedUsers`);
+      const unsubDeleted = onValue(deletedRef, snap => {
+        deletedUsersRef.current = snap.val() || {};
+      });
+      unsubs.push(() => off(deletedRef));
       paths.forEach(key => {
         const r = ref(rtdb, `gwg_data/shared/${key}`);
         const unsub = onValue(r, snap => {
@@ -355,6 +378,27 @@ function useDB(user) {
       const nextArr = (prevDB[table]||[]).filter(r => r.id !== id);
       const next = { ...prevDB, [table]: nextArr };
       try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      // Jika menghapus pengguna, tandai emailnya di blacklist agar tidak
+      // auto-register ulang ketika pengguna tersebut refresh browser.
+      if (table === "pengguna") {
+        const deletedUser = (prevDB[table]||[]).find(r => r.id === id);
+        if (deletedUser?.email) {
+          const emailKey = encodeEmailKey(deletedUser.email);
+          // Tulis langsung ke path khusus di luar shared (bukan lewat pushUpdates)
+          if (firebaseDB && basePathRef.current) {
+            const { db: rtdb, ref: fbRef, set } = firebaseDB;
+            set(fbRef(rtdb, `gwg_data/deletedUsers/${emailKey}`), true).catch(console.warn);
+            // Update ref lokal segera agar cek langsung efektif
+            deletedUsersRef.current = { ...deletedUsersRef.current, [emailKey]: true };
+          }
+          // Simpan juga di localStorage sebagai fallback offline
+          try {
+            const localDeleted = JSON.parse(localStorage.getItem("gwg_deletedUsers") || "{}");
+            localDeleted[emailKey] = true;
+            localStorage.setItem("gwg_deletedUsers", JSON.stringify(localDeleted));
+          } catch {}
+        }
+      }
       pushUpdates({ [`${table}/${id}`]: null }); // null = hapus path ini saja di Firebase
       return next;
     });
@@ -477,7 +521,44 @@ function useDB(user) {
     pushUpdates(updates);
   }, [pushUpdates]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup };
+  // Ambil daftar email yang sedang diblokir (sudah dihapus admin) dari
+  // Firebase, supaya bisa ditampilkan & dikelola di UI Tab Pengguna.
+  const listDeletedUsers = useCallback(async () => {
+    if (!firebaseDB) {
+      // Mode lokal (tanpa Firebase): baca dari localStorage saja
+      try {
+        const local = JSON.parse(localStorage.getItem("gwg_deletedUsers") || "{}");
+        return Object.keys(local).map(key => ({ key, email: decodeEmailKey(key) }));
+      } catch { return []; }
+    }
+    try {
+      const { db: rtdb, ref, get } = firebaseDB;
+      const snap = await get(ref(rtdb, `gwg_data/deletedUsers`));
+      const all = snap.val() || {};
+      return Object.keys(all).map(key => ({ key, email: decodeEmailKey(key) }));
+    } catch (e) {
+      console.warn("Gagal memuat daftar email diblokir:", e);
+      return [];
+    }
+  }, []);
+
+  // Hapus satu email dari blacklist, supaya pengguna tsb bisa kembali
+  // ter-auto-register (sebagai Sales) saat login berikutnya.
+  const restoreDeletedUser = useCallback((emailKey) => {
+    if (firebaseDB) {
+      const { db: rtdb, ref, set } = firebaseDB;
+      set(ref(rtdb, `gwg_data/deletedUsers/${emailKey}`), null).catch(console.warn);
+    }
+    deletedUsersRef.current = { ...deletedUsersRef.current };
+    delete deletedUsersRef.current[emailKey];
+    try {
+      const local = JSON.parse(localStorage.getItem("gwg_deletedUsers") || "{}");
+      delete local[emailKey];
+      localStorage.setItem("gwg_deletedUsers", JSON.stringify(local));
+    } catch {}
+  }, []);
+
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser };
 }
 
 
@@ -4328,11 +4409,35 @@ function TabBagiHasil({ db, analytics, save }) {
 // ─────────────────────────────────────────────
 //  TAB PENGGUNA
 // ─────────────────────────────────────────────
-function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin }) {
+function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", email:"", role:"Sales", wilayahId:"" });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
   const ROLE_C = { Admin:T.red, Manajer:T.purple, Sales:T.green, Viewer:T.gray600 };
+
+  // Daftar email yang sedang diblokir (pernah dihapus admin sehingga tidak
+  // auto-register lagi). Dimuat sekali saat modal dibuka, dan setiap kali
+  // ada perubahan (pulihkan), supaya daftar tetap akurat.
+  const [showBlocked, setShowBlocked] = useState(false);
+  const [blockedList, setBlockedList] = useState([]);
+  const [blockedLoading, setBlockedLoading] = useState(false);
+
+  async function muatBlockedList() {
+    setBlockedLoading(true);
+    const list = await listDeletedUsers();
+    setBlockedList(list);
+    setBlockedLoading(false);
+  }
+
+  function openBlockedModal() {
+    setShowBlocked(true);
+    muatBlockedList();
+  }
+
+  function pulihkanEmail(key) {
+    restoreDeletedUser(key);
+    setBlockedList(prev => prev.filter(b => b.key !== key));
+  }
 
   const jumlahAdmin = (db.pengguna||[]).filter(p => p.role === "Admin").length;
 
@@ -4382,6 +4487,7 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdm
         </div>
         <div style={{ display:"flex", gap:8 }}>
           <ExportMenu data={db.pengguna||[]} columns={cols} title="Data Pengguna" filename="pengguna" />
+          <Btn variant="secondary" onClick={openBlockedModal} icon="🚫">Email Diblokir</Btn>
           <Btn onClick={openAdd} icon="＋">Tambah Pengguna</Btn>
         </div>
       </div>
@@ -4415,6 +4521,36 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdm
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
             <Btn onClick={submit}>{modal==="add"?"Simpan":"Update"}</Btn>
+          </div>
+        </Modal>
+      )}
+      {showBlocked && (
+        <Modal title="🚫 Email Diblokir" onClose={()=>setShowBlocked(false)} width={560}>
+          <div style={{ fontSize:12, color:T.gray600, lineHeight:1.6, marginBottom:16 }}>
+            Email di bawah ini pernah dihapus dari tabel Pengguna, sehingga <b>tidak akan
+            otomatis terdaftar ulang</b> walaupun pemiliknya login kembali dengan akun
+            Google yang sama. Klik <b>Pulihkan</b> untuk mengizinkan email tersebut
+            kembali ter-auto-register (sebagai role Sales) saat login berikutnya.
+          </div>
+          {blockedLoading ? (
+            <div style={{ textAlign:"center", padding:24, color:T.gray400, fontSize:13 }}>Memuat…</div>
+          ) : blockedList.length === 0 ? (
+            <div style={{ textAlign:"center", padding:24, color:T.gray400, fontSize:13 }}>
+              Tidak ada email yang diblokir saat ini.
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:8 }}>
+              {blockedList.map(b => (
+                <div key={b.key} style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+                  background:T.gray50, border:`1px solid ${T.gray200}`, borderRadius:10, padding:"10px 14px" }}>
+                  <span style={{ fontSize:13, color:T.gray800, wordBreak:"break-all" }}>{b.email}</span>
+                  <Btn size="sm" variant="secondary" onClick={()=>pulihkanEmail(b.key)}>Pulihkan</Btn>
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display:"flex", justifyContent:"flex-end", marginTop:16 }}>
+            <Btn variant="secondary" onClick={()=>setShowBlocked(false)}>Tutup</Btn>
           </div>
         </Modal>
       )}
@@ -4552,8 +4688,20 @@ export default function GWGSuperApp() {
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [loginError, setLoginError] = useState("");
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup } = useDB(user);
+  const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
+
+  // ── Favicon: pasang logo GWG sebagai ikon tab browser ──────────────────
+  useEffect(() => {
+    let link = document.querySelector("link[rel~='icon']");
+    if (!link) {
+      link = document.createElement("link");
+      link.rel = "icon";
+      document.head.appendChild(link);
+    }
+    link.href = GWG_LOGO_B64;
+    link.type = "image/png";
+  }, []);
 
   // Buka modal backup & langsung muat daftar backup cloud (kalau ada)
   const openBackupModal = useCallback(async () => {
@@ -4710,6 +4858,19 @@ export default function GWGSuperApp() {
     const tabelMasihKosong = (db.pengguna||[]).length === 0;
     const emailKey = user.email?.toLowerCase();
     if (!emailKey || autoDaftarSet.current.has(emailKey)) return;
+
+    // CEK BLACKLIST: jika email ini sudah pernah dihapus oleh Admin,
+    // JANGAN daftarkan ulang secara otomatis. Pengguna harus didaftarkan
+    // manual oleh Admin. Cek dari Firebase (realtime) dan localStorage (offline).
+    const encodedKey = encodeEmailKey(emailKey);
+    const isDeletedInFirebase = !!(deletedUsersRef.current[encodedKey]);
+    const isDeletedInLocal = (() => {
+      try {
+        const localDeleted = JSON.parse(localStorage.getItem("gwg_deletedUsers") || "{}");
+        return !!(localDeleted[encodedKey]);
+      } catch { return false; }
+    })();
+    if (isDeletedInFirebase || isDeletedInLocal) return; // akun ini sudah dihapus admin, skip auto-register
 
     if (tabelMasihKosong && !bootstrapDone.current) {
       bootstrapDone.current = true; // cegah panggilan ganda selama addRecord belum sinkron
@@ -4933,7 +5094,7 @@ export default function GWGSuperApp() {
         {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="bagihasil" && canAccessTab("bagihasil",{ isAdmin, isManajer }) && <TabBagiHasil db={db} analytics={analytics} save={save} />}
-        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} />}
+        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} />}
       </div>
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
