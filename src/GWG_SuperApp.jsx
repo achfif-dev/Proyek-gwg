@@ -34,6 +34,7 @@ const DB_EMPTY = {
   kontrol: [],
   pengguna: [],
   penyesuaian: [], // Penyesuaian Stok di luar siklus kontrol rutin (tambah/kurang/tarik sebagian)
+  penjualanLuar: [], // Penjualan Luar Rute: transaksi produk yang tokonya tidak diketahui/diingat sales saat kontrol
   stokAwal: {}, // { "tokoId_produkId_YYYY-MM": number }
   bagiHasilConfig: null, // konfigurasi bagi hasil
 };
@@ -144,7 +145,7 @@ function useAuth() {
 // supaya menambah/mengubah 1 toko tidak perlu mengirim ulang seluruh
 // database (wilayah+rute+toko+kontrol+...) setiap kali. Ini penting untuk
 // skala ribuan toko & data kontrol bulanan yang terus bertambah.
-const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna", "penyesuaian"];
+const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna", "penyesuaian", "penjualanLuar"];
 
 // Konversi array → objek ber-key id, untuk ditulis ke Firebase per-record.
 function arrToMap(arr) {
@@ -606,7 +607,23 @@ function useAnalytics(db) {
         ruteId: rute?.id||"", wilayahId: wilayah?.id||"" };
     });
 
-    const totalRev = enrichKontrol.reduce((s,k) => s + k.totalRev, 0);
+    // ✅ Penjualan Luar Rute: transaksi produk di luar kunjungan rute normal
+    // (rute lain saat itu, atau penjualan perorangan) di mana sales tidak
+    // tahu/lupa nama toko & rutenya. Tidak terikat ke toko manapun, tapi
+    // tetap dihitung sebagai pendapatan & laba perusahaan.
+    const enrichLuarRute = (db.penjualanLuar||[]).map(pl => {
+      let totalRev = 0, totalTerjual = 0, totalBonus = 0;
+      (db.produk||[]).forEach(p => {
+        const terjual = pl[`terjual_${p.id}`] || 0;
+        totalRev += terjual * (p.harga || 0);
+        totalTerjual += terjual;
+        totalBonus += Number(pl[`bonusInput_${p.id}`]||0);
+      });
+      return { ...pl, totalRev, totalTerjual, totalBonus };
+    });
+    const totalRevLuarRute = enrichLuarRute.reduce((s,k) => s + k.totalRev, 0);
+
+    const totalRev = enrichKontrol.reduce((s,k) => s + k.totalRev, 0) + totalRevLuarRute;
     const tokoAktif = (db.toko||[]).filter(t => t.status==="Aktif").length;
     const labaBersih = totalRev * 0.7;
 
@@ -635,8 +652,10 @@ function useAnalytics(db) {
 
     const produkStats = (db.produk||[]).map(p => ({
       ...p,
-      terjual: enrichKontrol.reduce((s,k) => s + (k[`terjual_${p.id}`]||0), 0),
-      rev: enrichKontrol.reduce((s,k) => s + (k[`terjual_${p.id}`]||0) * p.harga, 0),
+      terjual: enrichKontrol.reduce((s,k) => s + (k[`terjual_${p.id}`]||0), 0)
+        + enrichLuarRute.reduce((s,k) => s + (k[`terjual_${p.id}`]||0), 0),
+      rev: enrichKontrol.reduce((s,k) => s + (k[`terjual_${p.id}`]||0) * p.harga, 0)
+        + enrichLuarRute.reduce((s,k) => s + (k[`terjual_${p.id}`]||0) * p.harga, 0),
     }));
 
     const bagiHasil = [
@@ -646,7 +665,8 @@ function useAnalytics(db) {
       { nama:"Karyawan Pool", pct:0.10, tipe:"Laba", nominal: labaBersih*0.10 },
     ];
 
-    return { kontrol: enrichKontrol, totalRev, labaBersih, tokoAktif, perWilayah, perRute, produkStats, bagiHasil };
+    return { kontrol: enrichKontrol, penjualanLuar: enrichLuarRute, totalRevLuarRute,
+      totalRev, labaBersih, tokoAktif, perWilayah, perRute, produkStats, bagiHasil };
   }, [db]);
 }
 
@@ -2159,6 +2179,14 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   const [penyesuaianModal, setPenyesuaianModal] = useState(false);
   const [penyesuaianForm, setPenyesuaianForm] = useState(null); // null saat tertutup
   const pf = (k,v) => setPenyesuaianForm(p=>({...p,[k]:v}));
+  // ✅ Penjualan Luar Rute: sales menjual produk di luar kunjungan rute normal
+  // (mis. rute lain saat kontrol rute 1, atau penjualan perorangan) dan TIDAK
+  // tahu/lupa nama toko & rutenya. Dicatat terpisah dari Kontrol Bulanan
+  // (yang selalu mewajibkan toko & rute) supaya penjualan tetap tercatat &
+  // masuk laporan, tanpa memaksa sales mengarang nama toko/rute.
+  const [luarRuteModal, setLuarRuteModal] = useState(false);
+  const [luarRuteForm, setLuarRuteForm] = useState(null); // null saat tertutup
+  const lf = (k,v) => setLuarRuteForm(p=>({...p,[k]:v}));
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
 
@@ -2308,6 +2336,34 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     recalcTokoStok(pforn.tokoId, undefined, [...(db.penyesuaian||[]), newEntry]);
     setPenyesuaianModal(false);
     setPenyesuaianForm(null);
+  }
+
+  // ── Penjualan Luar Rute ──────────────────────────────────────────────
+  function openLuarRute() {
+    const today = new Date().toISOString().slice(0,10);
+    const initial = { tanggal:today, keterangan:"", dicatatOleh:"" };
+    produkAktif.forEach(p => { initial[`terjual_${p.id}`] = 0; initial[`bonusInput_${p.id}`] = 0; });
+    setLuarRuteForm(initial);
+    setLuarRuteModal(true);
+  }
+  function submitLuarRute() {
+    const lforn = luarRuteForm;
+    if (!lforn?.tanggal) return alert("Tanggal wajib diisi");
+    const adaTerjualLuar = produkAktif.some(p => Number(lforn[`terjual_${p.id}`]||0) > 0);
+    if (!adaTerjualLuar) return alert("Isi minimal 1 jumlah produk yang terjual");
+    const payload = { ...lforn };
+    produkAktif.forEach(p => {
+      payload[`terjual_${p.id}`] = Number(lforn[`terjual_${p.id}`]||0);
+      payload[`bonusInput_${p.id}`] = Number(lforn[`bonusInput_${p.id}`]||0);
+    });
+    const newId = genId("PLR", db.penjualanLuar);
+    addRecord("penjualanLuar", { ...payload, id:newId });
+    setLuarRuteModal(false);
+    setLuarRuteForm(null);
+  }
+  function deleteLuarRute(id) {
+    if (!confirm("Hapus catatan penjualan luar rute ini? Tindakan ini permanen.")) return;
+    deleteRecord("penjualanLuar", id);
   }
 
 
@@ -2792,6 +2848,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             setTambahTokoModal(true);
           }} icon="🏪">Tambah Toko</Btn>
           <Btn variant="secondary" onClick={()=>openPenyesuaian("")} icon="🔧">Penyesuaian Stok</Btn>
+          <Btn variant="secondary" onClick={openLuarRute} icon="🛣️">Penjualan Luar Rute</Btn>
           <Btn onClick={openAdd} icon="＋">Tambah Kontrol</Btn>
         </div>
       </div>
@@ -2882,6 +2939,65 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>{ setPenyesuaianModal(false); setPenyesuaianForm(null); }}>Batal</Btn>
             <Btn onClick={submitPenyesuaian}>✅ Simpan Penyesuaian</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {/* Modal Penjualan Luar Rute (toko/rute tidak diketahui sales) */}
+      {luarRuteModal && luarRuteForm && (
+        <Modal title="🛣️ Penjualan Luar Rute" onClose={()=>{ setLuarRuteModal(false); setLuarRuteForm(null); }} width={560}>
+          <div style={{ fontSize:12, color:T.gray600, marginBottom:14, background:T.goldLt||"#FEF9E7",
+            border:`1px solid ${T.gold}55`, borderRadius:8, padding:"8px 12px" }}>
+            💡 Gunakan ini jika sales <b>menjual produk di luar rute kontrol saat itu</b> (rute lain pada waktu yang sama,
+            atau penjualan perorangan) dan <b>tidak tahu/lupa nama toko & rutenya</b>. Penjualan tetap tercatat &
+            masuk laporan pendapatan, tanpa terikat ke toko manapun.
+            Jika sales <b>tahu nama toko & rutenya</b>, gunakan tombol <b>＋ Tambah Kontrol</b> seperti biasa.
+          </div>
+          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <Input label="Tanggal" value={luarRuteForm.tanggal} onChange={v=>lf("tanggal",v)} type="date" required />
+            <Input label="Dicatat Oleh (sales)" value={luarRuteForm.dicatatOleh||""} onChange={v=>lf("dicatatOleh",v)} placeholder="Nama sales" />
+          </div>
+          <Input label="Keterangan (opsional)" value={luarRuteForm.keterangan||""} onChange={v=>lf("keterangan",v)}
+            type="textarea" placeholder="cth: dijual di rute 2 saat kontrol rute 1 / penjualan perorangan ke kenalan" />
+          <div style={{ marginTop:10, marginBottom:6, fontSize:12, fontWeight:600, color:T.gray600 }}>Jumlah Terjual & Bonus per Produk:</div>
+          <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:10, marginBottom:10 }}>
+            {produkAktif.map(p => {
+              const terjual = Number(luarRuteForm[`terjual_${p.id}`]||0);
+              return (
+                <div key={p.id} style={{ background:terjual>0?T.greenLt:T.gray50, borderRadius:10,
+                  padding:"12px", border:`1.5px solid ${terjual>0?T.green+"44":T.gray200}`, transition:"all .2s" }}>
+                  <div style={{ fontSize:12, fontWeight:800, color:T.gray800, marginBottom:10 }}>{p.nama}</div>
+                  <div style={{ marginBottom:8 }}>
+                    <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Terjual</div>
+                    <input type="number" value={luarRuteForm[`terjual_${p.id}`]||0}
+                      onChange={e=>lf(`terjual_${p.id}`,e.target.value)} min={0}
+                      style={{ width:"100%", padding:"6px 10px", border:`1.5px solid ${terjual>0?T.green:T.gray200}`,
+                        borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize:11, color:T.gold, marginBottom:3 }}>🎁 Bonus Produk (pcs)</div>
+                    <input type="number" value={luarRuteForm[`bonusInput_${p.id}`]||0}
+                      onChange={e=>lf(`bonusInput_${p.id}`,e.target.value)} min={0}
+                      style={{ width:"100%", padding:"6px 10px", border:`1.5px solid ${T.gray200}`,
+                        borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {(() => {
+            let estRev = 0;
+            produkAktif.forEach(p => { estRev += Number(luarRuteForm[`terjual_${p.id}`]||0) * (p.harga||0); });
+            return estRev > 0 ? (
+              <div style={{ fontSize:12, color:T.green, background:T.greenLt, border:`1px solid ${T.green}33`,
+                borderRadius:8, padding:"8px 12px", marginBottom:10 }}>
+                💰 Estimasi pendapatan: <b>{fmtRp(estRev)}</b>
+              </div>
+            ) : null;
+          })()}
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
+            <Btn variant="secondary" onClick={()=>{ setLuarRuteModal(false); setLuarRuteForm(null); }}>Batal</Btn>
+            <Btn onClick={submitLuarRute}>✅ Simpan Penjualan</Btn>
           </div>
         </Modal>
       )}
@@ -3131,6 +3247,80 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           </Card>
         </>
       )}
+
+      {/* Daftar Penjualan Luar Rute (tidak terikat toko/rute) */}
+      {(() => {
+        const luarList = (db.penjualanLuar||[])
+          .filter(pl => !filter.bulan || pl.tanggal?.startsWith(filter.bulan))
+          .sort((a,b)=>(b.tanggal||"").localeCompare(a.tanggal||""));
+        if (luarList.length===0) return null;
+        const totalRevLuar = luarList.reduce((s,pl) => {
+          let rev = 0;
+          produkAktif.forEach(p => { rev += Number(pl[`terjual_${p.id}`]||0) * (p.harga||0); });
+          return s + rev;
+        }, 0);
+        const totalBonusLuar = luarList.reduce((s,pl) => {
+          let bonus = 0;
+          produkAktif.forEach(p => { bonus += Number(pl[`bonusInput_${p.id}`]||0); });
+          return s + bonus;
+        }, 0);
+        return (
+          <Card padding={0} style={{ marginTop:16 }}>
+            <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.gray200}`,
+              display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
+              <div>
+                <div style={{ fontSize:14, fontWeight:700, color:T.gray800 }}>🛣️ Penjualan Luar Rute</div>
+                <div style={{ fontSize:11, color:T.gray400 }}>
+                  Penjualan di luar kunjungan rute normal (toko/rute tidak diketahui sales) · {luarList.length} entri
+                  {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevLuar)}</b>
+                  {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusLuar)} pcs</b>
+                </div>
+              </div>
+            </div>
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:T.gray50 }}>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Tanggal</th>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Produk Terjual</th>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>🎁 Bonus</th>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Keterangan</th>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Dicatat Oleh</th>
+                    <th style={{ padding:"8px 10px", textAlign:"right", fontSize:11, color:T.gray500 }}>Rev</th>
+                    <th style={{ padding:"8px 10px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {luarList.map(pl => {
+                    let rev = 0;
+                    const produkTerjual = produkAktif
+                      .filter(p => Number(pl[`terjual_${p.id}`]||0) > 0)
+                      .map(p => { rev += Number(pl[`terjual_${p.id}`]||0) * (p.harga||0); return `${p.nama}: ${pl[`terjual_${p.id}`]}`; })
+                      .join(" · ");
+                    const bonusTerjual = produkAktif
+                      .filter(p => Number(pl[`bonusInput_${p.id}`]||0) > 0)
+                      .map(p => `${p.nama}: ${pl[`bonusInput_${p.id}`]}`)
+                      .join(" · ");
+                    return (
+                      <tr key={pl.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
+                        <td style={{ padding:"6px 10px", fontWeight:600, whiteSpace:"nowrap" }}>{pl.tanggal}</td>
+                        <td style={{ padding:"6px 10px" }}>{produkTerjual || "—"}</td>
+                        <td style={{ padding:"6px 10px", color:T.gold }}>{bonusTerjual || <span style={{ color:T.gray400 }}>—</span>}</td>
+                        <td style={{ padding:"6px 10px", color:T.gray500, maxWidth:220 }}>{pl.keterangan || <span style={{ color:T.gray400 }}>—</span>}</td>
+                        <td style={{ padding:"6px 10px", color:T.gray500 }}>{pl.dicatatOleh || <span style={{ color:T.gray400 }}>—</span>}</td>
+                        <td style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, color:T.green }}>{fmtRp(rev)}</td>
+                        <td style={{ padding:"6px 10px", textAlign:"right" }}>
+                          <Btn variant="danger" size="sm" icon="🗑" onClick={()=>deleteLuarRute(pl.id)}>Hapus</Btn>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </Card>
+        );
+      })()}
 
       {modal && (
         <Modal title={modal==="add"?"Tambah Kontrol Bulanan":"Edit Kontrol Bulanan"} onClose={()=>setModal(null)} width={600}>
