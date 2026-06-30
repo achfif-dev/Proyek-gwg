@@ -820,6 +820,178 @@ function exportPDF(data, columns, title, filename) {
   else alert("Pop-up diblokir. Izinkan pop-up untuk ekspor PDF.");
 }
 
+// Ekspor JPG: menggambar tabel langsung ke <canvas> (tanpa dependensi
+// eksternal seperti html2canvas) lalu mengunduhnya sebagai file gambar.
+// Cocok untuk dibagikan cepat lewat WhatsApp/chat karena hasilnya berupa
+// satu gambar utuh, bukan dokumen yang perlu dibuka aplikasi lain.
+function exportJPG(data, columns, title, filename) {
+  try {
+    const now = new Date().toLocaleString("id-ID");
+    const rows = data.map(row => columns.map(c => {
+      const val = row[c.key] ?? "—";
+      if (typeof val === "boolean") return val ? "Ya" : "Tidak";
+      return String(val);
+    }));
+
+    const PAD_X = 14;
+    const meas = document.createElement("canvas").getContext("2d");
+    const headerFont = "bold 11px 'Segoe UI', Arial, sans-serif";
+    const cellFont = "12px 'Segoe UI', Arial, sans-serif";
+
+    function widthOf(text, font) {
+      meas.font = font;
+      return meas.measureText(String(text)).width;
+    }
+    function truncate(text, maxWidth, font) {
+      text = String(text);
+      meas.font = font;
+      if (meas.measureText(text).width <= maxWidth) return text;
+      let lo = 0, hi = text.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (meas.measureText(text.slice(0, mid) + "…").width <= maxWidth) lo = mid;
+        else hi = mid - 1;
+      }
+      return text.slice(0, lo) + (lo < text.length ? "…" : "");
+    }
+
+    const colWidths = columns.map((c, ci) => {
+      let w = widthOf(c.label.toUpperCase(), headerFont);
+      rows.forEach(r => { w = Math.max(w, widthOf(r[ci], cellFont)); });
+      return Math.min(Math.max(w + PAD_X * 2, 90), 260);
+    });
+
+    const tableWidth = colWidths.reduce((s, w) => s + w, 0);
+    const MARGIN = 28;
+    const HEADER_H = 78;
+    const SUMMARY_H = 38;
+    const HEAD_ROW_H = 32;
+    const ROW_H = 28;
+    const FOOTER_H = 30;
+    const width = tableWidth + MARGIN * 2;
+    const height = MARGIN + HEADER_H + SUMMARY_H + HEAD_ROW_H + rows.length * ROW_H + FOOTER_H + MARGIN;
+
+    const SCALE = 2; // render 2x lalu di-downscale otomatis oleh browser → teks lebih tajam
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.ceil(width * SCALE);
+    canvas.height = Math.ceil(height * SCALE);
+    const ctx = canvas.getContext("2d");
+    ctx.scale(SCALE, SCALE);
+
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+
+    function drawTableAndDownload() {
+      let y;
+      ctx.fillStyle = "#0F4C35";
+      ctx.fillRect(0, 0, width, HEADER_H);
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 17px 'Segoe UI', Arial, sans-serif";
+      ctx.fillText("Generasi Wangi Group", MARGIN + 52, 34);
+      ctx.font = "10px 'Segoe UI', Arial, sans-serif";
+      ctx.fillStyle = "#D9F0E6";
+      ctx.fillText("SUPER APP · SISTEM MANAJEMEN KONSINYASI", MARGIN + 52, 52);
+
+      ctx.textAlign = "right";
+      ctx.fillStyle = "#ffffff";
+      ctx.font = "bold 14px 'Segoe UI', Arial, sans-serif";
+      ctx.fillText(truncate(title, width - MARGIN * 2 - 250, "bold 14px 'Segoe UI', Arial, sans-serif"), width - MARGIN, 32);
+      ctx.font = "11px 'Segoe UI', Arial, sans-serif";
+      ctx.fillStyle = "#D9F0E6";
+      ctx.fillText(`Diekspor: ${now}`, width - MARGIN, 50);
+      ctx.fillText(`Total: ${data.length} data`, width - MARGIN, 65);
+      ctx.textAlign = "left";
+
+      y = HEADER_H + 14;
+      ctx.fillStyle = "#F0FDF4";
+      ctx.strokeStyle = "#86EFAC";
+      const sumW = 120, sumGap = 10;
+      [[data.length, "Total Baris"], [columns.length, "Kolom"]].forEach(([num, label], i) => {
+        const bx = MARGIN + i * (sumW + sumGap);
+        ctx.fillStyle = "#F0FDF4";
+        ctx.fillRect(bx, y, sumW, SUMMARY_H - 10);
+        ctx.strokeRect(bx, y, sumW, SUMMARY_H - 10);
+        ctx.fillStyle = "#0F4C35";
+        ctx.font = "bold 13px 'Segoe UI', Arial, sans-serif";
+        ctx.fillText(String(num), bx + 10, y + 17);
+        ctx.font = "10px 'Segoe UI', Arial, sans-serif";
+        ctx.fillStyle = "#374151";
+        ctx.fillText(label, bx + 10, y + 28);
+      });
+      y += SUMMARY_H;
+
+      ctx.fillStyle = "#0F4C35";
+      ctx.fillRect(MARGIN, y, tableWidth, HEAD_ROW_H);
+      ctx.fillStyle = "#ffffff";
+      let x = MARGIN;
+      columns.forEach((c, ci) => {
+        ctx.font = headerFont;
+        ctx.fillText(truncate(c.label.toUpperCase(), colWidths[ci] - PAD_X * 2, headerFont), x + PAD_X, y + HEAD_ROW_H / 2 + 4);
+        x += colWidths[ci];
+      });
+      y += HEAD_ROW_H;
+
+      rows.forEach((r, ri) => {
+        ctx.fillStyle = ri % 2 === 0 ? "#ffffff" : "#F8FAF8";
+        ctx.fillRect(MARGIN, y, tableWidth, ROW_H);
+        ctx.strokeStyle = "#E5E7EB";
+        ctx.beginPath();
+        ctx.moveTo(MARGIN, y + ROW_H);
+        ctx.lineTo(MARGIN + tableWidth, y + ROW_H);
+        ctx.stroke();
+        ctx.fillStyle = "#1F2937";
+        let cx = MARGIN;
+        r.forEach((cell, ci) => {
+          ctx.font = cellFont;
+          ctx.fillText(truncate(cell, colWidths[ci] - PAD_X * 2, cellFont), cx + PAD_X, y + ROW_H / 2 + 4);
+          cx += colWidths[ci];
+        });
+        y += ROW_H;
+      });
+
+      ctx.strokeStyle = "#E5E7EB";
+      ctx.beginPath();
+      ctx.moveTo(MARGIN, y + 8);
+      ctx.lineTo(MARGIN + tableWidth, y + 8);
+      ctx.stroke();
+      ctx.fillStyle = "#9CA3AF";
+      ctx.font = "9px 'Segoe UI', Arial, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("Generasi Wangi Group · Super App", MARGIN, y + 24);
+      ctx.textAlign = "right";
+      ctx.fillText(`${title} · ${now}`, MARGIN + tableWidth, y + 24);
+      ctx.textAlign = "left";
+
+      const link = document.createElement("a");
+      link.href = canvas.toDataURL("image/jpeg", 0.92);
+      link.download = filename + ".jpg";
+      link.click();
+    }
+
+    // Coba gambar logo GWG dulu (lingkaran kecil di header); kalau gagal
+    // dimuat karena alasan apapun, lanjut ekspor tanpa logo.
+    const logo = new Image();
+    logo.onload = () => {
+      try {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(MARGIN + 22, 39, 19, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.clip();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(MARGIN + 3, 20, 38, 38);
+        ctx.drawImage(logo, MARGIN + 3, 20, 38, 38);
+        ctx.restore();
+      } catch {}
+      drawTableAndDownload();
+    };
+    logo.onerror = () => drawTableAndDownload();
+    logo.src = GWG_LOGO_B64;
+  } catch (e) {
+    alert("Gagal ekspor JPG: " + e.message);
+  }
+}
+
 function exportHTML(data, columns, title, filename) {
   const rows = data.map(row =>
     `<tr>${columns.map(c => {
@@ -1027,11 +1199,12 @@ function ExportMenu({ data, columns, title, filename }) {
             { label:"🌐 HTML", action: () => { exportHTML(data, columns, title, filename); setOpen(false); } },
             { label:"📋 JSON", action: () => { exportJSON(data, filename); setOpen(false); } },
             { label:"📄 PDF Landscape", action: () => { exportPDF(data, columns, title, filename); setOpen(false); } },
+            { label:"🖼️ JPG", action: () => { exportJPG(data, columns, title, filename); setOpen(false); } },
           ].map((opt, i) => (
             <button key={i} onClick={opt.action}
               style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
                 background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit", color:T.gray800,
-                borderBottom: i<4 ? `1px solid ${T.gray100}` : "none" }}
+                borderBottom: i<5 ? `1px solid ${T.gray100}` : "none" }}
               onMouseEnter={e => e.target.style.background=T.gray50}
               onMouseLeave={e => e.target.style.background="none"}>
               {opt.label}
