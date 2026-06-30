@@ -2287,6 +2287,24 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const newId = genId("PZ", db.penyesuaian);
     const newEntry = { ...payload, id:newId };
     addRecord("penyesuaian", newEntry);
+
+    // ✅ Produk baru yang dititipkan: kalau jenis "Tambah" dan ada produk dengan
+    // jumlah > 0 yang BELUM terdaftar di "Produk yang Dijual" toko ini, otomatis
+    // daftarkan produk tsb ke profil toko (Master Toko) supaya langsung muncul
+    // di form Kontrol bulan berikutnya — admin tidak perlu bolak-balik ke Tab Toko.
+    if (pforn.jenis === "Tambah") {
+      const toko = (db.toko||[]).find(t=>t.id===pforn.tokoId);
+      if (toko) {
+        const existingIds = toko.produkIds||[];
+        const produkBaruIds = produkAktif
+          .filter(p => Number(pforn[`jumlah_${p.id}`]||0) > 0 && !existingIds.includes(p.id))
+          .map(p=>p.id);
+        if (produkBaruIds.length > 0) {
+          updateRecord("toko", toko.id, { produkIds: [...existingIds, ...produkBaruIds] });
+        }
+      }
+    }
+
     recalcTokoStok(pforn.tokoId, undefined, [...(db.penyesuaian||[]), newEntry]);
     setPenyesuaianModal(false);
     setPenyesuaianForm(null);
@@ -2827,11 +2845,37 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           </div>
           <div style={{ marginTop:10, marginBottom:6, fontSize:12, fontWeight:600, color:T.gray600 }}>Jumlah per Produk:</div>
           <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
-            {produkAktif.map(p=>(
-              <Input key={p.id} label={p.nama} value={penyesuaianForm[`jumlah_${p.id}`]||0}
-                onChange={v=>pf(`jumlah_${p.id}`,v)} type="number" />
-            ))}
+            {(() => {
+              const tokoTerpilih = (db.toko||[]).find(t=>t.id===penyesuaianForm.tokoId);
+              const produkIdsToko = tokoTerpilih?.produkIds||[];
+              return produkAktif.map(p=>{
+                const belumDijual = penyesuaianForm.tokoId && !produkIdsToko.includes(p.id);
+                return (
+                  <Input key={p.id}
+                    label={<>{p.nama}{belumDijual && penyesuaianForm.jenis==="Tambah" && (
+                      <span style={{ marginLeft:6, fontSize:9, fontWeight:700, color:T.blue,
+                        background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:99, padding:"1px 6px" }}>
+                        🆕 produk baru untuk toko ini
+                      </span>
+                    )}</>}
+                    value={penyesuaianForm[`jumlah_${p.id}`]||0}
+                    onChange={v=>pf(`jumlah_${p.id}`,v)} type="number" />
+                );
+              });
+            })()}
           </div>
+          {(() => {
+            const tokoTerpilih = (db.toko||[]).find(t=>t.id===penyesuaianForm.tokoId);
+            const produkIdsToko = tokoTerpilih?.produkIds||[];
+            const adaProdukBaru = penyesuaianForm.jenis==="Tambah" && produkAktif.some(p =>
+              Number(penyesuaianForm[`jumlah_${p.id}`]||0) > 0 && penyesuaianForm.tokoId && !produkIdsToko.includes(p.id));
+            return adaProdukBaru ? (
+              <div style={{ fontSize:11, color:T.blue, background:T.blueLt, border:`1px solid #BFDBFE`,
+                borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
+                ℹ️ Produk bertanda 🆕 akan otomatis ditambahkan ke daftar "Produk yang Dijual" toko ini saat disimpan.
+              </div>
+            ) : null;
+          })()}
           <Input label="Dicatat Oleh (admin/sales)" value={penyesuaianForm.dicatatOleh||""} onChange={v=>pf("dicatatOleh",v)} placeholder="Nama pencatat" />
           <Input label="Catatan / Alasan" value={penyesuaianForm.catatan||""} onChange={v=>pf("catatan",v)}
             type="textarea" placeholder="cth: Laporan sales — 2 botol rusak saat kunjungan" />
