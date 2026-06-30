@@ -270,9 +270,18 @@ function useDB(user) {
     migrateIfNeeded().finally(() => {
       // Subscribe listener untuk daftar email yang sudah dihapus admin,
       // agar auto-register tidak mendaftarkan ulang pengguna yang dihapus.
+      // PENTING: ikutkan "deletedUsers" ke dalam loadedSet tracking supaya
+      // cloudLoaded tidak di-set true sebelum blacklist ini selesai diterima
+      // dari Firebase — mencegah race condition di mana auto-register jalan
+      // saat deletedUsersRef masih kosong meski pengguna sudah ada di blacklist.
       const deletedRef = ref(rtdb, `gwg_data/deletedUsers`);
       const unsubDeleted = onValue(deletedRef, snap => {
         deletedUsersRef.current = snap.val() || {};
+        loadedSet.add("deletedUsers");
+        if (loadedSet.size >= paths.length + 1) { // +1 untuk deletedUsers
+          setSyncing(false);
+          setCloudLoaded(true);
+        }
       });
       unsubs.push(() => off(deletedRef));
       paths.forEach(key => {
@@ -293,9 +302,9 @@ function useDB(user) {
           loadedSet.add(key);
           setLastSync(new Date());
           setSyncError(null);
-          if (loadedSet.size >= paths.length) {
+          if (loadedSet.size >= paths.length + 1) { // +1 karena deletedUsers juga dihitung
             setSyncing(false);
-            setCloudLoaded(true); // semua path sudah memberi snapshot pertama (isi atau kosong)
+            setCloudLoaded(true); // semua path (termasuk deletedUsers) sudah memberi snapshot pertama
           }
         }, (err) => {
           setSyncing(false);
