@@ -229,12 +229,12 @@ function useDB(user) {
     // tulis ulang sebagai path-path terpisah sebelum listener di bawah mulai
     // membaca. Supaya tidak men-download seluruh root setiap kali ada yang
     // login (mahal untuk database besar), kita cek dulu lewat path KECIL
-    // `gwg_data/_migratedV3` — hanya jika flag ini BELUM ada, baru kita
+    // `gwg_data/shared/_migratedV3` — hanya jika flag ini BELUM ada, baru kita
     // baca root sekali untuk migrasi, lalu set flag supaya login-login
     // berikutnya melewati langkah ini sepenuhnya.
     async function migrateIfNeeded() {
       try {
-        const flagSnap = await get(ref(rtdb, `gwg_data/_migratedV3`));
+        const flagSnap = await get(ref(rtdb, `gwg_data/shared/_migratedV3`));
         if (flagSnap.val() === true) return; // sudah pernah dimigrasi, skip
         const rootSnap = await get(ref(rtdb, `gwg_data/shared`));
         const rootVal = rootSnap.val();
@@ -260,7 +260,7 @@ function useDB(user) {
             ));
           }
         }
-        await set(ref(rtdb, `gwg_data/_migratedV3`), true); // tandai selesai, walau tidak ada yang dimigrasi
+        await set(ref(rtdb, `gwg_data/shared/_migratedV3`), true); // tandai selesai, walau tidak ada yang dimigrasi
       } catch (e) {
         console.warn("Migrasi struktur lama gagal (akan tetap lanjut baca per-path):", e);
       }
@@ -274,7 +274,7 @@ function useDB(user) {
       // cloudLoaded tidak di-set true sebelum blacklist ini selesai diterima
       // dari Firebase — mencegah race condition di mana auto-register jalan
       // saat deletedUsersRef masih kosong meski pengguna sudah ada di blacklist.
-      const deletedRef = ref(rtdb, `gwg_data/deletedUsers`);
+      const deletedRef = ref(rtdb, `gwg_data/shared/deletedUsers`);
       const unsubDeleted = onValue(deletedRef, snap => {
         deletedUsersRef.current = snap.val() || {};
         loadedSet.add("deletedUsers");
@@ -396,7 +396,7 @@ function useDB(user) {
           // Tulis langsung ke path khusus di luar shared (bukan lewat pushUpdates)
           if (firebaseDB && basePathRef.current) {
             const { db: rtdb, ref: fbRef, set } = firebaseDB;
-            set(fbRef(rtdb, `gwg_data/deletedUsers/${emailKey}`), true).catch(console.warn);
+            set(fbRef(rtdb, `gwg_data/shared/deletedUsers/${emailKey}`), true).catch(console.warn);
             // Update ref lokal segera agar cek langsung efektif
             deletedUsersRef.current = { ...deletedUsersRef.current, [emailKey]: true };
           }
@@ -542,7 +542,7 @@ function useDB(user) {
     }
     try {
       const { db: rtdb, ref, get } = firebaseDB;
-      const snap = await get(ref(rtdb, `gwg_data/deletedUsers`));
+      const snap = await get(ref(rtdb, `gwg_data/shared/deletedUsers`));
       const all = snap.val() || {};
       return Object.keys(all).map(key => ({ key, email: decodeEmailKey(key) }));
     } catch (e) {
@@ -556,7 +556,7 @@ function useDB(user) {
   const restoreDeletedUser = useCallback((emailKey) => {
     if (firebaseDB) {
       const { db: rtdb, ref, set } = firebaseDB;
-      set(ref(rtdb, `gwg_data/deletedUsers/${emailKey}`), null).catch(console.warn);
+      set(ref(rtdb, `gwg_data/shared/deletedUsers/${emailKey}`), null).catch(console.warn);
     }
     deletedUsersRef.current = { ...deletedUsersRef.current };
     delete deletedUsersRef.current[emailKey];
