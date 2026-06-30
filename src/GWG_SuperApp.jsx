@@ -596,12 +596,20 @@ function useAnalytics(db) {
       let totalRev = 0;
       let totalTerjual = 0;
       let totalStok = 0;
+      let totalBonus = 0;
       (db.produk||[]).forEach(p => {
         const terjual = k[`terjual_${p.id}`] || 0;
         const stok = k[`stok_${p.id}`] || 0;
+        // ⚠️ FIX BUG: dulu totalBonus tidak pernah dihitung di sini, jadi
+        // Dashboard & tab Rekap (yang sumbernya analytics.kontrol ini)
+        // menampilkan angka 0/stale, beda dengan tab Kontrol yang punya
+        // perhitungan bonus sendiri (bonusInput_ jika diisi, kalau tidak
+        // pakai default bonus produk). Disamakan rumusnya di sini.
+        const bonusPcs = k[`bonusInput_${p.id}`] !== undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0);
         totalRev += terjual * (p.harga || 0);
         totalTerjual += terjual;
         totalStok += stok;
+        totalBonus += bonusPcs;
       });
       let status = "⚪ Kosong";
       if (totalStok > 0) {
@@ -612,7 +620,7 @@ function useAnalytics(db) {
       const toko = (db.toko||[]).find(t => t.id === k.tokoId);
       const rute = toko ? (db.rute||[]).find(r => r.id === toko.ruteId) : null;
       const wilayah = rute ? (db.wilayah||[]).find(w => w.id === rute.wilayahId) : null;
-      return { ...k, totalRev, totalTerjual, totalStok, status, toko, rute, wilayah,
+      return { ...k, totalRev, totalTerjual, totalStok, totalBonus, status, toko, rute, wilayah,
         tokoNama: toko?.nama||"?", ruteNama: rute?.nama||"?", wilayahNama: wilayah?.nama||"?",
         ruteId: rute?.id||"", wilayahId: wilayah?.id||"" };
     });
@@ -3792,18 +3800,22 @@ function Dashboard({ db, analytics, salesWilayahId }) {
     : analytics.tokoAktif;
   const maxRev = Math.max(...perWilayah.map(w=>w.rev),1);
 
-  const exportDashboard = () => {
-    const rows = [
-      { metric:"Total Revenue", value:fmtRp(totalRev) },
-      { metric:"Laba Bersih (Est)", value:fmtRp(labaBersih) },
-      { metric:"Toko Aktif", value:tokoAktif },
-      { metric:"Total Toko", value:(db.toko||[]).length },
-      { metric:"Total Wilayah", value:(db.wilayah||[]).length },
-      { metric:"Total Rute", value:(db.rute||[]).length },
-      { metric:"Entri Kontrol", value:(db.kontrol||[]).length },
-    ];
-    exportCSV(rows, [{key:"metric",label:"Metrik"},{key:"value",label:"Nilai"}], "dashboard_summary");
-  };
+  // ✅ Ekspor Dashboard sekarang pakai ExportMenu yang sama dengan tab lain
+  // (CSV / Excel / HTML / JSON / PDF / JPG), bukan cuma tombol CSV tunggal.
+  // Rows digabung: ringkasan utama + breakdown revenue per wilayah.
+  const dashboardExportRows = [
+    { metric:"Total Revenue", value:fmtRp(totalRev) },
+    { metric:"Laba Bersih (Est, 70%)", value:fmtRp(labaBersih) },
+    { metric:"Toko Aktif", value:`${tokoAktif} dari ${(db.toko||[]).length}` },
+    { metric:"Total Wilayah", value:(db.wilayah||[]).length },
+    { metric:"Total Rute", value:(db.rute||[]).length },
+    { metric:"Total Produk Aktif", value:(db.produk||[]).filter(p=>p.aktif!==false).length },
+    { metric:"Entri Kontrol", value:(db.kontrol||[]).length },
+    { metric:"Total Bonus (pcs)", value:fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0)) },
+    { metric:"Pengguna Terdaftar", value:(db.pengguna||[]).length },
+    ...perWilayah.map(w => ({ metric:`Revenue — ${w.nama||w.id}`, value:fmtRp(w.rev) })),
+  ];
+  const dashboardExportCols = [{ key:"metric", label:"Metrik" }, { key:"value", label:"Nilai" }];
 
   return (
     <div>
@@ -3815,7 +3827,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
       )}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
         <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📈 Dashboard</div>
-        <Btn variant="secondary" size="sm" icon="📤" onClick={exportDashboard}>Ekspor CSV</Btn>
+        <ExportMenu data={dashboardExportRows} columns={dashboardExportCols} title="Dashboard Ringkasan" filename="dashboard_summary" />
       </div>
       <div style={{ fontSize:12, color:T.gray400, marginBottom:20 }}>Data real-time dari semua master data & kontrol bulanan</div>
 
