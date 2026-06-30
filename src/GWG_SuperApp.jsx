@@ -1462,12 +1462,12 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📍 Master Wilayah</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.wilayah||[]).length} wilayah terdaftar · terurut abjad</div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={enriched} columns={cols} title="Data Wilayah" filename="wilayah" />
           <Btn onClick={openAdd} icon="＋">Tambah Wilayah</Btn>
         </div>
@@ -1572,12 +1572,12 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🛣️ Master Rute</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.rute||[]).length} rute aktif · terurut per wilayah & abjad</div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={data} columns={cols} title="Data Rute" filename="rute" />
           <Btn onClick={openAdd} icon="＋">Tambah Rute</Btn>
         </div>
@@ -1818,12 +1818,12 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🏪 Master Toko</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.toko||[]).length} toko · {(db.toko||[]).filter(t=>t.status==="Aktif").length} aktif · terurut abjad</div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ImportMenu label="Import Toko" onTemplate={()=>downloadTokoTemplate(db)} onParseRows={importTokoFromRows} />
           <ExportMenu data={data} columns={cols} title="Data Toko" filename="toko" />
           <Btn onClick={openAdd} icon="＋">Tambah Toko</Btn>
@@ -2076,12 +2076,12 @@ function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🧴 Master Produk</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.produk||[]).length} produk · Tipe bisa diisi bebas</div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={db.produk||[]} columns={cols} title="Data Produk" filename="produk" />
           <Btn onClick={openAdd} icon="＋">Tambah Produk</Btn>
         </div>
@@ -2771,7 +2771,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         );
       })()}
 
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
           <div style={{ fontSize:12, color:T.gray400 }}>
@@ -2779,7 +2779,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
           </div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ImportMenu label="Import Kontrol" onTemplate={()=>downloadKontrolTemplate(db)} onParseRows={importKontrolFromRows} />
           <ExportMenu data={data} columns={cols} title="Kontrol Bulanan" filename={`kontrol_${filter.bulan||"semua"}`} />
           <Btn variant="secondary" size="sm" icon="📅"
@@ -3922,7 +3922,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   return (
     <div>
       {/* Header */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📑 Rekap Penjualan</div>
           <div style={{ fontSize:12, color:T.gray400 }}>Rekap otomatis dari data kontrol bulanan</div>
@@ -4249,7 +4249,7 @@ function TabBagiHasil({ db, analytics, save }) {
   return (
     <div>
       {/* Header */}
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>💰 Simulasi Bagi Hasil & Akuntansi</div>
           <div style={{ fontSize:12, color:T.gray400 }}>Laporan keuangan & distribusi profit sesuai skema akuntansi</div>
@@ -4736,12 +4736,12 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdm
 
   return (
     <div>
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>👤 Manajemen Pengguna</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.pengguna||[]).length} pengguna terdaftar</div>
         </div>
-        <div style={{ display:"flex", gap:8 }}>
+        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={db.pengguna||[]} columns={cols} title="Data Pengguna" filename="pengguna" />
           <Btn variant="secondary" onClick={openBlockedModal} icon="🚫">Email Diblokir</Btn>
           <Btn onClick={openAdd} icon="＋">Tambah Pengguna</Btn>
