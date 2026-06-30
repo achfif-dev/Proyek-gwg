@@ -1165,13 +1165,13 @@ function Modal({ title, children, onClose, width=480 }) {
       onClick={e => e.target===e.currentTarget && onClose()}>
       <div style={{ background:T.white, borderRadius:16, width:"100%", maxWidth:width,
         maxHeight:"90vh", overflow:"auto", boxShadow:"0 20px 60px rgba(0,0,0,.2)" }}>
-        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
+        <div className="gw-modal-header" style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
           padding:"18px 24px", borderBottom:`1px solid ${T.gray200}`,
           position:"sticky", top:0, background:T.white, zIndex:1 }}>
           <div style={{ fontSize:16, fontWeight:700, color:T.gray800 }}>{title}</div>
           <button onClick={onClose} style={{ border:"none", background:"none", cursor:"pointer", fontSize:20, color:T.gray400 }}>×</button>
         </div>
-        <div style={{ padding:24 }}>{children}</div>
+        <div className="gw-modal-body" style={{ padding:24 }}>{children}</div>
       </div>
     </div>
   );
@@ -1996,7 +1996,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
           )}
           <div style={{ marginBottom:14 }}>
             <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>Produk yang Dijual:</div>
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+            <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
               {produkAktif.map(p => (
                 <label key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
                   border:`1.5px solid ${(form.produkIds||[]).includes(p.id)?T.green:T.gray200}`,
@@ -2838,13 +2838,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           </div>
           <SearchableSelect label="Toko" value={penyesuaianForm.tokoId}
             onChange={v=>pf("tokoId",v)} options={allTokoOpts} required placeholder="Cari toko..." />
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
             <Input label="Tanggal" value={penyesuaianForm.tanggal} onChange={v=>pf("tanggal",v)} type="date" required />
             <Input label="Jenis Penyesuaian" value={penyesuaianForm.jenis} onChange={v=>pf("jenis",v)}
               options={[{value:"Tambah",label:"➕ Tambah Stok"},{value:"Kurang",label:"➖ Kurang Stok"},{value:"Tarik",label:"🔻 Tarik Sebagian Produk"}]} />
           </div>
           <div style={{ marginTop:10, marginBottom:6, fontSize:12, fontWeight:600, color:T.gray600 }}>Jumlah per Produk:</div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
             {(() => {
               const tokoTerpilih = (db.toko||[]).find(t=>t.id===penyesuaianForm.tokoId);
               const produkIdsToko = tokoTerpilih?.produkIds||[];
@@ -3134,7 +3134,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
       {modal && (
         <Modal title={modal==="add"?"Tambah Kontrol Bulanan":"Edit Kontrol Bulanan"} onClose={()=>setModal(null)} width={600}>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:4 }}>
+          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:4 }}>
             <Input label="Wilayah" value={modalFilter.wilayahId} onChange={handleModalWilayahChange}
               options={wilayahOpts} hint="Pilih wilayah untuk mempersempit pilihan rute & toko" />
             <Input label="Rute" value={modalFilter.ruteId} onChange={handleModalRuteChange}
@@ -3285,7 +3285,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
               </div>
             )}
 
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
+            <div className="gw-grid3" style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8 }}>
               {Object.entries(CATATAN_STATUS).filter(([k])=>k!=="manual").map(([key, cs]) => (
                 <label key={key} style={{ display:"flex", alignItems:"center", gap:8, padding:"10px 12px",
                   border:`2px solid ${catatanSt===key ? cs.border : T.gray200}`,
@@ -3405,7 +3405,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
         <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon="👤" color={T.gray600} />
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+      <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
           <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>📍 Revenue per Wilayah</div>
           {perWilayah.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data</div>}
@@ -3451,7 +3451,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
         </Card>
       </div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+      <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
           <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>🛣️ Rute Aktif</div>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
@@ -4328,7 +4328,7 @@ function TabBagiHasil({ db, analytics, save }) {
       </div>
 
       {/* Laporan Laba Rugi */}
-      <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
+      <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
           <div style={{ fontSize:14, fontWeight:800, color:T.gray800, marginBottom:16, borderBottom:`2px solid ${T.green}`, paddingBottom:10 }}>
             📋 Laporan Laba Rugi — {PERIODE_LABELS[periodeMode]}
@@ -4615,7 +4615,7 @@ function TabBagiHasil({ db, analytics, save }) {
               placeholder="cth: Pemilik, Investor, Manajer..."
               style={{ width:"100%", padding:"8px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:8, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
           </div>
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
+          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:12 }}>
             <div>
               <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>Persentase (%)</label>
               <input type="number" value={formPihak.pct||0} min={0} max={100}
@@ -4947,7 +4947,46 @@ export default function GWGSuperApp() {
   const { db, addRecord, updateRecord, deleteRecord, resetDB, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
 
-  // ── Favicon: pasang logo GWG sebagai ikon tab browser ──────────────────
+  // ── Mobile-friendly: pastikan viewport meta tag benar agar tampilan tidak
+  // ter-zoom-out/kepotong saat dibuka dari HP (banyak host page lupa setting ini).
+  useEffect(() => {
+    let vp = document.querySelector('meta[name="viewport"]');
+    if (!vp) {
+      vp = document.createElement("meta");
+      vp.name = "viewport";
+      document.head.appendChild(vp);
+    }
+    vp.content = "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover";
+  }, []);
+
+  // ── Mobile-friendly: pasang sekali class CSS responsif global, dipakai
+  // oleh header, tab nav, dan grid form 2-kolom di seluruh aplikasi supaya
+  // otomatis menumpuk jadi 1 kolom di layar HP (≤640px) tanpa perlu
+  // menulis ulang setiap form satu per satu.
+  useEffect(() => {
+    if (document.getElementById("gw-responsive-style")) return;
+    const style = document.createElement("style");
+    style.id = "gw-responsive-style";
+    style.textContent = `
+      * { box-sizing: border-box; }
+      @media (max-width: 640px) {
+        .gw-header-top { flex-wrap: wrap; gap: 10px !important; }
+        .gw-header-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px !important; }
+        .gw-header-subtitle { display: none; }
+        .gw-header-logo { width: 36px !important; height: 36px !important; }
+        .gw-header-title { font-size: 16px !important; }
+        .gw-tabnav button { padding: 8px 12px !important; font-size: 12px !important; }
+        .gw-grid2, .gw-grid3 { grid-template-columns: 1fr !important; }
+        .gw-modal-body { padding: 16px !important; }
+        .gw-modal-header { padding: 14px 16px !important; }
+        .gw-content { padding: 14px 10px !important; }
+        table { font-size: 11px !important; }
+      }
+    `;
+    document.head.appendChild(style);
+  }, []);
+
+
   useEffect(() => {
     let link = document.querySelector("link[rel~='icon']");
     if (!link) {
@@ -5231,20 +5270,20 @@ export default function GWGSuperApp() {
       {/* HEADER */}
       <div style={{ background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 20px" }}>
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
+          <div className="gw-header-top" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-              <img src={GWG_LOGO_B64} alt="GWG Logo"
+              <img src={GWG_LOGO_B64} alt="GWG Logo" className="gw-header-logo"
                 style={{ width:46, height:46, borderRadius:"50%", background:"#fff",
                   padding:3, boxShadow:"0 2px 8px rgba(0,0,0,.2)", objectFit:"contain" }} />
               <div>
-                <div style={{ fontSize:20, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>Generasi Wangi Group</div>
-                <div style={{ fontSize:11, color:"rgba(255,255,255,.7)", letterSpacing:"0.08em", textTransform:"uppercase" }}>
+                <div className="gw-header-title" style={{ fontSize:20, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>Generasi Wangi Group</div>
+                <div className="gw-header-subtitle" style={{ fontSize:11, color:"rgba(255,255,255,.7)", letterSpacing:"0.08em", textTransform:"uppercase" }}>
                   Super App · Sistem Manajemen Konsinyasi
                   {syncing && <span style={{ marginLeft:8, background:"rgba(255,255,255,.2)", borderRadius:99, padding:"1px 8px", fontSize:10 }}>🔄 Sinkronisasi...</span>}
                 </div>
               </div>
             </div>
-            <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            <div className="gw-header-actions" style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600 }}>
                 💰 Rev: {fmtRp(analytics.totalRev)}
               </div>
@@ -5326,7 +5365,7 @@ export default function GWGSuperApp() {
             </div>
           )}
 
-          <div style={{ display:"flex", gap:2, overflowX:"auto", paddingBottom:0 }}>
+          <div className="gw-tabnav" style={{ display:"flex", gap:2, overflowX:"auto", paddingBottom:0 }}>
             {TABS.filter(t => canAccessTab(t.key, { isAdmin, isManajer })).map(t=>(
               <button key={t.key} onClick={()=>setActiveTab(t.key)}
                 style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontFamily:"inherit",
@@ -5341,7 +5380,7 @@ export default function GWGSuperApp() {
       </div>
 
       {/* CONTENT */}
-      <div style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
+      <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
         {activeTab==="dashboard" && <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="wilayah"   && canAccessTab("wilayah",  { isAdmin, isManajer }) && <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
         {activeTab==="rute"      && canAccessTab("rute",     { isAdmin, isManajer }) && <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
