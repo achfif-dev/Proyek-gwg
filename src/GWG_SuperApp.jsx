@@ -2023,11 +2023,13 @@ function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
 // ─────────────────────────────────────────────
 //  TAB KONTROL BULANAN
 // ─────────────────────────────────────────────
-function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
+function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId }) {
+  const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
-  const [modalFilter, setModalFilter] = useState({ wilayahId:"", ruteId:"" }); // filter Wilayah & Rute di dalam modal Tambah/Edit Kontrol
-  const [filter, setFilter] = useState({ wilayahId:"", ruteId:"", bulan:"" });
+  // Jika Sales dengan wilayah terkunci, filter modal otomatis menggunakan wilayah Sales
+  const [modalFilter, setModalFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"" });
+  const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"" });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
   const [selectedIds, setSelectedIds] = useState([]);
@@ -2593,15 +2595,21 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save }) {
         );
       })()}
 
-      {/* Filter: Wilayah → Rute → Bulan */}}
+      {/* Filter: Wilayah → Rute → Bulan */}
+      {isSalesRestricted && (
+        <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
+          padding:"8px 14px", marginBottom:12, fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8 }}>
+          🔒 Anda hanya dapat melihat data wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+        </div>
+      )}
       <FilterBar filters={[
         { key:"bulan",     label:"Bulan",    value:filter.bulan,     type:"month", placeholder:"2026-06" },
-        { key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts },
+        ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
       ]} onChange={(k,v)=>{
         if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
         else setFilter(p=>({...p,[k]:v}));
-      }} onReset={()=>setFilter({wilayahId:"",ruteId:"",bulan:""})} />
+      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:""})} />
 
       {/* Summary per Produk */}
       {produkAktif.length > 0 && data.length > 0 && (
@@ -2993,8 +3001,33 @@ function MiniBar({ value, max, color }) {
   );
 }
 
-function Dashboard({ db, analytics }) {
-  const { totalRev, labaBersih, tokoAktif, perWilayah, perRute, produkStats, bagiHasil } = analytics;
+function Dashboard({ db, analytics, salesWilayahId }) {
+  const isSalesRestricted = !!salesWilayahId;
+  // Filter analytics data berdasarkan wilayah Sales (jika berlaku)
+  const { totalRev: allRev, labaBersih: allLaba, produkStats, bagiHasil } = analytics;
+  const perWilayahAll = analytics.perWilayah;
+  const perRuteAll = analytics.perRute;
+
+  const perWilayah = isSalesRestricted
+    ? perWilayahAll.filter(w => w.id === salesWilayahId)
+    : perWilayahAll;
+  const perRute = isSalesRestricted
+    ? perRuteAll.filter(r => {
+        const w = (db.wilayah||[]).find(ww=>ww.id===r.wilayahId);
+        return r.wilayahId === salesWilayahId;
+      })
+    : perRuteAll;
+
+  // Hitung ulang total hanya untuk wilayah yang tampil
+  const totalRev = isSalesRestricted ? perWilayah.reduce((s,w)=>s+w.rev,0) : allRev;
+  const labaBersih = totalRev * 0.7;
+  const tokoAktif = isSalesRestricted
+    ? (db.toko||[]).filter(t => {
+        if (t.status !== "Aktif") return false;
+        const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+        return rute?.wilayahId === salesWilayahId;
+      }).length
+    : analytics.tokoAktif;
   const maxRev = Math.max(...perWilayah.map(w=>w.rev),1);
 
   const exportDashboard = () => {
@@ -3012,6 +3045,12 @@ function Dashboard({ db, analytics }) {
 
   return (
     <div>
+      {isSalesRestricted && (
+        <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:10,
+          padding:"10px 16px", marginBottom:14, fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, fontWeight:600 }}>
+          🔒 Dashboard ini menampilkan data wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+        </div>
+      )}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
         <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📈 Dashboard</div>
         <Btn variant="secondary" size="sm" icon="📤" onClick={exportDashboard}>Ekspor CSV</Btn>
@@ -3161,9 +3200,10 @@ function Dashboard({ db, analytics }) {
 // ─────────────────────────────────────────────
 //  TAB REKAP — Harian/Bulanan/Kuartal/Tahunan
 // ─────────────────────────────────────────────
-function TabRekap({ db, analytics }) {
+function TabRekap({ db, analytics, salesWilayahId }) {
+  const isSalesRestricted = !!salesWilayahId;
   const [mode, setMode] = useState("bulanan"); // harian | bulanan | kuartal | tahunan
-  const [filterWilayah, setFilterWilayah] = useState(""); // "" = semua
+  const [filterWilayah, setFilterWilayah] = useState(salesWilayahId||""); // "" = semua
   const [filterBulan, setFilterBulan] = useState(() => new Date().toISOString().slice(0,7));
   const [filterTahun, setFilterTahun] = useState(() => String(new Date().getFullYear()));
   const [filterKuartal, setFilterKuartal] = useState("1"); // "1"|"2"|"3"|"4"
@@ -3571,15 +3611,22 @@ function TabRekap({ db, analytics }) {
       <div style={{ background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10,
         padding:"14px 16px", marginBottom:16, display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
         
-        {/* Filter Wilayah — selalu tampil */}
-        <div style={{ minWidth:160, flex:1 }}>
-          <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Wilayah</div>
-          <select value={filterWilayah} onChange={e=>{ setFilterWilayah(e.target.value); setFilterRute(""); }}
-            style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
-            <option value="">Semua Wilayah</option>
-            {wilayahOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </div>
+        {/* Filter Wilayah — disembunyikan untuk Sales yang wilayahnya terkunci */}
+        {isSalesRestricted ? (
+          <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
+            padding:"8px 14px", fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, flex:1, minWidth:160 }}>
+            🔒 Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+          </div>
+        ) : (
+          <div style={{ minWidth:160, flex:1 }}>
+            <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Wilayah</div>
+            <select value={filterWilayah} onChange={e=>{ setFilterWilayah(e.target.value); setFilterRute(""); }}
+              style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+              <option value="">Semua Wilayah</option>
+              {wilayahOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </div>
+        )}
 
         {/* Filter tanggal (harian) */}
         {mode==="harian" && (
@@ -4878,13 +4925,13 @@ export default function GWGSuperApp() {
 
       {/* CONTENT */}
       <div style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
-        {activeTab==="dashboard" && <Dashboard db={db} analytics={analytics} />}
+        {activeTab==="dashboard" && <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="wilayah"   && canAccessTab("wilayah",  { isAdmin, isManajer }) && <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
         {activeTab==="rute"      && canAccessTab("rute",     { isAdmin, isManajer }) && <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
         {activeTab==="toko"      && canAccessTab("toko",     { isAdmin, isManajer }) && <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
         {activeTab==="produk"    && canAccessTab("produk",   { isAdmin, isManajer }) && <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
-        {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} />}
+        {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
+        {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="bagihasil" && canAccessTab("bagihasil",{ isAdmin, isManajer }) && <TabBagiHasil db={db} analytics={analytics} save={save} />}
         {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} />}
       </div>
