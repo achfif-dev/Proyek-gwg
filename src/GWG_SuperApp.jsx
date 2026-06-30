@@ -3200,7 +3200,12 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:4 }}>📦 Stok, Penjualan & Bonus Produk</div>
             <div style={{ fontSize:11, color:T.gray400, marginBottom:10 }}>Kolom <b style={{ color:T.gold }}>Bonus Produk</b> adalah jumlah <b>pcs produk</b> yang diberikan ke toko saat kunjungan ini</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:10 }}>
-              {produkAktif.map(p => {
+              {/* Roll On ditaruh paling depan karena produk ini paling banyak dititipkan ke toko */}
+              {[...produkAktif].sort((a,b)=>{
+                const aRoll = /roll\s*on/i.test(a.nama) ? 0 : 1;
+                const bRoll = /roll\s*on/i.test(b.nama) ? 0 : 1;
+                return aRoll - bRoll;
+              }).map(p => {
                 const terjual = Number(form[`terjual_${p.id}`]||0);
                 const bonusPcs = Number(form[`bonusInput_${p.id}`]||0);
                 return (
