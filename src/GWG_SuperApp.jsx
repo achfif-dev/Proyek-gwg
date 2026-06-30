@@ -2142,7 +2142,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
   // Jika Sales dengan wilayah terkunci, filter modal otomatis menggunakan wilayah Sales
   const [modalFilter, setModalFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"" });
-  const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"" });
+  const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:"" });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
   const [selectedIds, setSelectedIds] = useState([]);
@@ -2217,7 +2217,8 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   const data = useMemo(() => enriched.filter(k =>
     (!filter.wilayahId || k.wilayahId === filter.wilayahId) &&
     (!filter.ruteId    || k.ruteId    === filter.ruteId) &&
-    (!filter.bulan     || k.tanggal?.startsWith(filter.bulan))
+    (!filter.bulan     || k.tanggal?.startsWith(filter.bulan)) &&
+    (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q)))
   ), [enriched, filter]);
 
   // Monthly view: tampilkan SEMUA toko di rute terpilih, bukan hanya yang ada entri kontrol
@@ -2232,7 +2233,8 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     return rutesToShow.map(rute => {
       const wilayah = (db.wilayah||[]).find(w=>w.id===rute.wilayahId);
       // Semua toko aktif DAN baru di rute ini (Non-Aktif disembunyikan otomatis mulai bulan berikutnya)
-      const tokoList = (db.toko||[]).filter(t=>t.ruteId===rute.id && (t.status==="Aktif" || t.status==="Baru"));
+      const tokoList = (db.toko||[]).filter(t=>t.ruteId===rute.id && (t.status==="Aktif" || t.status==="Baru")
+        && (!filter.q || normTxt(t.nama).includes(normTxt(filter.q)) || normTxt(t.kode).includes(normTxt(filter.q))));
       return {
         rute, wilayah,
         tokoList: tokoList.map(toko => {
@@ -3010,13 +3012,14 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         </div>
       )}
       <FilterBar filters={[
+        { key:"q",         label:"Cari Toko",value:filter.q,         placeholder:"Nama atau kode toko..." },
         { key:"bulan",     label:"Bulan",    value:filter.bulan,     type:"month", placeholder:"2026-06" },
         ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
       ]} onChange={(k,v)=>{
         if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
         else setFilter(p=>({...p,[k]:v}));
-      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:""})} />
+      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:""})} />
 
       {/* Summary per Produk */}
       {produkAktif.length > 0 && data.length > 0 && (
