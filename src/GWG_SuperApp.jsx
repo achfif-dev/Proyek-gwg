@@ -33,6 +33,7 @@ const DB_EMPTY = {
   produk: [],
   kontrol: [],
   pengguna: [],
+  penyesuaian: [], // Penyesuaian Stok di luar siklus kontrol rutin (tambah/kurang/tarik sebagian)
   stokAwal: {}, // { "tokoId_produkId_YYYY-MM": number }
   bagiHasilConfig: null, // konfigurasi bagi hasil
 };
@@ -143,7 +144,7 @@ function useAuth() {
 // supaya menambah/mengubah 1 toko tidak perlu mengirim ulang seluruh
 // database (wilayah+rute+toko+kontrol+...) setiap kali. Ini penting untuk
 // skala ribuan toko & data kontrol bulanan yang terus bertambah.
-const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna"];
+const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna", "penyesuaian"];
 
 // Konversi array → objek ber-key id, untuk ditulis ke Firebase per-record.
 function arrToMap(arr) {
@@ -2023,7 +2024,9 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       {stokModal && (
         <Modal title={`📦 Update Stok Awal — ${stokForm.tokoNama}`} onClose={()=>setStokModal(false)}>
           <div style={{ fontSize:13, color:T.gray600, marginBottom:16 }}>
-            Stok awal ini digunakan sebagai referensi awal bulan dan terintegrasi dengan kontrol bulanan.
+            Stok ini otomatis ter-update setiap kali ada entri <b>Kontrol Bulanan</b> baru untuk toko ini
+            (Stok Akhir = Stok Awal − Terjual + Bonus). Gunakan form ini hanya untuk <b>koreksi manual</b>
+            (misal: stok opname, retur, atau setup awal sebelum ada kontrol).
           </div>
           {produkAktif.map(p => (
             <Input key={p.id} label={`Stok ${p.nama} (${p.id})`}
@@ -2133,7 +2136,11 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   }
   function deleteSelected() {
     if (!confirm(`Hapus ${selectedIds.length} catatan kontrol terpilih? Tindakan ini permanen.`)) return;
+    // Kumpulkan tokoId yang terdampak agar stoknya disinkronkan ulang setelah hapus
+    const affectedTokoIds = [...new Set(selectedIds.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
     selectedIds.forEach(id => deleteRecord("kontrol", id));
+    const remaining = (db.kontrol||[]).filter(k => !selectedIds.includes(k.id));
+    affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining));
     setSelectedIds([]);
   }
   // Modal untuk mengubah status toko langsung dari kontrol (tarik/non-aktifkan toko)
@@ -2148,6 +2155,10 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   const [tambahTokoForm, setTambahTokoForm] = useState({ nama:"", ruteId:"", status:"Aktif", catatan:"" });
   const ttf = (k,v) => setTambahTokoForm(p=>({...p,[k]:v}));
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
+  // ✅ Penyesuaian Stok lapangan (di luar siklus kontrol rutin): Tambah / Kurang / Tarik Sebagian
+  const [penyesuaianModal, setPenyesuaianModal] = useState(false);
+  const [penyesuaianForm, setPenyesuaianForm] = useState(null); // null saat tertutup
+  const pf = (k,v) => setPenyesuaianForm(p=>({...p,[k]:v}));
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
 
@@ -2209,7 +2220,79 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     return toko?.[`stok_${produkId}`] || 0;
   }
 
-  // Cek apakah ada produk terjual (jika iya, status kunjungan tidak wajib)
+  // ✅ SINKRONISASI STOK: Master Toko ↔ Kontrol Bulanan ↔ Penyesuaian Stok
+  // Stok di Master Toko sekarang dihitung dari GABUNGAN dua sumber:
+  //  1) Entri Kontrol Bulanan TERAKHIR → Stok Akhir = Stok Awal − Terjual + Bonus
+  //  2) Semua Penyesuaian Stok (Tambah/Kurang/Tarik Sebagian) yang tanggalnya
+  //     SAMA ATAU SETELAH kontrol terakhir tsb (kejadian lapangan di luar
+  //     siklus kontrol rutin, dicatat admin dari laporan sales).
+  // extraKontrolList / extraPenyesuaianList: dipakai saat dipanggil tepat
+  // setelah addRecord, karena db di closure ini belum memuat data terbaru.
+  function recalcTokoStok(tokoId, extraKontrolList, extraPenyesuaianList) {
+    const semuaKontrol = extraKontrolList || (db.kontrol||[]);
+    const semuaPenyesuaian = extraPenyesuaianList || (db.penyesuaian||[]);
+    const entriesToko = semuaKontrol
+      .filter(k => k.tokoId === tokoId)
+      .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
+    const terakhir = entriesToko[entriesToko.length-1];
+
+    // Baseline dari kontrol terakhir (kalau belum pernah ada kontrol, baseline = 0)
+    const baseline = {};
+    produkAktif.forEach(p => {
+      if (terakhir) {
+        const stokAwal = Number(terakhir[`stok_${p.id}`]||0);
+        const terjual = Number(terakhir[`terjual_${p.id}`]||0);
+        const bonus = terakhir[`bonusInput_${p.id}`] !== undefined ? Number(terakhir[`bonusInput_${p.id}`]) : (p.bonus||0);
+        baseline[p.id] = stokAwal - terjual + bonus;
+      } else {
+        baseline[p.id] = 0;
+      }
+    });
+
+    // Tambahkan Penyesuaian Stok yang terjadi pada/sesudah tanggal kontrol terakhir
+    const batasTanggal = terakhir?.tanggal || "0000-00-00";
+    const penyesuaianRelevan = semuaPenyesuaian
+      .filter(pz => pz.tokoId === tokoId && (pz.tanggal||"") >= batasTanggal)
+      .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
+    penyesuaianRelevan.forEach(pz => {
+      const arah = pz.jenis === "Kurang" || pz.jenis === "Tarik" ? -1 : 1;
+      produkAktif.forEach(p => {
+        const jumlah = Number(pz[`jumlah_${p.id}`]||0);
+        if (jumlah) baseline[p.id] = (baseline[p.id]||0) + arah*jumlah;
+      });
+    });
+
+    if (!terakhir && penyesuaianRelevan.length === 0) return; // belum ada kontrol maupun penyesuaian → biarkan stok toko (input manual awal) apa adanya
+
+    const updates = {};
+    produkAktif.forEach(p => { updates[`stok_${p.id}`] = Math.max(0, baseline[p.id]||0); });
+    updateRecord("toko", tokoId, updates);
+  }
+
+  function openPenyesuaian(tokoId) {
+    const today = new Date().toISOString().slice(0,10);
+    const initial = { tokoId: tokoId||"", tanggal: today, jenis:"Tambah", catatan:"", dicatatOleh:"" };
+    produkAktif.forEach(p => { initial[`jumlah_${p.id}`] = 0; });
+    setPenyesuaianForm(initial);
+    setPenyesuaianModal(true);
+  }
+
+  function submitPenyesuaian() {
+    const pforn = penyesuaianForm;
+    if (!pforn?.tokoId || !pforn?.tanggal) return alert("Toko & Tanggal wajib diisi");
+    const adaJumlah = produkAktif.some(p => Number(pforn[`jumlah_${p.id}`]||0) > 0);
+    if (!adaJumlah) return alert("Isi minimal 1 jumlah produk yang disesuaikan");
+    const payload = { ...pforn };
+    produkAktif.forEach(p => { payload[`jumlah_${p.id}`] = Number(pforn[`jumlah_${p.id}`]||0); });
+    const newId = genId("PZ", db.penyesuaian);
+    const newEntry = { ...payload, id:newId };
+    addRecord("penyesuaian", newEntry);
+    recalcTokoStok(pforn.tokoId, undefined, [...(db.penyesuaian||[]), newEntry]);
+    setPenyesuaianModal(false);
+    setPenyesuaianForm(null);
+  }
+
+
   const adaTerjual = useMemo(() =>
     produkAktif.some(p => Number(form[`terjual_${p.id}`]||0) > 0)
   , [form, produkAktif]);
@@ -2270,9 +2353,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     });
     if (modal==="add") {
       const cnt = (db.kontrol||[]).filter(k=>k.id?.startsWith(`${y}-${m}`)).length+1;
-      addRecord("kontrol", { ...payload, id:`${y}-${m}-${String(cnt).padStart(3,"0")}` });
+      const newEntry = { ...payload, id:`${y}-${m}-${String(cnt).padStart(3,"0")}` };
+      addRecord("kontrol", newEntry);
+      // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update)
+      recalcTokoStok(form.tokoId, [...(db.kontrol||[]), newEntry]);
     } else {
       updateRecord("kontrol", form.id, payload);
+      // Sinkron stok master Toko: ganti entri lama dengan payload terbaru sebelum dihitung ulang
+      const updatedList = (db.kontrol||[]).map(k => k.id===form.id ? { ...k, ...payload } : k);
+      recalcTokoStok(form.tokoId, updatedList);
     }
     setModal(null);
   }
@@ -2376,6 +2465,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     });
   }, [db.toko, db.rute, modalFilter]);
 
+  // Daftar toko untuk dropdown Penyesuaian Stok (tidak terikat filter wilayah/rute modal kontrol)
+  const allTokoOpts = useMemo(() => {
+    return (db.toko||[]).filter(t => t.status === "Aktif" || t.status === "Baru").map(t => ({
+      value:t.id, label: `${t.nama}${t.kode?` (${t.kode})`:""}`
+    }));
+  }, [db.toko]);
+
   // Import Kontrol Bulanan dari Excel
   function importKontrolFromRows(rows) {
     const errors = [];
@@ -2426,7 +2522,26 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       newKontrol.push({ ...payload, id:`${y}-${m}-${String(cnt).padStart(3,"0")}` });
       added++;
     });
-    if (added > 0) save({ ...db, kontrol:newKontrol });
+    if (added > 0) {
+      // Sinkron stok master Toko untuk setiap toko yang terdampak import, berdasarkan entri terakhir
+      const affectedTokoIds = [...new Set(newKontrol.map(k=>k.tokoId))];
+      const newToko = (db.toko||[]).map(t => {
+        if (!affectedTokoIds.includes(t.id)) return t;
+        const entriesToko = newKontrol.filter(k=>k.tokoId===t.id)
+          .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
+        const terakhir = entriesToko[entriesToko.length-1];
+        if (!terakhir) return t;
+        const updated = { ...t };
+        produkAktif.forEach(p => {
+          const stokAwal = Number(terakhir[`stok_${p.id}`]||0);
+          const terjual = Number(terakhir[`terjual_${p.id}`]||0);
+          const bonus = terakhir[`bonusInput_${p.id}`] !== undefined ? Number(terakhir[`bonusInput_${p.id}`]) : (p.bonus||0);
+          updated[`stok_${p.id}`] = Math.max(0, stokAwal - terjual + bonus);
+        });
+        return updated;
+      });
+      save({ ...db, kontrol:newKontrol, toko:newToko });
+    }
     return { added, skipped, errors };
   }
 
@@ -2476,7 +2591,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       {deleteTarget && (
         <ConfirmDelete
           label="Data kontrol ini akan dihapus permanen."
-          onConfirm={() => { deleteRecord("kontrol", deleteTarget); setDeleteTarget(null); }}
+          onConfirm={() => {
+            const tokoIdTerdampak = (db.kontrol||[]).find(k=>k.id===deleteTarget)?.tokoId;
+            deleteRecord("kontrol", deleteTarget);
+            if (tokoIdTerdampak) {
+              const remaining = (db.kontrol||[]).filter(k => k.id !== deleteTarget);
+              recalcTokoStok(tokoIdTerdampak, remaining);
+            }
+            setDeleteTarget(null);
+          }}
           onCancel={() => setDeleteTarget(null)}
         />
       )}
@@ -2650,6 +2773,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             setTambahTokoForm({ nama:"", ruteId:filter.ruteId||"", status:"Aktif", catatan:"" });
             setTambahTokoModal(true);
           }} icon="🏪">Tambah Toko</Btn>
+          <Btn variant="secondary" onClick={()=>openPenyesuaian("")} icon="🔧">Penyesuaian Stok</Btn>
           <Btn onClick={openAdd} icon="＋">Tambah Kontrol</Btn>
         </div>
       </div>
@@ -2684,6 +2808,39 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           </Modal>
         );
       })()}
+
+      {/* Modal Penyesuaian Stok (kejadian lapangan di luar siklus kontrol rutin) */}
+      {penyesuaianModal && penyesuaianForm && (
+        <Modal title="🔧 Penyesuaian Stok Lapangan" onClose={()=>{ setPenyesuaianModal(false); setPenyesuaianForm(null); }} width={560}>
+          <div style={{ fontSize:12, color:T.gray600, marginBottom:14, background:T.blueLt,
+            border:`1px solid #BFDBFE`, borderRadius:8, padding:"8px 12px" }}>
+            💡 Gunakan untuk mencatat kejadian di toko <b>di luar kunjungan kontrol rutin</b> — misal laporan sales
+            ada tambahan stok, stok berkurang (rusak/hilang), atau sebagian produk ditarik. Stok di Master Toko
+            akan otomatis diperbarui.
+          </div>
+          <SearchableSelect label="Toko" value={penyesuaianForm.tokoId}
+            onChange={v=>pf("tokoId",v)} options={allTokoOpts} required placeholder="Cari toko..." />
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <Input label="Tanggal" value={penyesuaianForm.tanggal} onChange={v=>pf("tanggal",v)} type="date" required />
+            <Input label="Jenis Penyesuaian" value={penyesuaianForm.jenis} onChange={v=>pf("jenis",v)}
+              options={[{value:"Tambah",label:"➕ Tambah Stok"},{value:"Kurang",label:"➖ Kurang Stok"},{value:"Tarik",label:"🔻 Tarik Sebagian Produk"}]} />
+          </div>
+          <div style={{ marginTop:10, marginBottom:6, fontSize:12, fontWeight:600, color:T.gray600 }}>Jumlah per Produk:</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
+            {produkAktif.map(p=>(
+              <Input key={p.id} label={p.nama} value={penyesuaianForm[`jumlah_${p.id}`]||0}
+                onChange={v=>pf(`jumlah_${p.id}`,v)} type="number" />
+            ))}
+          </div>
+          <Input label="Dicatat Oleh (admin/sales)" value={penyesuaianForm.dicatatOleh||""} onChange={v=>pf("dicatatOleh",v)} placeholder="Nama pencatat" />
+          <Input label="Catatan / Alasan" value={penyesuaianForm.catatan||""} onChange={v=>pf("catatan",v)}
+            type="textarea" placeholder="cth: Laporan sales — 2 botol rusak saat kunjungan" />
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
+            <Btn variant="secondary" onClick={()=>{ setPenyesuaianModal(false); setPenyesuaianForm(null); }}>Batal</Btn>
+            <Btn onClick={submitPenyesuaian}>✅ Simpan Penyesuaian</Btn>
+          </div>
+        </Modal>
+      )}
 
       {/* Filter: Wilayah → Rute → Bulan */}
       {isSalesRestricted && (
@@ -2788,6 +2945,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                           setModalFilter({ wilayahId: wilayah?.id||"", ruteId: rute.id });
                           setModal("add");
                         }}>Tambah</Btn>
+                        <Btn size="sm" variant="secondary" icon="🔧" onClick={() => openPenyesuaian(toko.id)}>
+                          Penyesuaian
+                        </Btn>
                         <Btn size="sm" variant="secondary" icon="🏷️" onClick={() => openEditStatusModal(toko)}>
                           Status
                         </Btn>
@@ -2858,6 +3018,49 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                         </table>
                       </div>
                     )}
+
+                    {/* Riwayat Penyesuaian Stok toko ini */}
+                    {(() => {
+                      const pzList = (db.penyesuaian||[])
+                        .filter(pz => pz.tokoId===toko.id && (!filter.bulan || pz.tanggal?.startsWith(filter.bulan)))
+                        .sort((a,b)=>(b.tanggal||"").localeCompare(a.tanggal||""));
+                      if (pzList.length===0) return null;
+                      return (
+                        <div style={{ overflowX:"auto", borderTop:`1px solid ${T.gray200}` }}>
+                          <div style={{ padding:"6px 10px", fontSize:11, fontWeight:700, color:T.gray500 }}>🔧 Riwayat Penyesuaian Stok</div>
+                          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                            <tbody>
+                              {pzList.map(pz => (
+                                <tr key={pz.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
+                                  <td style={{ padding:"6px 10px", fontWeight:600, whiteSpace:"nowrap" }}>{pz.tanggal}</td>
+                                  <td style={{ padding:"6px 10px" }}>
+                                    <Badge color={pz.jenis==="Tambah"?T.green:T.red} bg={pz.jenis==="Tambah"?T.greenLt:T.redLt}>
+                                      {pz.jenis==="Tambah"?"➕ Tambah":pz.jenis==="Kurang"?"➖ Kurang":"🔻 Tarik Sebagian"}
+                                    </Badge>
+                                  </td>
+                                  <td style={{ padding:"6px 10px" }}>
+                                    {produkAktif.filter(p=>Number(pz[`jumlah_${p.id}`]||0)>0)
+                                      .map(p=>`${p.nama}: ${pz[`jumlah_${p.id}`]}`).join(" · ")}
+                                  </td>
+                                  <td style={{ padding:"6px 10px", color:T.gray400, fontSize:11 }}>
+                                    {pz.dicatatOleh && <span>👤 {pz.dicatatOleh}</span>}
+                                    {pz.catatan && <span style={{ marginLeft:6 }}>📝 {pz.catatan}</span>}
+                                  </td>
+                                  <td style={{ padding:"6px 10px", textAlign:"right" }}>
+                                    <Btn variant="danger" size="sm" icon="🗑" onClick={()=>{
+                                      if (!confirm("Hapus penyesuaian stok ini?")) return;
+                                      deleteRecord("penyesuaian", pz.id);
+                                      const remaining = (db.penyesuaian||[]).filter(x=>x.id!==pz.id);
+                                      recalcTokoStok(toko.id, undefined, remaining);
+                                    }}>Hapus</Btn>
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      );
+                    })()}
                   </div>
                 );
               })}
