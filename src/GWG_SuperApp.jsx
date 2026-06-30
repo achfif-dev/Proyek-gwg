@@ -2959,11 +2959,11 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                     borderRadius:10, overflow:"hidden" }}>
                     {/* Header Toko */}
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-                      padding:"10px 14px", background:sudahDikontrol?T.greenLt:T.gray50 }}>
+                      padding:"10px 14px", background:sudahDikontrol?T.greenLt:T.gray50, flexWrap:"wrap", gap:10 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
                         <span style={{ fontSize:18 }}>{sudahDikontrol?"✅":"⏳"}</span>
                         <div>
-                          <div style={{ fontWeight:700, fontSize:14, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}>
+                          <div style={{ fontWeight:700, fontSize:14, color:T.gray800, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                             {toko.nama}
                             {toko.status === "Baru" && (
                               <span style={{ background:T.blue, color:"#fff", fontSize:10, fontWeight:700,
@@ -2973,7 +2973,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                           <div style={{ fontSize:11, color:T.gray400 }}>{toko.kode}</div>
                         </div>
                       </div>
-                      <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                      <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
                         {sudahDikontrol
                           ? <Badge color={T.green}>{entries.length}x kontrol</Badge>
                           : <Badge color={T.orange} bg={T.orangeLt}>Belum dikontrol</Badge>}
