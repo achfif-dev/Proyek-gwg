@@ -109,10 +109,10 @@ async function initFirebase() {
   if (!FIREBASE_CONFIGURED) return false;
   try {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
-    const { getDatabase, ref, set, get, onValue, off, onDisconnect, serverTimestamp, remove } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    const { getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
     const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
     firebaseApp = initializeApp(FIREBASE_CONFIG);
-    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, off, onDisconnect, serverTimestamp, remove };
+    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
@@ -302,7 +302,20 @@ function useDB(user) {
   // setiap kali ada perubahan di mana pun.
   useEffect(() => {
     if (!user || !firebaseDB) return;
-    const { db: rtdb, ref, onValue, off, set, get } = firebaseDB;
+    const { db: rtdb, ref, onValue, onChildAdded, onChildChanged, onChildRemoved, off, set, get } = firebaseDB;
+    // Tabel yang berpotensi tumbuh SANGAT besar (ribuan-ratusan ribu record
+    // seiring waktu & jumlah toko): "kontrol" (data penjualan/kunjungan
+    // bulanan — bertambah terus setiap bulan x setiap toko) dan "toko"
+    // (bisa mencapai 5.000-20.000 baris). Untuk tabel ini kita HINDARI
+    // `onValue` di root tabel, karena onValue mengirim ULANG SELURUH isi
+    // tabel ke SETIAP klien yang sedang online setiap kali SATU record saja
+    // berubah — biaya bandwidth-nya tumbuh sebagai (jumlah record) x
+    // (jumlah klien online) x (jumlah perubahan), yang paling cepat
+    // menghabiskan kuota gratis Firebase (Spark: 10GB/bulan). Sebagai
+    // gantinya kita pakai listener per-child (onChildAdded/Changed/Removed)
+    // yang hanya mengirim record yang benar-benar berubah — struktur data
+    // di Firebase TETAP SAMA PERSIS, jadi tidak perlu migrasi apa pun.
+    const LARGE_TABLES = new Set(["kontrol", "toko"]);
     basePathRef.current = ref(rtdb, `gwg_data/shared`);
 
     const paths = [...LIST_TABLES, "stokAwal", "bagiHasilConfig"];
@@ -370,14 +383,82 @@ function useDB(user) {
         }
       });
       unsubs.push(() => off(deletedRef));
+
+      const markLoadedAndFlush = (key) => {
+        loadedSet.add(key);
+        setLastSync(new Date());
+        setSyncError(null);
+        if (loadedSet.size >= paths.length + 1) { // +1 karena deletedUsers juga dihitung
+          setSyncing(false);
+          setCloudLoaded(true);
+        }
+      };
+
       paths.forEach(key => {
         const r = ref(rtdb, `gwg_data/shared/${key}`);
+
+        if (LARGE_TABLES.has(key)) {
+          // ── Sinkronisasi INKREMENTAL untuk tabel besar (kontrol/toko) ──
+          const localMap = {};
+          let settleTimer = null;
+          let firstBatchDone = false;
+
+          const flushToState = () => {
+            remoteRef.current[key] = { ...localMap };
+            setDB(prev => {
+              const next = { ...prev, [key]: mapToArr(localMap) };
+              try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+              return next;
+            });
+          };
+
+          const scheduleSettle = () => {
+            // Selama listener child_added masih "membanjir" data awal
+            // (initial sync), tunda update UI sampai aliran berhenti
+            // sejenak (~400ms tanpa event baru) — supaya kita tidak
+            // re-render ribuan kali saat load pertama, dan supaya kita
+            // tahu kapan "loading awal" boleh dianggap selesai.
+            if (settleTimer) clearTimeout(settleTimer);
+            settleTimer = setTimeout(() => {
+              firstBatchDone = true;
+              flushToState();
+              markLoadedAndFlush(key);
+            }, 400);
+          };
+
+          const unsubAdd = onChildAdded(r, snap => {
+            localMap[snap.key] = snap.val();
+            if (!firstBatchDone) scheduleSettle();
+            else flushToState();
+          }, (err) => { setSyncError(err.message); markLoadedAndFlush(key); });
+
+          const unsubChg = onChildChanged(r, snap => {
+            localMap[snap.key] = snap.val();
+            if (firstBatchDone) flushToState();
+          });
+
+          const unsubRem = onChildRemoved(r, snap => {
+            delete localMap[snap.key];
+            if (firstBatchDone) flushToState();
+          });
+
+          // Jika tabel kosong (toko baru / kontrol belum pernah diisi),
+          // child_added tidak akan pernah terpanggil sama sekali — pasang
+          // fallback timer supaya bootstrap tidak menunggu selamanya.
+          const emptyFallback = setTimeout(() => {
+            if (!firstBatchDone) { firstBatchDone = true; flushToState(); markLoadedAndFlush(key); }
+          }, 3000);
+
+          unsubs.push(() => { off(r); if (settleTimer) clearTimeout(settleTimer); clearTimeout(emptyFallback); });
+          return;
+        }
+
+        // ── Tabel kecil (wilayah/rute/produk/pengguna/dst): tetap pakai
+        // onValue seperti semula — aman karena ukurannya tidak akan
+        // membesar signifikan seiring waktu. ──
         const unsub = onValue(r, snap => {
           const val = snap.val();
           remoteRef.current[key] = val;
-          // Susun ulang objek db lengkap dari potongan-potongan remote yang
-          // sudah diterima sejauh ini, supaya UI tetap dapat tampilan
-          // konsisten meski path lain belum selesai sinkron.
           setDB(prev => {
             const next = { ...prev };
             if (LIST_TABLES.includes(key)) next[key] = mapToArr(val);
@@ -385,13 +466,7 @@ function useDB(user) {
             try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
             return next;
           });
-          loadedSet.add(key);
-          setLastSync(new Date());
-          setSyncError(null);
-          if (loadedSet.size >= paths.length + 1) { // +1 karena deletedUsers juga dihitung
-            setSyncing(false);
-            setCloudLoaded(true); // semua path (termasuk deletedUsers) sudah memberi snapshot pertama
-          }
+          markLoadedAndFlush(key);
         }, (err) => {
           setSyncing(false);
           setSyncError(err.message);
@@ -544,7 +619,14 @@ function useDB(user) {
   // hari itu saja (tidak menumpuk tanpa batas), dan backup lebih tua dari
   // MAX_BACKUPS hari otomatis dibersihkan.
   // ───────────────────────────────────────────────────────────────────────
-  const MAX_BACKUPS = 30;
+  // Diturunkan dari 30 → 10 hari. Backup adalah SALINAN PENUH seluruh
+  // database (termasuk tabel "kontrol" yang akan terus membesar selama
+  // bertahun-tahun), jadi menyimpan 30 salinan penuh sekaligus adalah
+  // pengguna kuota storage gratis Firebase (1GB) paling boros — bisa habis
+  // jauh sebelum data penjualan asli sendiri mendekati batas itu. 10 hari
+  // masih cukup untuk jaga-jaga kalau ada kesalahan input/impor yang baru
+  // ketahuan beberapa hari kemudian.
+  const MAX_BACKUPS = 10;
 
   const backupNow = useCallback(async (dbToBackup, { reason = "manual" } = {}) => {
     const nowIso = new Date().toISOString();
