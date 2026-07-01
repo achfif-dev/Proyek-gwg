@@ -6352,8 +6352,10 @@ export default function GWGSuperApp() {
 
   return (
     <div style={{ minHeight:"100vh", background:T.bg, fontFamily:"'Inter',system-ui,sans-serif" }}>
-      {/* HEADER */}
-      <div style={{ background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
+      {/* HEADER — dibuat "sticky" (freeze) di atas layar saat halaman di-scroll
+          ke bawah, supaya menu hamburger (☰) untuk pindah tab selalu mudah
+          dijangkau tanpa perlu scroll balik ke atas dulu. */}
+      <div style={{ position:"sticky", top:0, zIndex:100, background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 20px" }}>
           <div className="gw-header-top" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
