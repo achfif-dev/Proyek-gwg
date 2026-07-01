@@ -5975,15 +5975,24 @@ export default function GWGSuperApp() {
   useEffect(() => {
     let lastY = window.scrollY;
     let ticking = false;
+    // Ambang batas (hysteresis) — geseran kecil di bawah 10px (jitter alami
+    // saat scroll pakai jari di HP, termasuk efek "bounce" di ujung halaman)
+    // diabaikan dan TIDAK dianggap ganti arah. Ini mencegah header
+    // kedip-kedip nyala/mati berkali-kali hanya karena getaran kecil saat
+    // scroll, dan cuma bereaksi ke gerakan yang benar-benar disengaja.
+    const THRESHOLD = 10;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(() => {
-        const y = window.scrollY;
-        const goingDown = y > lastY;
-        if (goingDown && y > headerHeight) setHeaderHidden(true);
-        else if (!goingDown) setHeaderHidden(false);
-        lastY = y;
+        const y = Math.max(0, window.scrollY);
+        const diff = y - lastY;
+        if (Math.abs(diff) > THRESHOLD) {
+          if (diff > 0 && y > headerHeight) setHeaderHidden(true);
+          else if (diff < 0) setHeaderHidden(false);
+          lastY = y;
+        }
+        if (y <= 4) setHeaderHidden(false); // selalu tampil kalau sudah di paling atas
         ticking = false;
       });
     };
