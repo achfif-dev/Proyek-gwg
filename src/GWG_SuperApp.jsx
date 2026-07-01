@@ -5897,6 +5897,16 @@ export default function GWGSuperApp() {
   const restoreFileRef = useRef(null);
   const [loginError, setLoginError] = useState("");
   const [showActiveUsers, setShowActiveUsers] = useState(false);
+  // Ref tombol "Pengguna Aktif" + posisi panel yang selalu di-clamp di dalam
+  // viewport (pakai hook yang sama dengan HeaderMenu) supaya di HP tidak
+  // pernah terpotong/keluar layar di sisi kiri seperti sebelumnya.
+  const activeUsersRef = useRef(null);
+  const activeUsersMenuStyle = useClampedMenuPosition(showActiveUsers, activeUsersRef, 260);
+  useEffect(() => {
+    const handler = (e) => { if (activeUsersRef.current && !activeUsersRef.current.contains(e.target)) setShowActiveUsers(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
@@ -5923,14 +5933,24 @@ export default function GWGSuperApp() {
     style.id = "gw-responsive-style";
     style.textContent = `
       * { box-sizing: border-box; }
+      /* Cegah scroll horizontal "hantu" di HP — kalau ada elemen (mis. panel
+         dropdown) yang secara tak sengaja melebar keluar viewport, ini
+         memastikan halaman tetap tidak bisa digeser ke samping sehingga
+         kontennya tidak pernah terpotong/hilang di sisi kiri layar. */
+      html, body { max-width: 100vw; overflow-x: hidden; }
+
+      /* Header dibuat "cair" (fluid) memakai clamp() supaya ukurannya
+         menyesuaikan lebar layar secara halus/dinamis, bukan cuma loncat
+         di titik-titik breakpoint tetap. */
+      .gw-header-top { flex-wrap: wrap; row-gap: 10px; column-gap: 10px; }
+      .gw-header-actions { flex-wrap: wrap; justify-content: flex-end; align-items: center; row-gap: 6px; column-gap: 6px; }
+      .gw-header-logo { width: clamp(32px, 9vw, 46px) !important; height: clamp(32px, 9vw, 46px) !important; }
+      .gw-header-title { font-size: clamp(15px, 4vw, 20px) !important; }
+      .gw-header-revenue { padding: clamp(4px, 1.2vw, 6px) clamp(8px, 2.5vw, 14px) !important; font-size: clamp(10.5px, 2.6vw, 12px) !important; }
+      .gw-header-activeusers button { padding: clamp(4px, 1.2vw, 6px) clamp(8px, 2.5vw, 12px) !important; font-size: clamp(10.5px, 2.6vw, 12px) !important; }
+
       @media (max-width: 640px) {
-        .gw-header-top { flex-wrap: wrap; gap: 10px !important; }
-        .gw-header-actions { flex-wrap: wrap; justify-content: flex-end; gap: 6px !important; }
         .gw-header-subtitle { display: none; }
-        .gw-header-logo { width: 36px !important; height: 36px !important; }
-        .gw-header-title { font-size: 16px !important; }
-        .gw-header-revenue { padding: 5px 10px !important; font-size: 11px !important; }
-        .gw-header-activeusers button { padding: 5px 9px !important; font-size: 11px !important; }
         .gw-grid2, .gw-grid3 { grid-template-columns: 1fr !important; }
         .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
         .gw-statcard { padding: 12px !important; }
@@ -5943,7 +5963,6 @@ export default function GWGSuperApp() {
       }
       @media (max-width: 400px) {
         .gw-hide-xs { display: none !important; }
-        .gw-header-revenue, .gw-header-activeusers button { padding: 4px 8px !important; }
         .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 6px !important; }
         .gw-statcard { padding: 10px !important; }
         .gw-statcard-value { font-size: 17px !important; }
@@ -6354,17 +6373,20 @@ export default function GWGSuperApp() {
                 💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(analytics.totalRev)}
               </div>
 
-              {/* Panel "Pengguna Aktif" — daftar sesi/perangkat yang sedang online real-time */}
+              {/* Panel "Pengguna Aktif" — daftar sesi/perangkat yang sedang online real-time.
+                  Posisi panel dihitung dinamis via useClampedMenuPosition (position:fixed +
+                  auto-clamp ke lebar viewport), jadi selalu utuh terlihat di HP dan tidak
+                  pernah lagi terpotong di sisi kiri layar seperti sebelumnya. */}
               {user && (
-                <div className="gw-header-activeusers" style={{ position:"relative" }}>
+                <div ref={activeUsersRef} className="gw-header-activeusers" style={{ position:"relative" }}>
                   <button onClick={() => setShowActiveUsers(v => !v)}
                     title="Pengguna sedang aktif"
                     style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
                     <span style={{ width:8, height:8, borderRadius:"50%", background:"#22C55E", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
                     🟢 {activeUsers.length}<span className="gw-hide-xs"> Aktif</span>
                   </button>
-                  {showActiveUsers && (
-                    <div style={{ position:"absolute", right:0, top:"110%", background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", minWidth:240, maxHeight:320, overflowY:"auto", zIndex:50, padding:8 }}>
+                  {showActiveUsers && activeUsersMenuStyle && (
+                    <div style={{ ...activeUsersMenuStyle, background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", maxHeight:"60vh", overflowY:"auto", zIndex:250, padding:8 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:T.gray600, padding:"4px 8px", textTransform:"uppercase", letterSpacing:"0.05em" }}>
                         Pengguna Sedang Aktif ({activeUsers.length})
                       </div>
