@@ -248,6 +248,14 @@ function mapToArr(map) {
   }
   return Object.values(map);
 }
+// Menentukan "tahun partisi" sebuah record kontrol, dari field tanggal
+// (format "YYYY-MM-DD"). Dipakai untuk menentukan path Firebase
+// kontrol/{tahun}/{id}. Fallback ke tahun berjalan kalau tanggal kosong/rusak
+// (seharusnya tidak pernah terjadi karena form kontrol mewajibkan tanggal).
+function kontrolYearOf(record) {
+  const y = (record && record.tanggal || "").slice(0, 4);
+  return /^\d{4}$/.test(y) ? y : String(new Date().getFullYear());
+}
 
 // Encode email menjadi key Firebase yang valid (tidak boleh ada ., #, $, [, ], /)
 function encodeEmailKey(email) {
@@ -297,6 +305,22 @@ function useDB(user) {
   const basePathRef = useRef(null); // ref ke `gwg_data/shared`
   const deletedUsersRef = useRef({}); // { "email_encoded": true } — email yang sengaja dihapus admin
 
+  // ─── PARTISI TAHUNAN UNTUK "kontrol" ───────────────────────────────────
+  // Struktur di Firebase: gwg_data/shared/kontrol/{tahun}/{recordId}
+  // (bukan lagi gwg_data/shared/kontrol/{recordId} langsung). Tujuannya
+  // supaya klien tidak perlu men-download SELURUH riwayat penjualan
+  // bertahun-tahun setiap kali aplikasi dibuka — cukup tahun berjalan +
+  // tahun lalu yang otomatis dimuat; tahun-tahun lebih lama dimuat manual
+  // saat dibutuhkan (lihat loadKontrolYear di bawah).
+  // Di level UI, db.kontrol TETAP berupa array datar gabungan dari semua
+  // tahun yang sudah dimuat — jadi seluruh tab/komponen yang sudah ada
+  // TIDAK PERLU diubah sama sekali.
+  const KONTROL_LIVE_YEARS = 2; // jumlah tahun terbaru yang otomatis live-sync
+  const kontrolByYearRef = useRef({}); // { "2026": { id1:{...}, id2:{...} }, "2025": {...} }
+  const kontrolYearUnsubsRef = useRef({}); // { "2026": () => {...} }
+  const [loadedKontrolYears, setLoadedKontrolYears] = useState([]); // tahun yang sudah live-sync / dimuat
+  const [availableKontrolYears, setAvailableKontrolYears] = useState([]); // semua tahun yang ADA di cloud (dari index ringan)
+
   // Subscribe Firebase realtime jika user login — SATU listener PER PATH
   // (per tabel), bukan satu listener di root yang mendownload semuanya
   // setiap kali ada perubahan di mana pun.
@@ -315,7 +339,7 @@ function useDB(user) {
     // gantinya kita pakai listener per-child (onChildAdded/Changed/Removed)
     // yang hanya mengirim record yang benar-benar berubah — struktur data
     // di Firebase TETAP SAMA PERSIS, jadi tidak perlu migrasi apa pun.
-    const LARGE_TABLES = new Set(["kontrol", "toko"]);
+    const LARGE_TABLES = new Set(["toko"]); // "kontrol" ditangani terpisah (partisi tahun) di bawah
     basePathRef.current = ref(rtdb, `gwg_data/shared`);
 
     const paths = [...LIST_TABLES, "stokAwal", "bagiHasilConfig"];
@@ -396,6 +420,69 @@ function useDB(user) {
 
       paths.forEach(key => {
         const r = ref(rtdb, `gwg_data/shared/${key}`);
+
+        if (key === "kontrol") {
+          // ── "kontrol" dipartisi per-tahun: gwg_data/shared/kontrol/{tahun}/{id} ──
+          // Kita hanya live-sync tahun berjalan + KONTROL_LIVE_YEARS-1 tahun
+          // sebelumnya secara otomatis. Tahun-tahun lebih lama BELUM dimuat
+          // sampai admin memanggil loadKontrolYear(tahun) secara eksplisit
+          // (lihat tombol "Muat Data Tahun Lama" di menu Cadangan/Admin).
+          const thisYear = new Date().getFullYear();
+          const liveYears = Array.from({ length: KONTROL_LIVE_YEARS }, (_, i) => String(thisYear - i));
+
+          const recomputeKontrolArr = () => {
+            const merged = {};
+            Object.values(kontrolByYearRef.current).forEach(yearMap => {
+              Object.assign(merged, yearMap);
+            });
+            remoteRef.current.kontrol = merged;
+            setDB(prev => {
+              const next = { ...prev, kontrol: mapToArr(merged) };
+              try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+              return next;
+            });
+          };
+
+          const attachYearListener = (year, { countTowardBoot } = {}) => {
+            if (kontrolYearUnsubsRef.current[year]) return; // sudah aktif
+            const yr = ref(rtdb, `gwg_data/shared/kontrol/${year}`);
+            kontrolByYearRef.current[year] = kontrolByYearRef.current[year] || {};
+            let settleTimer = null, firstBatchDone = false;
+            const settle = () => {
+              if (settleTimer) clearTimeout(settleTimer);
+              settleTimer = setTimeout(() => {
+                firstBatchDone = true;
+                recomputeKontrolArr();
+                setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
+                if (countTowardBoot) markLoadedAndFlush("kontrol");
+              }, 400);
+            };
+            const uAdd = onChildAdded(yr, snap => {
+              kontrolByYearRef.current[year][snap.key] = snap.val();
+              if (!firstBatchDone) settle(); else recomputeKontrolArr();
+            }, (err) => { setSyncError(err.message); if (countTowardBoot) markLoadedAndFlush("kontrol"); });
+            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recomputeKontrolArr(); });
+            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recomputeKontrolArr(); });
+            const emptyFallback = setTimeout(() => {
+              if (!firstBatchDone) { firstBatchDone = true; recomputeKontrolArr(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); if (countTowardBoot) markLoadedAndFlush("kontrol"); }
+            }, 3000);
+            kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); clearTimeout(emptyFallback); };
+            unsubs.push(kontrolYearUnsubsRef.current[year]);
+          };
+
+          // Index ringan berisi daftar SEMUA tahun yang punya data (tanpa
+          // perlu download isi datanya) — dipakai untuk menampilkan pilihan
+          // "muat data tahun lama" di UI tanpa biaya bandwidth besar.
+          const idxRef = ref(rtdb, `gwg_data/shared/kontrolYearsIndex`);
+          const unsubIdx = onValue(idxRef, snap => {
+            const val = snap.val() || {};
+            setAvailableKontrolYears(Object.keys(val).sort());
+          });
+          unsubs.push(() => off(idxRef));
+
+          liveYears.forEach(y => attachYearListener(y, { countTowardBoot: true }));
+          return;
+        }
 
         if (LARGE_TABLES.has(key)) {
           // ── Sinkronisasi INKREMENTAL untuk tabel besar (kontrol/toko) ──
@@ -483,6 +570,101 @@ function useDB(user) {
     };
   }, [user]);
 
+  // Memuat data kontrol satu tahun tertentu SECARA MANUAL (dipanggil dari
+  // tombol UI), untuk tahun-tahun lama yang tidak otomatis live-sync.
+  // Setelah dimuat, tahun itu ikut live-sync juga (listener tetap aktif
+  // sampai komponen unmount/logout), dan langsung ikut tergabung ke
+  // db.kontrol seperti tahun-tahun lain — tidak perlu ubah kode tab manapun.
+  const loadKontrolYear = useCallback((year) => {
+    if (!user || !firebaseDB) return;
+    year = String(year);
+    if (kontrolYearUnsubsRef.current[year]) return; // sudah dimuat
+    const { db: rtdb, ref, onChildAdded, onChildChanged, onChildRemoved, off } = firebaseDB;
+    const yr = ref(rtdb, `gwg_data/shared/kontrol/${year}`);
+    kontrolByYearRef.current[year] = kontrolByYearRef.current[year] || {};
+    let settleTimer = null, firstBatchDone = false;
+    const recompute = () => {
+      const merged = {};
+      Object.values(kontrolByYearRef.current).forEach(m => Object.assign(merged, m));
+      remoteRef.current.kontrol = merged;
+      setDB(prev => {
+        const next = { ...prev, kontrol: mapToArr(merged) };
+        try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+        return next;
+      });
+    };
+    const settle = () => {
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        firstBatchDone = true;
+        recompute();
+        setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
+      }, 400);
+    };
+    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (!firstBatchDone) settle(); else recompute(); });
+    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recompute(); });
+    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recompute(); });
+    setTimeout(() => { if (!firstBatchDone) { firstBatchDone = true; recompute(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); } }, 3000);
+    kontrolYearUnsubsRef.current[year] = () => off(yr);
+  }, [user]);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // MIGRASI STRUKTUR "kontrol" LAMA (flat: kontrol/{id}) → PARTISI TAHUN
+  // (kontrol/{tahun}/{id}). Dipanggil MANUAL oleh Admin lewat tombol khusus
+  // (bukan otomatis saat login) karena ini operasi besar & sekali jalan —
+  // lebih aman diawasi langsung daripada berjalan diam-diam di background.
+  // Aman dijalankan berkali-kali (idempotent): kalau data lama sudah tidak
+  // ada di root flat, migrasi akan langsung melapor "tidak ada yang perlu
+  // dimigrasi" tanpa melakukan apa-apa.
+  // Urutan aman: (1) baca semua data lama, (2) tulis ke path tahun baru,
+  // (3) BARU setelah tulis berhasil, hapus data lama dari root flat.
+  // Backup otomatis harian tetap menyimpan salinan penuh sebelum ini, dan
+  // sangat disarankan menekan "Unduh Backup Sekarang" secara manual dulu
+  // sebelum menjalankan migrasi ini.
+  const runKontrolYearMigration = useCallback(async () => {
+    if (!user || !firebaseDB) return { ok: false, message: "Tidak ada koneksi cloud." };
+    const { db: rtdb, ref, get, set } = firebaseDB;
+    try {
+      const rootSnap = await get(ref(rtdb, `gwg_data/shared/kontrol`));
+      const rootVal = rootSnap.val() || {};
+      // Pisahkan: key yang berbentuk TAHUN (4 digit, sudah dipartisi) vs
+      // key yang berbentuk ID record lama (flat, masih perlu dimigrasi).
+      const oldFlatEntries = Object.entries(rootVal).filter(([k, v]) => !/^\d{4}$/.test(k) && v && typeof v === "object");
+      if (oldFlatEntries.length === 0) {
+        return { ok: true, message: "Tidak ada data lama untuk dimigrasi — struktur sudah rapi." };
+      }
+      const byYear = {};
+      oldFlatEntries.forEach(([id, rec]) => {
+        const y = kontrolYearOf(rec);
+        (byYear[y] = byYear[y] || {})[id] = rec;
+      });
+      // Tahap 1: tulis ke struktur baru (MERGE per tahun, tidak menimpa
+      // tahun yang mungkin sudah sebagian terisi dari migrasi sebelumnya).
+      for (const [year, recs] of Object.entries(byYear)) {
+        const existingSnap = await get(ref(rtdb, `gwg_data/shared/kontrol/${year}`));
+        const merged = { ...(existingSnap.val() || {}), ...recs };
+        await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), merged);
+        await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), true);
+      }
+      // Tahap 2: verifikasi tulisan berhasil sebelum menghapus data lama.
+      for (const [year, recs] of Object.entries(byYear)) {
+        const checkSnap = await get(ref(rtdb, `gwg_data/shared/kontrol/${year}`));
+        const checkVal = checkSnap.val() || {};
+        const missing = Object.keys(recs).filter(id => !checkVal[id]);
+        if (missing.length > 0) {
+          return { ok: false, message: `Verifikasi gagal untuk tahun ${year} (${missing.length} record tidak ditemukan). Migrasi DIHENTIKAN sebelum menghapus data lama — data lama masih utuh, aman dicoba lagi.` };
+        }
+      }
+      // Tahap 3: baru sekarang hapus entri lama dari root flat, satu per satu.
+      for (const [id] of oldFlatEntries) {
+        await set(ref(rtdb, `gwg_data/shared/kontrol/${id}`), null);
+      }
+      return { ok: true, message: `Migrasi selesai: ${oldFlatEntries.length} record dipindahkan ke ${Object.keys(byYear).length} tahun (${Object.keys(byYear).sort().join(", ")}).` };
+    } catch (e) {
+      return { ok: false, message: `Migrasi gagal: ${e.message}. Data lama TIDAK dihapus (aman).` };
+    }
+  }, [user]);
+
   // Tulis HANYA path/record yang benar-benar berubah ke Firebase, dibanding
   // snapshot remote terakhir yang kita punya. `updates` adalah object dengan
   // key berupa path relatif ("toko/T001", "kontrol", dst) dan value berupa
@@ -505,7 +687,27 @@ function useDB(user) {
     setDB(prevDB => {
       const updates = {};
       LIST_TABLES.forEach(key => {
-        if (newDB[key] !== prevDB[key]) updates[key] = arrToMap(newDB[key]);
+        if (newDB[key] === prevDB[key]) return;
+        if (key === "kontrol") {
+          // "kontrol" TIDAK ditulis sebagai satu blob di root — dipecah per
+          // tahun. Kita hanya berwenang atas tahun-tahun yang SEDANG dimuat
+          // (ada di prevDB.kontrol atau newDB.kontrol); tahun lain yang
+          // belum dimuat sama sekali TIDAK disentuh sama sekali, supaya
+          // save() bulk tidak pernah menimpa data tahun yang belum dimuat.
+          const byYear = {};
+          (newDB.kontrol || []).forEach(rec => {
+            const y = kontrolYearOf(rec);
+            (byYear[y] = byYear[y] || {})[rec.id] = rec;
+          });
+          const prevYears = new Set((prevDB.kontrol || []).map(kontrolYearOf));
+          const touchedYears = new Set([...Object.keys(byYear), ...prevYears]);
+          touchedYears.forEach(y => {
+            updates[`kontrol/${y}`] = byYear[y] || null; // null = tahun itu jadi kosong
+            if (byYear[y]) updates[`kontrolYearsIndex/${y}`] = true;
+          });
+          return;
+        }
+        updates[key] = arrToMap(newDB[key]);
       });
       if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
       if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
@@ -518,33 +720,59 @@ function useDB(user) {
   // addRecord/updateRecord/deleteRecord ditulis ulang agar masing-masing
   // HANYA mengirim 1 record (path "table/id"), bukan seluruh tabel —
   // jauh lebih hemat bandwidth saat toko sudah ribuan & kontrol terus bertambah.
+  // Untuk tabel "kontrol" khusus, path ditulis sebagai "kontrol/{tahun}/{id}"
+  // (partisi tahun) alih-alih "kontrol/{id}".
   const addRecord = useCallback((table, record) => {
     setDB(prevDB => {
       const nextArr = [...(prevDB[table]||[]), record];
       const next = { ...prevDB, [table]: nextArr };
       try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
-      pushUpdates({ [`${table}/${record.id}`]: record });
+      if (table === "kontrol") {
+        const y = kontrolYearOf(record);
+        pushUpdates({ [`kontrol/${y}/${record.id}`]: record, [`kontrolYearsIndex/${y}`]: true });
+      } else {
+        pushUpdates({ [`${table}/${record.id}`]: record });
+      }
       return next;
     });
   }, [pushUpdates]);
 
   const updateRecord = useCallback((table, id, updated) => {
     setDB(prevDB => {
-      let mergedRecord = null;
+      let oldRecord = null, mergedRecord = null;
       const nextArr = (prevDB[table]||[]).map(r => {
         if (r.id !== id) return r;
+        oldRecord = r;
         mergedRecord = { ...r, ...updated };
         return mergedRecord;
       });
       const next = { ...prevDB, [table]: nextArr };
       try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
-      if (mergedRecord) pushUpdates({ [`${table}/${id}`]: mergedRecord });
+      if (mergedRecord) {
+        if (table === "kontrol") {
+          const oldYear = kontrolYearOf(oldRecord);
+          const newYear = kontrolYearOf(mergedRecord);
+          if (oldYear !== newYear) {
+            // Tanggal record diedit lintas-tahun: pindahkan node-nya.
+            pushUpdates({
+              [`kontrol/${oldYear}/${id}`]: null,
+              [`kontrol/${newYear}/${id}`]: mergedRecord,
+              [`kontrolYearsIndex/${newYear}`]: true,
+            });
+          } else {
+            pushUpdates({ [`kontrol/${newYear}/${id}`]: mergedRecord });
+          }
+        } else {
+          pushUpdates({ [`${table}/${id}`]: mergedRecord });
+        }
+      }
       return next;
     });
   }, [pushUpdates]);
 
   const deleteRecord = useCallback((table, id) => {
     setDB(prevDB => {
+      const targetRecord = table === "kontrol" ? (prevDB[table]||[]).find(r => r.id === id) : null;
       const nextArr = (prevDB[table]||[]).filter(r => r.id !== id);
       const next = { ...prevDB, [table]: nextArr };
       try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
@@ -574,7 +802,11 @@ function useDB(user) {
           } catch {}
         }
       }
-      pushUpdates({ [`${table}/${id}`]: null }); // null = hapus path ini saja di Firebase
+      if (table === "kontrol" && targetRecord) {
+        pushUpdates({ [`kontrol/${kontrolYearOf(targetRecord)}/${id}`]: null });
+      } else {
+        pushUpdates({ [`${table}/${id}`]: null }); // null = hapus path ini saja di Firebase
+      }
       return next;
     });
   }, [pushUpdates]);
@@ -608,7 +840,13 @@ function useDB(user) {
     LIST_TABLES.forEach(key => { updates[key] = null; });
     updates.stokAwal = null;
     updates.bagiHasilConfig = null;
+    updates.kontrolYearsIndex = null; // index tahun kontrol — ikut dibersihkan saat reset
     pushUpdates(updates);
+    // Reset juga state lokal partisi-tahun supaya UI tidak menampilkan
+    // tahun-tahun "sudah dimuat" dari sesi sebelum reset.
+    kontrolByYearRef.current = {};
+    setLoadedKontrolYears([]);
+    setAvailableKontrolYears([]);
   }, [pushUpdates, db]);
 
   // ───────────────────────────────────────────────────────────────────────
@@ -740,7 +978,7 @@ function useDB(user) {
     } catch {}
   }, []);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration };
 }
 
 
@@ -4483,6 +4721,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   const [filterKuartal, setFilterKuartal] = useState("1"); // "1"|"2"|"3"|"4"
   const [filterTanggal, setFilterTanggal] = useState(() => new Date().toISOString().slice(0,10));
   const [filterRute, setFilterRute] = useState(""); // untuk harian
+  const [rankingScope, setRankingScope] = useState("semua"); // 3bulan | 6bulan | tahunIni | semua
+  const [rankingSortBy, setRankingSortBy] = useState("terjual"); // terjual | revenue
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
@@ -4666,6 +4906,67 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     }
   }, [enrichKontrol, filterTahun, filterWilayah, produkAktif]);
 
+  // ─── RANKING TOKO — Terlaris (jumlah produk terjual / revenue) ───
+  const rankingByJumlah = useMemo(() => {
+    const now = new Date();
+    let cutoff = null; // "YYYY-MM" — hanya ikutkan kontrol mulai bulan ini
+    if (rankingScope === "3bulan") cutoff = new Date(now.getFullYear(), now.getMonth()-2, 1).toISOString().slice(0,7);
+    else if (rankingScope === "6bulan") cutoff = new Date(now.getFullYear(), now.getMonth()-5, 1).toISOString().slice(0,7);
+    else if (rankingScope === "tahunIni") cutoff = `${now.getFullYear()}-01`;
+
+    const rows = enrichKontrol.filter(k =>
+      (!filterWilayah || k.wilayahId === filterWilayah) &&
+      (!cutoff || (k.tanggal||"").slice(0,7) >= cutoff)
+    );
+    const byToko = {};
+    rows.forEach(k => {
+      if (!k.tokoId) return;
+      if (!byToko[k.tokoId]) byToko[k.tokoId] = {
+        tokoId:k.tokoId, tokoNama:k.tokoNama, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama,
+        totalTerjual:0, totalRev:0, jumlahKunjungan:0,
+      };
+      byToko[k.tokoId].totalTerjual += k.totalTerjual||0;
+      byToko[k.tokoId].totalRev += k.totalRev||0;
+      byToko[k.tokoId].jumlahKunjungan += 1;
+    });
+    const list = Object.values(byToko).filter(r => r.jumlahKunjungan > 0);
+    list.sort((a,b) => rankingSortBy === "revenue" ? b.totalRev - a.totalRev : b.totalTerjual - a.totalTerjual);
+    return list.map((r,i) => ({ ...r, rank:i+1 }));
+  }, [enrichKontrol, filterWilayah, rankingScope, rankingSortBy]);
+
+  // ─── RANKING TOKO — Konsisten terjual N bulan berturut-turut ───
+  // Sebuah bulan dihitung "terjual" untuk toko itu kalau totalTerjual > 0
+  // pada SALAH SATU entri kontrol di bulan itu. Streak dihitung dari
+  // deretan bulan (YYYY-MM) yang berurutan tanpa jeda.
+  const KONSISTEN_MIN_BULAN = 3;
+  const rankingKonsisten = useMemo(() => {
+    const isNextMonth = (a, b) => {
+      const [ay, am] = a.split("-").map(Number);
+      const [by, bm] = b.split("-").map(Number);
+      return (by*12+bm) - (ay*12+am) === 1;
+    };
+    const byToko = {};
+    enrichKontrol.forEach(k => {
+      if (!k.tokoId || !k.tanggal) return;
+      if (filterWilayah && k.wilayahId !== filterWilayah) return;
+      if ((k.totalTerjual||0) <= 0) return; // hanya bulan yang BENAR-BENAR ada penjualan
+      const bln = k.tanggal.slice(0,7);
+      if (!byToko[k.tokoId]) byToko[k.tokoId] = { tokoId:k.tokoId, tokoNama:k.tokoNama, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, months: new Set() };
+      byToko[k.tokoId].months.add(bln);
+    });
+    const list = Object.values(byToko).map(info => {
+      const sorted = [...info.months].sort();
+      let longest = 1, current = 1;
+      for (let i=1; i<sorted.length; i++) {
+        current = isNextMonth(sorted[i-1], sorted[i]) ? current+1 : 1;
+        if (current > longest) longest = current;
+      }
+      return { ...info, totalBulanTerjual: sorted.length, streakTerpanjang: sorted.length ? longest : 0, bulanTerakhir: sorted[sorted.length-1] || "-" };
+    });
+    return list.filter(r => r.streakTerpanjang >= KONSISTEN_MIN_BULAN)
+      .sort((a,b) => b.streakTerpanjang - a.streakTerpanjang || b.totalBulanTerjual - a.totalBulanTerjual);
+  }, [enrichKontrol, filterWilayah]);
+
   // ─── BUILD COLUMNS ───
   const produkCols = produkAktif.flatMap(p => [
     { key:`stok_${p.id}`,    label:`Stok ${p.id}`, render:v=><span>{fmt(v||0)}</span> },
@@ -4714,6 +5015,16 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
   ];
 
+  const colsRanking = [
+    { key:"rank",           label:"#",            render:v=><b style={{ color: v===1?T.gold:v===2?T.gray500:v===3?"#B45309":T.gray400 }}>{v<=3 ? ["🥇","🥈","🥉"][v-1] : v}</b> },
+    { key:"tokoNama",       label:"Toko",         render:v=><b>{v}</b> },
+    { key:"ruteNama",       label:"Rute",         render:v=><span>{v}</span> },
+    { key:"wilayahNama",    label:"Wilayah",      render:v=><Badge color={T.green}>{v}</Badge> },
+    { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
+    { key:"totalTerjual",   label:"Total Terjual",render:v=><b style={{ color:T.purple }}>{fmt(v)} pcs</b> },
+    { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
+  ];
+
   // ─── Ambil data & kolom aktif ───
   let activeData = [], activeCols = [], activeTitle = "", activeFilename = "";
   if (mode==="harian") {
@@ -4731,6 +5042,12 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     activeCols = filterWilayah ? colsKuartalRute : colsKuartalWil;
     activeTitle = `Rekap Kuartal ${filterKuartal} Tahun ${filterTahun}${filterWilayah?" – "+(db.wilayah||[]).find(w=>w.id===filterWilayah)?.nama||"":""}`;
     activeFilename = `rekap_kuartal${filterKuartal}_${filterTahun}`;
+  } else if (mode==="ranking") {
+    activeData = rankingByJumlah;
+    activeCols = colsRanking;
+    const scopeLabel = { semua:"Semua Waktu", tahunIni:"Tahun Ini", "3bulan":"3 Bulan Terakhir", "6bulan":"6 Bulan Terakhir" }[rankingScope];
+    activeTitle = `Ranking Toko Terlaris — ${scopeLabel}${filterWilayah?" – "+(db.wilayah||[]).find(w=>w.id===filterWilayah)?.nama||"":""}`;
+    activeFilename = `ranking_toko_${rankingScope}`;
   } else {
     activeData = rekapTahunan;
     activeCols = filterWilayah ? colsKuartalRute : colsKuartalWil;
@@ -4854,6 +5171,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"bulanan",  label:"📆 Bulanan" },
     { key:"kuartal",  label:"📊 Kuartal" },
     { key:"tahunan",  label:"📈 Tahunan" },
+    { key:"ranking",  label:"🏆 Ranking Toko" },
   ];
 
   return (
@@ -4998,6 +5316,30 @@ function TabRekap({ db, analytics, salesWilayahId }) {
             </select>
           </div>
         )}
+
+        {/* Filter khusus Ranking Toko */}
+        {mode==="ranking" && (
+          <>
+            <div style={{ minWidth:160 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Periode</div>
+              <select value={rankingScope} onChange={e=>setRankingScope(e.target.value)}
+                style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                <option value="3bulan">3 Bulan Terakhir</option>
+                <option value="6bulan">6 Bulan Terakhir</option>
+                <option value="tahunIni">Tahun Ini</option>
+                <option value="semua">Semua Waktu (data yang sudah dimuat)</option>
+              </select>
+            </div>
+            <div style={{ minWidth:160 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Urutkan Berdasarkan</div>
+              <select value={rankingSortBy} onChange={e=>setRankingSortBy(e.target.value)}
+                style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                <option value="terjual">Jumlah Produk Terjual</option>
+                <option value="revenue">Revenue</option>
+              </select>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Summary Cards */}
@@ -5066,6 +5408,54 @@ function TabRekap({ db, analytics, salesWilayahId }) {
             </Card>
           </>
         )
+      )}
+
+      {/* Panel tambahan khusus mode Ranking: toko konsisten terjual berturut-turut */}
+      {mode==="ranking" && (
+        <Card style={{ marginTop:16 }}>
+          <div style={{ fontSize:15, fontWeight:800, color:T.gray800, marginBottom:4 }}>
+            🔥 Toko Konsisten Terjual ≥{KONSISTEN_MIN_BULAN} Bulan Berturut-turut
+          </div>
+          <div style={{ fontSize:12, color:T.gray400, marginBottom:14 }}>
+            Dihitung dari SELURUH data kontrol yang sudah dimuat (tidak terikat periode di atas) — toko dengan
+            deretan bulan tanpa jeda yang selalu ada penjualan (&gt;0 pcs terjual).
+          </div>
+          {rankingKonsisten.length === 0 ? (
+            <div style={{ textAlign:"center", color:T.gray400, padding:24, fontSize:13 }}>
+              📭 Belum ada toko dengan streak ≥{KONSISTEN_MIN_BULAN} bulan berturut-turut
+              {filterWilayah ? " di wilayah terpilih" : ""}.
+            </div>
+          ) : (
+            <div style={{ overflowX:"auto" }}>
+              <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+                <thead>
+                  <tr style={{ background:T.gray50 }}>
+                    <th style={thS}>#</th>
+                    <th style={thS}>Toko</th>
+                    <th style={thS}>Rute</th>
+                    <th style={thS}>Wilayah</th>
+                    <th style={thS}>Streak Terpanjang</th>
+                    <th style={thS}>Total Bulan Terjual</th>
+                    <th style={thS}>Bulan Terakhir Terjual</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rankingKonsisten.map((r, i) => (
+                    <tr key={r.tokoId} style={{ background:i%2===0?T.white:T.gray50, borderTop:`1px solid ${T.gray100}` }}>
+                      <td style={tdS}>{i<3 ? ["🥇","🥈","🥉"][i] : i+1}</td>
+                      <td style={tdS}><b>{r.tokoNama}</b></td>
+                      <td style={tdS}>{r.ruteNama}</td>
+                      <td style={tdS}><Badge color={T.green}>{r.wilayahNama}</Badge></td>
+                      <td style={tdS}><b style={{ color:T.orange }}>{r.streakTerpanjang} bulan</b></td>
+                      <td style={tdS}>{r.totalBulanTerjual} bulan</td>
+                      <td style={tdS}>{r.bulanTerakhir}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </Card>
       )}
     </div>
   );
@@ -5977,6 +6367,9 @@ export default function GWGSuperApp() {
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [restoreFileError, setRestoreFileError] = useState(""); // error saat baca file backup lokal/Drive
   const restoreFileRef = useRef(null);
+  const [migrating, setMigrating] = useState(false); // migrasi struktur kontrol → partisi tahun sedang berjalan
+  const [migrationResult, setMigrationResult] = useState(null); // { ok, message } hasil migrasi terakhir
+  const [migrateConfirmText, setMigrateConfirmText] = useState("");
   const [loginError, setLoginError] = useState("");
   const [showActiveUsers, setShowActiveUsers] = useState(false);
   // Ref tombol "Pengguna Aktif" + posisi panel yang selalu di-clamp di dalam
@@ -6056,7 +6449,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Mobile-friendly: pastikan viewport meta tag benar agar tampilan tidak
@@ -6747,6 +7140,57 @@ export default function GWGSuperApp() {
                     Pastikan <b>Google Drive API</b> aktif di Google Cloud Console dan scope <code>drive.file</code> sudah ditambahkan ke OAuth consent screen project Firebase Anda.
                   </div>
                 )}
+              </div>
+            )}
+
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>📅 Data Penjualan (Kontrol) per Tahun</div>
+            <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
+              Untuk hemat kuota Firebase gratis, hanya <b>{new Date().getFullYear()}</b> &amp; <b>{new Date().getFullYear()-1}</b> yang otomatis dimuat.
+              Tahun lain dimuat manual di sini bila perlu dilihat di laporan/rekap.
+            </div>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
+              {availableKontrolYears.length === 0 && (
+                <div style={{ fontSize:12, color:T.gray400 }}>Belum ada indeks tahun (normal jika data kontrol masih struktur lama / belum ada data sama sekali).</div>
+              )}
+              {availableKontrolYears.map(y => {
+                const isLoaded = loadedKontrolYears.includes(y);
+                return (
+                  <Btn key={y} variant={isLoaded ? "secondary" : "primary"} disabled={isLoaded}
+                    onClick={() => loadKontrolYear(y)}>
+                    {isLoaded ? `✅ ${y} (dimuat)` : `⬇️ Muat tahun ${y}`}
+                  </Btn>
+                );
+              })}
+            </div>
+
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🔧 Migrasi Struktur Data Lama</div>
+            <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
+              Sekali jalan: memindahkan data kontrol lama (satu tabel besar) ke struktur per-tahun. Data diverifikasi
+              tersalin dengan benar dulu sebelum salinan lama dihapus — aman diulang jika gagal di tengah jalan.
+              Disarankan tekan "Unduh Backup Sekarang" dulu sebelum menjalankan ini.
+            </div>
+            <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap", marginBottom:8 }}>
+              <input type="text" value={migrateConfirmText} onChange={e=>setMigrateConfirmText(e.target.value)}
+                placeholder="Ketik MIGRASI untuk aktifkan tombol"
+                style={{ padding:"8px 10px", fontSize:13, border:`1px solid ${T.gray200}`, borderRadius:8, fontFamily:"inherit" }} />
+              <Btn variant="danger" disabled={migrating || migrateConfirmText.trim().toUpperCase() !== "MIGRASI"}
+                onClick={async () => {
+                  setMigrating(true);
+                  setMigrationResult(null);
+                  const result = await runKontrolYearMigration();
+                  setMigrationResult(result);
+                  setMigrating(false);
+                  setMigrateConfirmText("");
+                }}>
+                {migrating ? "⏳ Memigrasi..." : "🔧 Jalankan Migrasi Sekarang"}
+              </Btn>
+            </div>
+            {migrationResult && (
+              <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
+                background: migrationResult.ok ? "#E6F4ED" : "#FEF2F2",
+                color: migrationResult.ok ? "#0F4C35" : "#DC2626",
+                border: `1px solid ${migrationResult.ok ? "#6EE7B7" : "#FCA5A5"}` }}>
+                {migrationResult.message}
               </div>
             )}
 
