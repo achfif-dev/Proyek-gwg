@@ -475,9 +475,14 @@ function useDB(user) {
       try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
       // Jika menghapus pengguna, tandai emailnya di blacklist agar tidak
       // auto-register ulang ketika pengguna tersebut refresh browser.
+      // KECUALI untuk email Super Admin — akun ini TIDAK BOLEH pernah masuk
+      // blacklist, walau baris yang dihapus cuma duplikat lama. Tanpa
+      // pengecualian ini, membersihkan baris duplikat Super Admin bisa
+      // tanpa sengaja memblokir akun Super Admin asli selamanya dari
+      // auto-register (bug: "data hilang, tidak bisa akses reset database").
       if (table === "pengguna") {
         const deletedUser = (prevDB[table]||[]).find(r => r.id === id);
-        if (deletedUser?.email) {
+        if (deletedUser?.email && !isSuperAdminEmail(deletedUser.email)) {
           const emailKey = encodeEmailKey(deletedUser.email);
           // Tulis langsung ke path khusus di luar shared (bukan lewat pushUpdates)
           if (firebaseDB && basePathRef.current) {
@@ -6176,7 +6181,7 @@ export default function GWGSuperApp() {
                       },
                     },
                     { label: "💾 Backup & Restore", onClick: openBackupModal },
-                    ...(currentUserRecord?.role === "Admin" ? [{
+                    ...(isAdmin ? [{
                       label: "⚠️ Reset Database",
                       danger: true,
                       onClick: () => { setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); },
