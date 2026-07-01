@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
 
 // ─────────────────────────────────────────────
@@ -666,7 +666,15 @@ function useAnalytics(db) {
         rev: rows.reduce((s,k) => s + k.totalRev, 0),
         tokoCount: (db.toko||[]).filter(t => t.ruteId === r.id).length,
       };
-    });
+    })
+      // Urutkan sama seperti Master Rute: per Wilayah (abjad) dulu, lalu
+      // Nama Rute dengan natural sort — supaya daftar "Rute Aktif" di
+      // Dashboard tidak tampil acak sesuai urutan input data.
+      .sort((a,b) => {
+        const wCompare = (a.wilayahNama||"").localeCompare(b.wilayahNama||"", "id", { sensitivity:"base" });
+        if (wCompare !== 0) return wCompare;
+        return naturalCompare(a.nama||"", b.nama||"");
+      });
 
     const produkStats = (db.produk||[]).map(p => ({
       ...p,
@@ -1114,12 +1122,85 @@ function downloadKontrolTemplate(db) {
   }
 }
 
+// Hook dipakai oleh menu dropdown (ImportMenu, ExportMenu, dll) supaya
+// posisinya selalu terkunci di dalam layar. Sebelumnya dropdown memakai
+// `position:absolute; right:0` relatif ke tombolnya sendiri — di HP, jika
+// tombol berada dekat sisi kiri, dropdown (lebar ~230px) akan terdorong ke
+// kiri hingga keluar layar dan terlihat terpotong. Hook ini mengukur posisi
+// tombol saat menu dibuka lalu menghitung `left` yang di-clamp supaya
+// seluruh dropdown selalu terlihat penuh, di layar seukuran apa pun.
+function useClampedMenuPosition(open, anchorRef, menuWidth = 230) {
+  const [style, setStyle] = useState(null);
+  useLayoutEffect(() => {
+    if (!open || !anchorRef.current) { setStyle(null); return; }
+    const update = () => {
+      const rect = anchorRef.current.getBoundingClientRect();
+      const margin = 8;
+      const width = Math.min(menuWidth, window.innerWidth - margin * 2);
+      let left = rect.right - width; // default: rata kanan ke tombol
+      left = Math.max(margin, Math.min(left, window.innerWidth - width - margin));
+      setStyle({ position:"fixed", top: rect.bottom + 4, left, width });
+    };
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("scroll", update, true);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("scroll", update, true);
+    };
+  }, [open, menuWidth]);
+  return style;
+}
+
+// Menu "hamburger" dipakai di header aplikasi untuk mengelompokkan tombol
+// aksi admin (Backup Cepat, Backup, Reset DB) supaya header tidak penuh /
+// berantakan di layar HP. Posisinya memakai hook clamped yang sama supaya
+// selalu terlihat penuh di dalam layar.
+function HeaderMenu({ items, icon="☰", title="Menu" }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const menuStyle = useClampedMenuPosition(open, ref, 220);
+  useEffect(() => {
+    const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+  if (!items?.length) return null;
+  return (
+    <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
+      <button onClick={() => setOpen(o=>!o)} title={title}
+        style={{ display:"flex", alignItems:"center", justifyContent:"center", width:34, height:34,
+          background:"rgba(255,255,255,.12)", color:"#fff", border:"1px solid rgba(255,255,255,.2)",
+          borderRadius:8, cursor:"pointer", fontSize:16, fontFamily:"inherit" }}>
+        {icon}
+      </button>
+      {open && menuStyle && (
+        <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
+          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.16)", zIndex:250, overflow:"hidden" }}>
+          {items.map((it, i) => (
+            <button key={i} onClick={() => { it.onClick?.(); setOpen(false); }}
+              style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
+                background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit",
+                color: it.danger ? T.red : T.gray800,
+                borderBottom: i<items.length-1 ? `1px solid ${T.gray100}` : "none" }}
+              onMouseEnter={e => e.target.style.background = it.danger ? T.redLt : T.gray50}
+              onMouseLeave={e => e.target.style.background="none"}>
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Import Menu Component — Download Template & Upload Excel
 function ImportMenu({ label="Import", onTemplate, onParseRows }) {
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState(null);
   const fileRef = useRef(null);
   const ref = useRef(null);
+  const menuStyle = useClampedMenuPosition(open, ref, 230);
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", handler);
@@ -1151,9 +1232,9 @@ function ImportMenu({ label="Import", onTemplate, onParseRows }) {
   return (
     <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
       <Btn variant="secondary" size="sm" icon="📥" onClick={() => setOpen(!open)}>{label}</Btn>
-      {open && (
-        <div style={{ position:"absolute", right:0, top:"110%", background:T.white, border:`1px solid ${T.gray200}`,
-          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, minWidth:230, overflow:"hidden" }}>
+      {open && menuStyle && (
+        <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
+          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, overflow:"hidden" }}>
           <button onClick={() => { onTemplate(); setOpen(false); }}
             style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
               background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit", color:T.gray800,
@@ -1197,27 +1278,32 @@ function ImportMenu({ label="Import", onTemplate, onParseRows }) {
 }
 
 // Export Menu Component
-function ExportMenu({ data, columns, title, filename }) {
+// exportData / exportCols: data & kolom khusus untuk file ekspor (CSV/Excel/PDF/JPG)
+//   jika tidak diberikan, memakai data & columns yang sama dengan tampilan.
+function ExportMenu({ data, columns, title, filename, exportData, exportCols }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
+  const menuStyle = useClampedMenuPosition(open, ref, 180);
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+  const eData = exportData || data;
+  const eCols = exportCols || columns;
   return (
     <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
       <Btn variant="secondary" size="sm" icon="📤" onClick={() => setOpen(!open)}>Ekspor</Btn>
-      {open && (
-        <div style={{ position:"absolute", right:0, top:"110%", background:T.white, border:`1px solid ${T.gray200}`,
-          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, minWidth:180, overflow:"hidden" }}>
+      {open && menuStyle && (
+        <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
+          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, overflow:"hidden" }}>
           {[
-            { label:"📊 CSV", action: () => { exportCSV(data, columns, filename); setOpen(false); } },
-            { label:"🟢 Excel (.xlsx)", action: () => { exportExcel(data, columns, title, filename); setOpen(false); } },
-            { label:"🌐 HTML", action: () => { exportHTML(data, columns, title, filename); setOpen(false); } },
-            { label:"📋 JSON", action: () => { exportJSON(data, filename); setOpen(false); } },
-            { label:"📄 PDF Landscape", action: () => { exportPDF(data, columns, title, filename); setOpen(false); } },
-            { label:"🖼️ JPG", action: () => { exportJPG(data, columns, title, filename); setOpen(false); } },
+            { label:"📊 CSV", action: () => { exportCSV(eData, eCols, filename); setOpen(false); } },
+            { label:"🟢 Excel (.xlsx)", action: () => { exportExcel(eData, eCols, title, filename); setOpen(false); } },
+            { label:"🌐 HTML", action: () => { exportHTML(eData, eCols, title, filename); setOpen(false); } },
+            { label:"📋 JSON", action: () => { exportJSON(eData, filename); setOpen(false); } },
+            { label:"📄 PDF Landscape", action: () => { exportPDF(eData, eCols, title, filename); setOpen(false); } },
+            { label:"🖼️ JPG", action: () => { exportJPG(eData, eCols, title, filename); setOpen(false); } },
           ].map((opt, i) => (
             <button key={i} onClick={opt.action}
               style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
@@ -3051,7 +3137,57 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ImportMenu label="Import Kontrol" onTemplate={()=>downloadKontrolTemplate(db)} onParseRows={importKontrolFromRows} />
-          <ExportMenu data={data} columns={cols} title="Kontrol Bulanan" filename={`kontrol_${filter.bulan||"semua"}`} />
+          {(() => {
+            // ── Kolom ekspor kontrol (tanpa React render, gunakan nilai plain) ──
+            const kontrolExportCols = [
+              { key:"id",           label:"ID" },
+              { key:"tokoNama",     label:"Toko" },
+              { key:"wilayahNama",  label:"Wilayah" },
+              { key:"ruteNama",     label:"Rute" },
+              { key:"tanggal",      label:"Tanggal" },
+              ...produkAktif.flatMap(p=>[
+                { key:`stok_${p.id}`,       label:`Stok ${p.nama||p.id}` },
+                { key:`terjual_${p.id}`,    label:`Jual ${p.nama||p.id}` },
+                { key:`bonusInput_${p.id}`, label:`Bonus ${p.nama||p.id} (pcs)` },
+              ]),
+              { key:"totalRevFmt",  label:"Revenue (Rp)" },
+              { key:"totalBonus",   label:"Total Bonus (pcs)" },
+              { key:"statusLabel",  label:"Status" },
+              { key:"catatan",      label:"Catatan" },
+            ];
+            const kontrolExportData = [
+              ...data.map(row=>({
+                ...row,
+                totalRevFmt: fmtRp(row.totalRev||0),
+                statusLabel: row.catatanStatus
+                  ? (CATATAN_STATUS[row.catatanStatus]?.label || row.catatanStatus)
+                  : "Terjual",
+              })),
+              // Baris kosong pemisah
+              { id:"", tokoNama:"", wilayahNama:"", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
+              // Baris total
+              { id:"TOTAL", tokoNama:"═══ TOTAL KESELURUHAN ═══",
+                wilayahNama:"", ruteNama:"", tanggal:"",
+                totalRevFmt: fmtRp(totalRevData),
+                totalBonus: totalBonusData,
+                statusLabel:`${data.length} entri`, catatan:"" },
+              // Baris kosong
+              { id:"", tokoNama:"", wilayahNama:"", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
+              // Ringkasan
+              { id:"", tokoNama:"📊 RINGKASAN",        wilayahNama:"",                          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Total Entri Kontrol",  wilayahNama:String(data.length),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Total Revenue",         wilayahNama:fmtRp(totalRevData),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Total Bonus (pcs)",     wilayahNama:String(totalBonusData),       ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Revenue Rata-rata",     wilayahNama:data.length ? fmtRp(Math.round(totalRevData/data.length)) : "Rp 0", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
+            ];
+            return (
+              <ExportMenu
+                data={data} columns={cols}
+                exportData={kontrolExportData} exportCols={kontrolExportCols}
+                title="Kontrol Bulanan" filename={`kontrol_${filter.bulan||"semua"}`}
+              />
+            );
+          })()}
           <Btn variant="secondary" size="sm" icon="📅"
             onClick={()=>setViewMode(v=>v==="table"?"monthly":"table")}>
             {viewMode==="table"?"🗺️ View per Rute":"📋 View Tabel"}
@@ -3800,22 +3936,35 @@ function Dashboard({ db, analytics, salesWilayahId }) {
     : analytics.tokoAktif;
   const maxRev = Math.max(...perWilayah.map(w=>w.rev),1);
 
-  // ✅ Ekspor Dashboard sekarang pakai ExportMenu yang sama dengan tab lain
-  // (CSV / Excel / HTML / JSON / PDF / JPG), bukan cuma tombol CSV tunggal.
-  // Rows digabung: ringkasan utama + breakdown revenue per wilayah.
+  // ✅ Ekspor Dashboard — tiga kolom (Kategori, Metrik, Nilai) agar lebih rapi & terkelompok
+  const _totalBonus = analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0);
   const dashboardExportRows = [
-    { metric:"Total Revenue", value:fmtRp(totalRev) },
-    { metric:"Laba Bersih (Est, 70%)", value:fmtRp(labaBersih) },
-    { metric:"Toko Aktif", value:`${tokoAktif} dari ${(db.toko||[]).length}` },
-    { metric:"Total Wilayah", value:(db.wilayah||[]).length },
-    { metric:"Total Rute", value:(db.rute||[]).length },
-    { metric:"Total Produk Aktif", value:(db.produk||[]).filter(p=>p.aktif!==false).length },
-    { metric:"Entri Kontrol", value:(db.kontrol||[]).length },
-    { metric:"Total Bonus (pcs)", value:fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0)) },
-    { metric:"Pengguna Terdaftar", value:(db.pengguna||[]).length },
-    ...perWilayah.map(w => ({ metric:`Revenue — ${w.nama||w.id}`, value:fmtRp(w.rev) })),
+    // ── Keuangan ──
+    { kategori:"💰 KEUANGAN",      metrik:"Total Revenue",          nilai:fmtRp(totalRev) },
+    { kategori:"",                  metrik:"Laba Bersih Est. (70%)", nilai:fmtRp(labaBersih) },
+    { kategori:"",                  metrik:"",                       nilai:"" },
+    // ── Master Data ──
+    { kategori:"🏪 MASTER DATA",   metrik:"Toko Aktif",             nilai:`${tokoAktif} dari ${(db.toko||[]).length}` },
+    { kategori:"",                  metrik:"Total Wilayah",          nilai:(db.wilayah||[]).length },
+    { kategori:"",                  metrik:"Total Rute",             nilai:(db.rute||[]).length },
+    { kategori:"",                  metrik:"Total Produk Aktif",     nilai:(db.produk||[]).filter(p=>p.aktif!==false).length },
+    { kategori:"",                  metrik:"Pengguna Terdaftar",     nilai:(db.pengguna||[]).length },
+    { kategori:"",                  metrik:"",                       nilai:"" },
+    // ── Aktivitas ──
+    { kategori:"📋 AKTIVITAS",     metrik:"Entri Kontrol",          nilai:(db.kontrol||[]).length },
+    { kategori:"",                  metrik:"Total Bonus (pcs)",      nilai:fmt(_totalBonus) },
+    { kategori:"",                  metrik:"",                       nilai:"" },
+    // ── Revenue per Wilayah ──
+    { kategori:"📍 REVENUE / WILAYAH", metrik:"",                   nilai:"" },
+    ...perWilayah.map(w => ({ kategori:"", metrik:w.nama||w.id,     nilai:fmtRp(w.rev) })),
+    { kategori:"",                  metrik:"",                       nilai:"" },
+    { kategori:"",                  metrik:"TOTAL REVENUE",          nilai:fmtRp(totalRev) },
   ];
-  const dashboardExportCols = [{ key:"metric", label:"Metrik" }, { key:"value", label:"Nilai" }];
+  const dashboardExportCols = [
+    { key:"kategori", label:"Kategori" },
+    { key:"metrik",   label:"Metrik" },
+    { key:"nilai",    label:"Nilai" },
+  ];
 
   return (
     <div>
@@ -4364,7 +4513,54 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📑 Rekap Penjualan</div>
           <div style={{ fontSize:12, color:T.gray400 }}>Rekap otomatis dari data kontrol bulanan</div>
         </div>
-        <ExportMenu data={activeData} columns={activeCols} title={activeTitle} filename={activeFilename} />
+        {(() => {
+          // ── Kolom ekspor rekap (plain, tanpa React render) ──
+          const rekapExportCols = activeCols.map(c => ({ key: c.key, label: c.label }));
+          // Tambah kolom revenue formatted jika ada totalRev
+          const hasTotalRev = activeCols.some(c => c.key === "totalRev");
+          const finalRekapCols = hasTotalRev
+            ? rekapExportCols.map(c => c.key === "totalRev" ? { ...c, key:"totalRevFmt", label:"Revenue (Rp)" } : c)
+            : rekapExportCols;
+          const rekapExportData = [
+            ...activeData.map(row => ({
+              ...row,
+              totalRevFmt: hasTotalRev ? fmtRp(row.totalRev||0) : undefined,
+            })),
+            // Pemisah
+            {},
+            // Baris total
+            {
+              wilayahNama: "═══ TOTAL ═══",
+              ruteNama: "",
+              bulan: "",
+              jumlahToko: totalKunjungan,
+              jumlahKunjungan: totalKunjungan,
+              totalRevFmt: fmtRp(totalRevAll),
+              totalBonus: totalBonusAll,
+              ...produkAktif.reduce((acc, p) => {
+                acc[`stok_${p.id}`]    = activeData.reduce((s,r)=>s+(r[`stok_${p.id}`]||0),0);
+                acc[`terjual_${p.id}`] = activeData.reduce((s,r)=>s+(r[`terjual_${p.id}`]||0),0);
+                acc[`bonus_${p.id}`]   = activeData.reduce((s,r)=>s+(r[`bonus_${p.id}`]||0),0);
+                return acc;
+              }, {}),
+            },
+            // Baris kosong
+            {},
+            // Ringkasan
+            { wilayahNama:"📊 RINGKASAN",             ruteNama:"",                        totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Total Revenue",             ruteNama:fmtRp(totalRevAll),         totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Total Bonus (pcs)",         ruteNama:String(totalBonusAll),      totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Jumlah Kunjungan/Toko",    ruteNama:String(totalKunjungan),     totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Jumlah Baris Data",         ruteNama:String(activeData.length),  totalRevFmt:"", totalBonus:"" },
+          ];
+          return (
+            <ExportMenu
+              data={activeData} columns={activeCols}
+              exportData={rekapExportData} exportCols={finalRekapCols}
+              title={activeTitle} filename={activeFilename}
+            />
+          );
+        })()}
       </div>
 
       {/* Mode Tabs */}
@@ -5823,28 +6019,27 @@ export default function GWGSuperApp() {
               )}
 
               {isAdmin && (
-                <div style={{ display:"flex", gap:4 }}>
-                  <Btn variant="secondary" size="sm" onClick={async () => {
-                    const snap = await backupNow(db, { reason: "manual-cepat" });
-                    if (snap) {
-                      downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, snap);
-                    }
-                  }}
-                    style={{ background:"rgba(255,255,255,.1)", color:"#fff", border:"1px solid rgba(255,255,255,.2)", fontSize:11, padding:"5px 10px" }}
-                    title="Backup & unduh sekarang (tanpa buka modal)">
-                    💾⚡
-                  </Btn>
-                  <Btn variant="secondary" size="sm" onClick={openBackupModal}
-                    style={{ background:"rgba(255,255,255,.1)", color:"#fff", border:"1px solid rgba(255,255,255,.2)" }}>
-                    💾 Backup
-                  </Btn>
-                </div>
-              )}
-              {isAdmin && currentUserRecord?.role === "Admin" && (
-                <Btn variant="secondary" size="sm" onClick={()=>{ setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); }}
-                  style={{ background:"rgba(220,38,38,.25)", color:"#FCA5A5", border:"1px solid rgba(220,38,38,.4)" }}>
-                  ⚠️ Reset DB
-                </Btn>
+                <HeaderMenu
+                  icon="☰"
+                  title="Menu Admin"
+                  items={[
+                    {
+                      label: "💾⚡ Backup Cepat (unduh sekarang)",
+                      onClick: async () => {
+                        const snap = await backupNow(db, { reason: "manual-cepat" });
+                        if (snap) {
+                          downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, snap);
+                        }
+                      },
+                    },
+                    { label: "💾 Backup & Restore", onClick: openBackupModal },
+                    ...(currentUserRecord?.role === "Admin" ? [{
+                      label: "⚠️ Reset Database",
+                      danger: true,
+                      onClick: () => { setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); },
+                    }] : []),
+                  ]}
+                />
               )}
             </div>
           </div>
