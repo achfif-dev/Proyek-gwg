@@ -2619,12 +2619,22 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       totalRev, totalBonus, toko, rute, wilayah };
   }), [db, produkAktif]);
 
-  // Filter: wilayah → rute cascade
-  const ruteFiltered = useMemo(() =>
-    filter.wilayahId
+  // Filter: wilayah → rute cascade.
+  // Diurutkan per Wilayah (abjad) dahulu, lalu Nama Rute (natural sort) —
+  // sama seperti urutan di tab Rute — supaya dropdown filter di sini tidak
+  // tampil acak sesuai urutan input/insert data mentah.
+  const ruteFiltered = useMemo(() => {
+    const list = filter.wilayahId
       ? (db.rute||[]).filter(r=>r.wilayahId===filter.wilayahId)
-      : (db.rute||[])
-  , [db.rute, filter.wilayahId]);
+      : (db.rute||[]);
+    return [...list].sort((a,b) => {
+      const wA = (db.wilayah||[]).find(w=>w.id===a.wilayahId)?.nama||"";
+      const wB = (db.wilayah||[]).find(w=>w.id===b.wilayahId)?.nama||"";
+      const wCompare = wA.localeCompare(wB, "id", { sensitivity:"base" });
+      if (wCompare !== 0) return wCompare;
+      return naturalCompare(a.nama||"", b.nama||"");
+    });
+  }, [db.rute, db.wilayah, filter.wilayahId]);
 
   const data = useMemo(() => enriched.filter(k =>
     (!filter.wilayahId || k.wilayahId === filter.wilayahId) &&
@@ -2947,11 +2957,18 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
 
   // Opsi Rute & Toko di dalam modal Tambah/Edit Kontrol — mengikuti cascade Wilayah → Rute → Toko
-  const modalRuteOpts = useMemo(() => (
-    modalFilter.wilayahId
+  const modalRuteOpts = useMemo(() => {
+    const list = modalFilter.wilayahId
       ? (db.rute||[]).filter(r=>r.wilayahId===modalFilter.wilayahId)
-      : (db.rute||[])
-  ).map(r=>({ value:r.id, label:r.nama })), [db.rute, modalFilter.wilayahId]);
+      : (db.rute||[]);
+    return [...list].sort((a,b) => {
+      const wA = (db.wilayah||[]).find(w=>w.id===a.wilayahId)?.nama||"";
+      const wB = (db.wilayah||[]).find(w=>w.id===b.wilayahId)?.nama||"";
+      const wCompare = wA.localeCompare(wB, "id", { sensitivity:"base" });
+      if (wCompare !== 0) return wCompare;
+      return naturalCompare(a.nama||"", b.nama||"");
+    }).map(r=>({ value:r.id, label:r.nama }));
+  }, [db.rute, db.wilayah, modalFilter.wilayahId]);
 
   const modalTokoOpts = useMemo(() => {
     // Tampilkan toko Aktif DAN Baru di dropdown kontrol (jangan tampilkan Non-Aktif)
@@ -3336,7 +3353,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
       {/* Modal Tambah Toko Cepat */}
       {tambahTokoModal && (() => {
-        const ruteOptsForToko = (db.rute||[]).map(r => {
+        const ruteOptsForToko = [...(db.rute||[])].sort((a,b) => {
+          const wA = (db.wilayah||[]).find(w=>w.id===a.wilayahId)?.nama||"";
+          const wB = (db.wilayah||[]).find(w=>w.id===b.wilayahId)?.nama||"";
+          const wCompare = wA.localeCompare(wB, "id", { sensitivity:"base" });
+          if (wCompare !== 0) return wCompare;
+          return naturalCompare(a.nama||"", b.nama||"");
+        }).map(r => {
           const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
           return { value:r.id, label:`${r.nama} (${w?.nama||"?"})` };
         });
