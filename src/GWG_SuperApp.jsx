@@ -5893,6 +5893,8 @@ export default function GWGSuperApp() {
   const [backupLoading, setBackupLoading] = useState(false);
   const [restoreTarget, setRestoreTarget] = useState(null); // snapshot yang mau direstore (perlu konfirmasi)
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
+  const [restoreFileError, setRestoreFileError] = useState(""); // error saat baca file backup lokal/Drive
+  const restoreFileRef = useRef(null);
   const [loginError, setLoginError] = useState("");
   const [showActiveUsers, setShowActiveUsers] = useState(false);
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
@@ -5969,6 +5971,47 @@ export default function GWGSuperApp() {
     try { setBackupList(await listBackups()); } catch { setBackupList([]); }
     setBackupLoading(false);
   }, [listBackups]);
+
+  // ── PULIHKAN DARI FILE BACKUP (.json) ────────────────────────────────────
+  // Menangani 2 sumber file yang sebelumnya TIDAK BISA dipulihkan langsung
+  // dari dalam aplikasi: (1) file .json yang diunduh ke perangkat lewat
+  // tombol "Unduh Backup Sekarang" / "Backup Cepat", dan (2) file yang
+  // sebelumnya diunggah ke Google Drive lalu diunduh ulang oleh user (karena
+  // Drive API tidak menyediakan restore langsung tanpa Google Picker). Kedua
+  // sumber ini formatnya sama-sama file JSON, jadi cukup satu tombol upload
+  // file untuk menangani keduanya — tidak perlu integrasi Drive Picker terpisah.
+  function handleRestoreFileChange(e) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    setRestoreFileError("");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        // Terima 2 bentuk file: snapshot lengkap { ts, reason, data:{...} }
+        // (hasil "Unduh Backup Sekarang"/"Backup Cepat"/"Simpan Snapshot ke Cloud"),
+        // ATAU objek database mentah langsung { wilayah:[...], toko:[...], ... }.
+        const looksLikeSnapshot = parsed && typeof parsed === "object" && parsed.data && typeof parsed.data === "object";
+        const looksLikeRawDb = parsed && typeof parsed === "object" &&
+          ["wilayah","rute","toko","produk","kontrol","pengguna"].some(k => Array.isArray(parsed[k]));
+        if (!looksLikeSnapshot && !looksLikeRawDb) {
+          setRestoreFileError("⚠️ File tidak dikenali sebagai backup GWG SuperApp yang valid (format JSON tidak sesuai).");
+          return;
+        }
+        const snapshot = looksLikeSnapshot
+          ? { key: file.name, ts: parsed.ts, reason: parsed.reason || "file-upload", data: parsed.data }
+          : { key: file.name, ts: null, reason: "file-upload", data: parsed };
+        // Reuse alur konfirmasi yang sama dengan restore dari Riwayat Backup Cloud
+        setRestoreTarget(snapshot);
+        setRestoreConfirmText("");
+      } catch (err) {
+        setRestoreFileError("⚠️ Gagal membaca file: " + err.message + ". Pastikan file adalah backup .json yang valid dan tidak rusak.");
+      }
+    };
+    reader.onerror = () => setRestoreFileError("⚠️ Gagal membaca file dari perangkat.");
+    reader.readAsText(file);
+  }
 
   // ── GOOGLE DRIVE UPLOAD ─────────────────────────────────────────────────
   // Menggunakan Google Drive REST API v3 (multipart upload) dengan OAuth2
@@ -6417,7 +6460,7 @@ export default function GWGSuperApp() {
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
       {showBackup && isAdmin && (
-        <Modal title="💾 Backup & Restore Data" onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); }}>
+        <Modal title="💾 Backup & Restore Data" onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); setRestoreFileError(""); }}>
           <div style={{ padding:"4px 0 8px" }}>
             <div style={{ fontSize:13, color:T.gray400, marginBottom:16 }}>
               Sistem otomatis membuat backup 1x/hari ke cloud. Anda juga bisa membuat backup manual kapan saja, atau mengunduh salinan ke perangkat.
@@ -6457,6 +6500,25 @@ export default function GWGSuperApp() {
                 {gDriveLoading ? "Mengunggah…" : "Upload ke Google Drive"}
               </Btn>
             </div>
+
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, marginTop:8 }}>Pulihkan dari File Backup</div>
+            <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
+              Punya file backup <code>.json</code> yang tersimpan di perangkat (dari "Unduh Backup Sekarang") atau
+              yang sebelumnya diunggah ke Google Drive lalu diunduh ulang? Unggah file tersebut di sini untuk
+              memulihkan data — tidak perlu menunggu masuk daftar Riwayat Backup Cloud di bawah.
+            </div>
+            <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap" }}>
+              <Btn variant="secondary" onClick={() => restoreFileRef.current?.click()}>
+                📂 Pilih File Backup (.json) untuk Dipulihkan
+              </Btn>
+            </div>
+            <input ref={restoreFileRef} type="file" accept=".json,application/json" style={{ display:"none" }} onChange={handleRestoreFileChange} />
+            {restoreFileError && (
+              <div style={{ background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"8px 12px",
+                marginBottom:16, fontSize:12, color:T.red }}>
+                {restoreFileError}
+              </div>
+            )}
 
             {/* Status pesan Google Drive upload */}
             {gDriveMsg && (
