@@ -6219,6 +6219,29 @@ export default function GWGSuperApp() {
   // Daftar pengguna yang sedang aktif (real-time, per sesi/perangkat).
   const activeUsers = usePresence(user, currentUserRecord);
 
+  // Daftar pengguna aktif yang SUDAH DIFILTER & DIKELOMPOKKAN untuk ditampilkan:
+  // 1) FILTER: sembunyikan sesi milik email yang TIDAK/TIDAK LAGI ada di tabel
+  //    pengguna (misalnya sudah dihapus/diblokir Admin). Login Firebase Auth
+  //    di perangkat orang itu tidak otomatis putus saat baris pengguna-nya
+  //    dihapus, jadi tanpa filter ini dia tetap terlihat "aktif" selama tab
+  //    browser-nya masih terbuka.
+  // 2) KELOMPOKKAN: satu email yang membuka beberapa sesi/tab/perangkat
+  //    digabung jadi SATU baris (dengan jumlah sesi), supaya tidak terlihat
+  //    seperti "pengguna dobel" di panel — sebelumnya tiap sesi ditampilkan
+  //    sebagai baris terpisah walau namanya sama persis.
+  const visibleActiveUsers = useMemo(() => {
+    const registeredEmails = new Set((db.pengguna||[]).map(p => p.email?.toLowerCase()).filter(Boolean));
+    const grouped = new Map();
+    (activeUsers||[]).forEach(au => {
+      const emailKey = au.email?.toLowerCase();
+      if (!emailKey || !registeredEmails.has(emailKey)) return; // pengguna sudah diblokir/dihapus, sembunyikan
+      const existing = grouped.get(emailKey);
+      if (existing) existing.sessionCount += 1;
+      else grouped.set(emailKey, { ...au, sessionCount: 1 });
+    });
+    return Array.from(grouped.values());
+  }, [activeUsers, db.pengguna]);
+
   // BOOTSTRAP ADMIN & AUTO-DAFTAR PENGGUNA BARU:
   // 1) Jika tabel pengguna masih kosong, orang yang login sekarang PERMANEN
   //    didaftarkan sebagai Admin (bukan cuma status sementara di memori).
@@ -6454,21 +6477,22 @@ export default function GWGSuperApp() {
                     title="Pengguna sedang aktif"
                     style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
                     <span style={{ width:8, height:8, borderRadius:"50%", background:"#22C55E", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
-                    🟢 {activeUsers.length}<span className="gw-hide-xs"> Aktif</span>
+                    🟢 {visibleActiveUsers.length}<span className="gw-hide-xs"> Aktif</span>
                   </button>
                   {showActiveUsers && activeUsersMenuStyle && (
                     <div style={{ ...activeUsersMenuStyle, background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", maxHeight:"60vh", overflowY:"auto", zIndex:250, padding:8 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:T.gray600, padding:"4px 8px", textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                        Pengguna Sedang Aktif ({activeUsers.length})
+                        Pengguna Sedang Aktif ({visibleActiveUsers.length})
                       </div>
-                      {activeUsers.length === 0 ? (
+                      {visibleActiveUsers.length === 0 ? (
                         <div style={{ fontSize:12, color:T.gray400, padding:"8px" }}>Tidak ada sesi aktif.</div>
-                      ) : activeUsers.map(au => (
-                        <div key={au.sessionId} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:8, background: au.email===user.email ? T.greenLt : "transparent" }}>
+                      ) : visibleActiveUsers.map(au => (
+                        <div key={au.email} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:8, background: au.email===user.email ? T.greenLt : "transparent" }}>
                           <span style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E", flexShrink:0 }} />
                           <div style={{ minWidth:0 }}>
                             <div style={{ fontSize:12, fontWeight:600, color:T.gray800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
                               {au.nama || au.email} {au.email===user.email && "(Anda)"}
+                              {au.sessionCount > 1 && <span style={{ color:T.gray400, fontWeight:400 }}> · {au.sessionCount} sesi</span>}
                             </div>
                             <div style={{ fontSize:10, color:T.gray400 }}>{au.role}{isSuperAdminEmail(au.email) ? " · 👑 Super Admin" : ""}</div>
                           </div>
@@ -6555,7 +6579,7 @@ export default function GWGSuperApp() {
         {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="bagihasil" && canAccessTab("bagihasil",{ isAdmin, isManajer }) && <TabBagiHasil db={db} analytics={analytics} save={save} />}
-        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={activeUsers} />}
+        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} />}
       </div>
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
