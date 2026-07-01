@@ -5907,6 +5907,23 @@ export default function GWGSuperApp() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
+  // Header dibuat position:fixed (bukan sticky) supaya BENAR-BENAR diam di
+  // atas layar walau di-scroll, apa pun konteks scroll container tempat app
+  // ini di-embed (sticky bisa gagal kalau parent punya overflow sendiri).
+  // Tinggi header diukur otomatis (beda-beda di mobile vs desktop) lalu
+  // dipakai sebagai spacer supaya konten di bawahnya tidak ketutupan.
+  const headerRef = useRef(null);
+  const [headerHeight, setHeaderHeight] = useState(0);
+  useLayoutEffect(() => {
+    const el = headerRef.current;
+    if (!el) return;
+    const measure = () => setHeaderHeight(el.offsetHeight);
+    measure();
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    window.addEventListener("resize", measure);
+    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+  }, []);
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
@@ -6352,10 +6369,12 @@ export default function GWGSuperApp() {
 
   return (
     <div style={{ minHeight:"100vh", background:T.bg, fontFamily:"'Inter',system-ui,sans-serif" }}>
-      {/* HEADER — dibuat "sticky" (freeze) di atas layar saat halaman di-scroll
-          ke bawah, supaya menu hamburger (☰) untuk pindah tab selalu mudah
-          dijangkau tanpa perlu scroll balik ke atas dulu. */}
-      <div style={{ position:"sticky", top:0, zIndex:100, background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
+      {/* HEADER — dibuat "fixed" (freeze) terhadap viewport saat halaman
+          di-scroll ke bawah, supaya menu hamburger (☰) untuk pindah tab
+          selalu mudah dijangkau tanpa perlu scroll balik ke atas dulu.
+          Pakai position:fixed (bukan sticky) supaya tetap diam walau app
+          ini di-embed di dalam container dengan scroll sendiri. */}
+      <div ref={headerRef} style={{ position:"fixed", top:0, left:0, right:0, zIndex:100, background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 20px" }}>
           <div className="gw-header-top" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
@@ -6468,6 +6487,11 @@ export default function GWGSuperApp() {
 
         </div>
       </div>
+
+      {/* Spacer — mengganti "ruang" yang tadinya ditempati header sebelum
+          header dijadikan position:fixed, supaya konten di bawah tidak
+          ketutupan/ketumpuk. Tingginya diukur otomatis dari header asli. */}
+      <div style={{ height: headerHeight }} />
 
       {/* CONTENT */}
       <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
