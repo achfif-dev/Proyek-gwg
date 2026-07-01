@@ -1238,7 +1238,7 @@ function useClampedMenuPosition(open, anchorRef, menuWidth = 230) {
 function HeaderMenu({ items, icon="☰", title="Menu" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const menuStyle = useClampedMenuPosition(open, ref, 220);
+  const menuStyle = useClampedMenuPosition(open, ref, 240);
   useEffect(() => {
     const handler = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
     document.addEventListener("mousedown", handler);
@@ -1255,17 +1255,23 @@ function HeaderMenu({ items, icon="☰", title="Menu" }) {
       </button>
       {open && menuStyle && (
         <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
-          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.16)", zIndex:250, overflow:"hidden" }}>
+          borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.16)", zIndex:250, overflow:"hidden",
+          maxHeight:"75vh", overflowY:"auto" }}>
           {items.map((it, i) => (
-            <button key={i} onClick={() => { it.onClick?.(); setOpen(false); }}
-              style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
-                background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit",
-                color: it.danger ? T.red : T.gray800,
-                borderBottom: i<items.length-1 ? `1px solid ${T.gray100}` : "none" }}
-              onMouseEnter={e => e.target.style.background = it.danger ? T.redLt : T.gray50}
-              onMouseLeave={e => e.target.style.background="none"}>
-              {it.label}
-            </button>
+            it.divider ? (
+              <div key={i} style={{ borderTop:`1px solid ${T.gray200}`, margin:"4px 0" }} />
+            ) : (
+              <button key={i} onClick={() => { it.onClick?.(); setOpen(false); }}
+                style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
+                  background: it.active ? T.greenLt : "none", cursor:"pointer", fontSize:13, fontFamily:"inherit",
+                  fontWeight: it.active ? 700 : 400,
+                  color: it.danger ? T.red : (it.active ? T.green : T.gray800),
+                  borderBottom: i<items.length-1 ? `1px solid ${T.gray100}` : "none" }}
+                onMouseEnter={e => e.target.style.background = it.danger ? T.redLt : (it.active ? T.greenLt : T.gray50)}
+                onMouseLeave={e => e.target.style.background = it.active ? T.greenLt : "none"}>
+                {it.active ? "✓ " : ""}{it.label}
+              </button>
+            )
           ))}
         </div>
       )}
@@ -5750,7 +5756,6 @@ export default function GWGSuperApp() {
         .gw-header-subtitle { display: none; }
         .gw-header-logo { width: 36px !important; height: 36px !important; }
         .gw-header-title { font-size: 16px !important; }
-        .gw-tabnav button { padding: 8px 12px !important; font-size: 12px !important; }
         .gw-grid2, .gw-grid3 { grid-template-columns: 1fr !important; }
         .gw-modal-body { padding: 16px !important; }
         .gw-modal-header { padding: 14px 16px !important; }
@@ -6069,6 +6074,36 @@ export default function GWGSuperApp() {
     return <LoginPage onLoginGoogle={handleLoginGoogle} fbReady={fbReady} error={loginError} />;
   }
 
+  // Semua tab navigasi + tombol Keluar + menu khusus Admin digabung jadi
+  // SATU menu hamburger (☰), supaya header lebih ringkas di layar kecil.
+  const mainMenuItems = [
+    ...TABS.filter(t => canAccessTab(t.key, { isAdmin, isManajer })).map(t => ({
+      label: t.label,
+      active: activeTab === t.key,
+      onClick: () => setActiveTab(t.key),
+    })),
+    { divider: true },
+    { label: "🚪 Keluar", danger: true, onClick: logout },
+    ...(isAdmin ? [
+      { divider: true },
+      {
+        label: "💾⚡ Backup Cepat (unduh sekarang)",
+        onClick: async () => {
+          const snap = await backupNow(db, { reason: "manual-cepat" });
+          if (snap) {
+            downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, snap);
+          }
+        },
+      },
+      { label: "💾 Backup & Restore", onClick: openBackupModal },
+      {
+        label: "⚠️ Reset Database",
+        danger: true,
+        onClick: () => { setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); },
+      },
+    ] : []),
+  ];
+
   return (
     <div style={{ minHeight:"100vh", background:T.bg, fontFamily:"'Inter',system-ui,sans-serif" }}>
       {/* HEADER */}
@@ -6148,11 +6183,7 @@ export default function GWGSuperApp() {
                         {userRole}{daruratAktif && " ⚠️"}
                       </span>
                     </div>
-                    </div>
-                    <Btn variant="secondary" size="sm" onClick={logout}
-                      style={{ background:"rgba(255,255,255,.1)", color:"#fff", border:"1px solid rgba(255,255,255,.2)" }}>
-                      Keluar
-                    </Btn>
+                  </div>
                   </div>
                 ) : (
                   <Btn variant="secondary" size="sm" onClick={loginGoogle}
@@ -6166,29 +6197,11 @@ export default function GWGSuperApp() {
                 </div>
               )}
 
-              {isAdmin && (
-                <HeaderMenu
-                  icon="☰"
-                  title="Menu Admin"
-                  items={[
-                    {
-                      label: "💾⚡ Backup Cepat (unduh sekarang)",
-                      onClick: async () => {
-                        const snap = await backupNow(db, { reason: "manual-cepat" });
-                        if (snap) {
-                          downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, snap);
-                        }
-                      },
-                    },
-                    { label: "💾 Backup & Restore", onClick: openBackupModal },
-                    ...(isAdmin ? [{
-                      label: "⚠️ Reset Database",
-                      danger: true,
-                      onClick: () => { setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); },
-                    }] : []),
-                  ]}
-                />
-              )}
+              <HeaderMenu
+                icon="☰"
+                title="Menu"
+                items={mainMenuItems}
+              />
             </div>
           </div>
 
@@ -6200,17 +6213,6 @@ export default function GWGSuperApp() {
             </div>
           )}
 
-          <div className="gw-tabnav" style={{ display:"flex", gap:2, overflowX:"auto", paddingBottom:0 }}>
-            {TABS.filter(t => canAccessTab(t.key, { isAdmin, isManajer })).map(t=>(
-              <button key={t.key} onClick={()=>setActiveTab(t.key)}
-                style={{ padding:"10px 18px", border:"none", cursor:"pointer", fontFamily:"inherit",
-                  fontWeight:600, fontSize:13, whiteSpace:"nowrap", borderRadius:"10px 10px 0 0", transition:"all .15s",
-                  background:activeTab===t.key?T.white:"transparent",
-                  color:activeTab===t.key?T.green:"rgba(255,255,255,.75)" }}>
-                {t.label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 
