@@ -5924,6 +5924,30 @@ export default function GWGSuperApp() {
     window.addEventListener("resize", measure);
     return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
   }, []);
+  // Header "dinamis": otomatis sembunyi (geser ke atas) saat user menggulir
+  // KE BAWAH (supaya tidak menutupi/memakan ruang konten di bawahnya), dan
+  // langsung muncul lagi begitu user menggulir ke ATAS sedikit saja — jadi
+  // menu hamburger tetap gampang dijangkau kapan pun dibutuhkan, tanpa
+  // header terus-menerus makan tempat selagi user cuma mau baca konten.
+  const [headerHidden, setHeaderHidden] = useState(false);
+  useEffect(() => {
+    let lastY = window.scrollY;
+    let ticking = false;
+    const onScroll = () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => {
+        const y = window.scrollY;
+        const goingDown = y > lastY;
+        if (goingDown && y > headerHeight) setHeaderHidden(true);
+        else if (!goingDown) setHeaderHidden(false);
+        lastY = y;
+        ticking = false;
+      });
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [headerHeight]);
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
@@ -6374,7 +6398,10 @@ export default function GWGSuperApp() {
           selalu mudah dijangkau tanpa perlu scroll balik ke atas dulu.
           Pakai position:fixed (bukan sticky) supaya tetap diam walau app
           ini di-embed di dalam container dengan scroll sendiri. */}
-      <div ref={headerRef} style={{ position:"fixed", top:0, left:0, right:0, zIndex:100, background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
+      <div ref={headerRef} style={{ position:"fixed", top:0, left:0, right:0, zIndex:100,
+          transform: headerHidden ? "translateY(-100%)" : "translateY(0)",
+          transition: "transform 0.28s ease",
+          background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 20px" }}>
           <div className="gw-header-top" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
@@ -6490,8 +6517,10 @@ export default function GWGSuperApp() {
 
       {/* Spacer — mengganti "ruang" yang tadinya ditempati header sebelum
           header dijadikan position:fixed, supaya konten di bawah tidak
-          ketutupan/ketumpuk. Tingginya diukur otomatis dari header asli. */}
-      <div style={{ height: headerHeight }} />
+          ketutupan/ketumpuk. Tingginya diukur otomatis dari header asli,
+          dan ikut mengecil ke 0 saat header disembunyikan (scroll ke bawah)
+          supaya konten benar-benar naik mengisi ruang yang dibebaskan. */}
+      <div style={{ height: headerHidden ? 0 : headerHeight, transition: "height 0.28s ease" }} />
 
       {/* CONTENT */}
       <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
