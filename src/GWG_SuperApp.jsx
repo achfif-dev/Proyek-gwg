@@ -5923,11 +5923,29 @@ export default function GWGSuperApp() {
   // condition sebelum ResizeObserver sempat terpasang/bereaksi. Ditambah
   // buffer +4px supaya tidak pernah kurang 1px pun (konten tidak akan
   // pernah ketutupan/terpotong walau ada pembulatan sub-pixel).
-  const headerRef = useRef(null);
+  // Header dibuat position:fixed (bukan sticky) supaya BENAR-BENAR diam di
+  // atas layar walau di-scroll, apa pun konteks scroll container tempat app
+  // ini di-embed (sticky bisa gagal kalau parent punya overflow sendiri).
+  // Tinggi header diukur otomatis (beda-beda di mobile vs desktop) lalu
+  // dipakai sebagai spacer supaya konten di bawahnya tidak ketutupan.
+  //
+  // PENTING: pakai CALLBACK REF (bukan useRef + useLayoutEffect ber-deps [])
+  // karena komponen ini punya beberapa "return" bersyarat SEBELUM header-nya
+  // dirender (saat masih loading, dan saat user belum login — lihat
+  // `if (loading) return ...` dan `if (!user) return <LoginPage/>` di bawah).
+  // Kalau pakai useRef biasa, effect ber-deps [] akan telanjur jalan sekali
+  // pada mount PERTAMA (saat itu header belum ada di DOM sama sekali karena
+  // masih loading/login), lalu tidak akan pernah jalan lagi setelah header
+  // beneran muncul — akibatnya tinggi header nyangkut di 0 dan header jadi
+  // menutupi seluruh konten dari atas. Callback ref memicu ulang effect
+  // pengukuran persis saat elemen header benar-benar mount ke DOM, jadi bug
+  // ini tidak bisa terjadi lagi.
+  const [headerEl, setHeaderEl] = useState(null);
+  const headerRef = useCallback((node) => setHeaderEl(node), []);
   const [headerHeight, setHeaderHeight] = useState(0);
   const [spacerReady, setSpacerReady] = useState(false);
   useLayoutEffect(() => {
-    const el = headerRef.current;
+    const el = headerEl;
     if (!el) return;
     const measure = () => setHeaderHeight(Math.ceil(el.getBoundingClientRect().height) + 4);
     measure();
@@ -5947,7 +5965,7 @@ export default function GWGSuperApp() {
       cancelAnimationFrame(raf1);
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
     };
-  }, []);
+  }, [headerEl]);
   // Header "dinamis": otomatis sembunyi (geser ke atas) saat user menggulir
   // KE BAWAH (supaya tidak menutupi/memakan ruang konten di bawahnya), dan
   // langsung muncul lagi begitu user menggulir ke ATAS sedikit saja — jadi
