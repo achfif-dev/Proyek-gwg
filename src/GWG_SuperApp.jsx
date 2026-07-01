@@ -5974,22 +5974,26 @@ export default function GWGSuperApp() {
   const [headerHidden, setHeaderHidden] = useState(false);
   useEffect(() => {
     let lastY = window.scrollY;
+    let lastToggleAt = 0;
     let ticking = false;
-    // Ambang batas (hysteresis) — geseran kecil di bawah 10px (jitter alami
-    // saat scroll pakai jari di HP, termasuk efek "bounce" di ujung halaman)
-    // diabaikan dan TIDAK dianggap ganti arah. Ini mencegah header
-    // kedip-kedip nyala/mati berkali-kali hanya karena getaran kecil saat
-    // scroll, dan cuma bereaksi ke gerakan yang benar-benar disengaja.
-    const THRESHOLD = 10;
+    // Ambang batas (hysteresis) dinaikkan + ditambah jeda waktu minimum
+    // antar-toggle. Geseran kecil (di bawah 28px) atau perubahan arah yang
+    // terlalu cepat menyusul toggle sebelumnya (di bawah 220ms) diabaikan.
+    // Kombinasi jarak + waktu ini menghilangkan rasa "jitter/getar" pada
+    // gerakan scroll kecil, karena header hanya bereaksi ke gerakan geser
+    // yang jelas-jelas disengaja, bukan tiap goyangan halus jari di layar.
+    const DIST_THRESHOLD = 28;
+    const TIME_COOLDOWN = 220;
     const onScroll = () => {
       if (ticking) return;
       ticking = true;
       requestAnimationFrame(() => {
         const y = Math.max(0, window.scrollY);
         const diff = y - lastY;
-        if (Math.abs(diff) > THRESHOLD) {
-          if (diff > 0 && y > headerHeight) setHeaderHidden(true);
-          else if (diff < 0) setHeaderHidden(false);
+        const now = performance.now();
+        if (Math.abs(diff) > DIST_THRESHOLD && (now - lastToggleAt) > TIME_COOLDOWN) {
+          if (diff > 0 && y > headerHeight) { setHeaderHidden(true); lastToggleAt = now; }
+          else if (diff < 0) { setHeaderHidden(false); lastToggleAt = now; }
           lastY = y;
         }
         if (y <= 4) setHeaderHidden(false); // selalu tampil kalau sudah di paling atas
