@@ -5935,8 +5935,13 @@ export default function GWGSuperApp() {
       bootstrapDone.current = true; // cegah panggilan ganda selama addRecord belum sinkron
       bootstrapJadiAdmin.current = true;
       autoDaftarSet.current.add(emailKey);
+      // PENTING: ID dibuat DETERMINISTIK dari email (bukan genUniqueId acak).
+      // Kalau dua perangkat sama-sama race di sini, keduanya akan menghasilkan
+      // ID yang SAMA PERSIS dan menulis ke path Firebase yang sama pula →
+      // tulisan kedua hanya menimpa (overwrite) tulisan pertama, TIDAK membuat
+      // baris baru. Ini yang mencegah "akun muncul 2x di tabel pengguna".
       rawAddRecord("pengguna", {
-        id: genUniqueId("U"),
+        id: "U_" + encodeEmailKey(emailKey),
         nama: user.displayName || user.email,
         email: user.email,
         role: "Admin",
@@ -5949,8 +5954,11 @@ export default function GWGSuperApp() {
       // menaikkan role-nya secara manual lewat tab Pengguna jika perlu.
       // Kecuali jika emailnya cocok dengan SUPER_ADMIN_EMAIL → langsung Admin.
       autoDaftarSet.current.add(emailKey);
+      // Sama seperti bootstrap Admin di atas: ID deterministik dari email
+      // supaya race antar-perangkat menimpa path yang sama, bukan bikin
+      // baris duplikat.
       rawAddRecord("pengguna", {
-        id: genUniqueId("U"),
+        id: "U_" + encodeEmailKey(emailKey),
         nama: user.displayName || user.email,
         email: user.email,
         role: isSuperAdminEmail(user.email) ? "Admin" : "Viewer",
