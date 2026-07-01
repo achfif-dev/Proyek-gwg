@@ -99,10 +99,10 @@ async function initFirebase() {
   if (!FIREBASE_CONFIGURED) return false;
   try {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
-    const { getDatabase, ref, set, get, onValue, off } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    const { getDatabase, ref, set, get, onValue, off, onDisconnect, serverTimestamp, remove } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
     const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
     firebaseApp = initializeApp(FIREBASE_CONFIG);
-    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, off };
+    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, off, onDisconnect, serverTimestamp, remove };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
@@ -147,6 +147,70 @@ function useAuth() {
   };
 
   return { user, loading, fbReady, loginGoogle, logout };
+}
+
+// ─────────────────────────────────────────────
+//  PRESENCE — daftar "pengguna sedang aktif" (real-time, per PERANGKAT/SESI)
+// ─────────────────────────────────────────────
+// Kenapa per-sesi (bukan per-email)? Supaya Super Admin yang login dari 2
+// perangkat sekaligus terlihat sebagai 2 sesi aktif yang jelas — ini juga
+// yang membantu mengonfirmasi kejadian "kok muncul 2 pengguna" di atas.
+// Firebase onDisconnect() otomatis menghapus path sesi ini begitu koneksi
+// terputus (tutup tab, sinyal hilang, dll), jadi daftar ini selalu real-time
+// tanpa perlu heartbeat manual.
+function usePresence(user, currentUserRecord) {
+  const [activeUsers, setActiveUsers] = useState([]);
+  const sessionIdRef = useRef(null);
+  if (!sessionIdRef.current) {
+    sessionIdRef.current = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  }
+
+  useEffect(() => {
+    if (!user || !firebaseDB) return;
+    const { db: rtdb, ref, set, onValue, onDisconnect, serverTimestamp, remove } = firebaseDB;
+    const emailKey = encodeEmailKey(user.email || "");
+    const sessionId = sessionIdRef.current;
+    const sessionRef = ref(rtdb, `gwg_data/shared/presence/${emailKey}/${sessionId}`);
+    const connectedRef = ref(rtdb, ".info/connected");
+
+    const unsubConnected = onValue(connectedRef, (snap) => {
+      if (snap.val() === true) {
+        // Daftarkan sesi ini sebagai aktif, dan pastikan otomatis terhapus
+        // saat koneksi perangkat ini putus (nutup tab, sinyal hilang, dst).
+        onDisconnect(sessionRef).remove().then(() => {
+          set(sessionRef, {
+            nama: currentUserRecord?.nama || user.displayName || user.email,
+            email: user.email,
+            role: isSuperAdminEmail(user.email) ? "Admin" : (currentUserRecord?.role || "Viewer"),
+            lastActive: serverTimestamp(),
+          }).catch(console.warn);
+        }).catch(console.warn);
+      }
+    });
+
+    const presenceRootRef = ref(rtdb, `gwg_data/shared/presence`);
+    const unsubPresence = onValue(presenceRootRef, (snap) => {
+      const val = snap.val() || {};
+      const list = [];
+      Object.values(val).forEach((sessions) => {
+        Object.entries(sessions || {}).forEach(([sid, info]) => {
+          if (info) list.push({ sessionId: sid, ...info });
+        });
+      });
+      // Urutkan: sesi milik pengguna sendiri dulu, lalu berdasar nama.
+      list.sort((a, b) => (a.email === user.email ? -1 : 0) - (b.email === user.email ? -1 : 0) || (a.nama||"").localeCompare(b.nama||""));
+      setActiveUsers(list);
+    });
+
+    return () => {
+      unsubConnected();
+      unsubPresence();
+      // Bersihkan sesi ini segera saat komponen unmount (mis. logout).
+      remove(sessionRef).catch(() => {});
+    };
+  }, [user, currentUserRecord?.nama, currentUserRecord?.role]);
+
+  return activeUsers;
 }
 
 // Nama-nama tabel yang disimpan sebagai LIST (array of records dengan field
@@ -1653,6 +1717,19 @@ function genId(prefix, arr) {
   const nums = (arr||[]).map(r => parseInt(r.id?.replace(/\D/g,""))||0);
   const next = nums.length ? Math.max(...nums)+1 : 1;
   return `${prefix}${String(next).padStart(3,"0")}`;
+}
+
+// ID unik lintas-perangkat: dipakai khusus untuk record yang bisa dibuat
+// otomatis dari beberapa perangkat/sesi hampir bersamaan (mis. auto-register
+// pengguna baru saat login). BEDA dengan genId() yang sekuensial berbasis
+// data lokal — genId() bisa menghasilkan ID yang SAMA di dua perangkat kalau
+// datanya belum ter-sync, sehingga tulisan salah satu perangkat akan
+// MENIMPA (bukan menambah) data perangkat lain di Firebase (path per-id).
+// genUniqueId() memakai timestamp + random supaya praktis mustahil bentrok
+// walau dibuat di waktu yang hampir sama oleh perangkat berbeda.
+function genUniqueId(prefix) {
+  const rand = Math.random().toString(36).slice(2, 8);
+  return `${prefix}${Date.now().toString(36)}${rand}`;
 }
 
 // Normalisasi teks untuk perbandingan duplikat: lowercase + trim +
@@ -5298,7 +5375,10 @@ function TabBagiHasil({ db, analytics, save }) {
 // ─────────────────────────────────────────────
 //  TAB PENGGUNA
 // ─────────────────────────────────────────────
-function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser }) {
+function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers }) {
+  // Set email (huruf kecil) yang punya minimal satu sesi aktif — dipakai
+  // untuk badge "🟢 Online" per baris pengguna di tabel bawah.
+  const activeEmailSet = new Set((activeUsers||[]).map(a => a.email?.toLowerCase()).filter(Boolean));
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", email:"", role:"Viewer", wilayahId:"" });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
@@ -5371,7 +5451,7 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdm
         return alert("Tidak bisa mengubah role Admin terakhir. Tambahkan Admin lain dahulu sebelum menurunkan role ini.");
       }
     }
-    if (modal==="add") addRecord("pengguna", { ...form, id:genId("U",db.pengguna) });
+    if (modal==="add") addRecord("pengguna", { ...form, id:genUniqueId("U") });
     else updateRecord("pengguna", form.id, form);
     setModal(null);
   }
@@ -5392,7 +5472,16 @@ function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdm
 
   const cols = [
     { key:"id",    label:"ID",    render:v=><code style={{ fontSize:11 }}>{v}</code> },
-    { key:"nama",  label:"Nama",  render:v=><b>{v}</b> },
+    { key:"nama",  label:"Nama",  render:(v,row)=>(
+        <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <b>{v}</b>
+          {activeEmailSet.has(row?.email?.toLowerCase()) && (
+            <span title="Sedang aktif" style={{ display:"inline-flex", alignItems:"center", gap:4, fontSize:10, fontWeight:700, color:"#16A34A", background:"#DCFCE7", borderRadius:99, padding:"1px 7px" }}>
+              <span style={{ width:6, height:6, borderRadius:"50%", background:"#22C55E" }} /> Online
+            </span>
+          )}
+        </span>
+      ) },
     { key:"email", label:"Email", render:v=><span style={{ color:T.blue }}>{v}</span> },
     { key:"role",  label:"Role",  render:(v,row)=>(
         <span style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -5613,6 +5702,7 @@ export default function GWGSuperApp() {
   const [restoreTarget, setRestoreTarget] = useState(null); // snapshot yang mau direstore (perlu konfirmasi)
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [loginError, setLoginError] = useState("");
+  const [showActiveUsers, setShowActiveUsers] = useState(false);
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
@@ -5793,6 +5883,9 @@ export default function GWGSuperApp() {
   // Cari role user yang login berdasarkan email di tabel pengguna
   const currentUserRecord = user ? db.pengguna.find(p => p.email?.toLowerCase() === user.email?.toLowerCase()) : null;
 
+  // Daftar pengguna yang sedang aktif (real-time, per sesi/perangkat).
+  const activeUsers = usePresence(user, currentUserRecord);
+
   // BOOTSTRAP ADMIN & AUTO-DAFTAR PENGGUNA BARU:
   // 1) Jika tabel pengguna masih kosong, orang yang login sekarang PERMANEN
   //    didaftarkan sebagai Admin (bukan cuma status sementara di memori).
@@ -5843,7 +5936,7 @@ export default function GWGSuperApp() {
       bootstrapJadiAdmin.current = true;
       autoDaftarSet.current.add(emailKey);
       rawAddRecord("pengguna", {
-        id: genId("U", db.pengguna),
+        id: genUniqueId("U"),
         nama: user.displayName || user.email,
         email: user.email,
         role: "Admin",
@@ -5857,7 +5950,7 @@ export default function GWGSuperApp() {
       // Kecuali jika emailnya cocok dengan SUPER_ADMIN_EMAIL → langsung Admin.
       autoDaftarSet.current.add(emailKey);
       rawAddRecord("pengguna", {
-        id: genId("U", db.pengguna),
+        id: genUniqueId("U"),
         nama: user.displayName || user.email,
         email: user.email,
         role: isSuperAdminEmail(user.email) ? "Admin" : "Viewer",
@@ -5976,6 +6069,38 @@ export default function GWGSuperApp() {
                 💰 Rev: {fmtRp(analytics.totalRev)}
               </div>
 
+              {/* Panel "Pengguna Aktif" — daftar sesi/perangkat yang sedang online real-time */}
+              {user && (
+                <div style={{ position:"relative" }}>
+                  <button onClick={() => setShowActiveUsers(v => !v)}
+                    title="Pengguna sedang aktif"
+                    style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer" }}>
+                    <span style={{ width:8, height:8, borderRadius:"50%", background:"#22C55E", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
+                    🟢 {activeUsers.length} Aktif
+                  </button>
+                  {showActiveUsers && (
+                    <div style={{ position:"absolute", right:0, top:"110%", background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", minWidth:240, maxHeight:320, overflowY:"auto", zIndex:50, padding:8 }}>
+                      <div style={{ fontSize:11, fontWeight:700, color:T.gray600, padding:"4px 8px", textTransform:"uppercase", letterSpacing:"0.05em" }}>
+                        Pengguna Sedang Aktif ({activeUsers.length})
+                      </div>
+                      {activeUsers.length === 0 ? (
+                        <div style={{ fontSize:12, color:T.gray400, padding:"8px" }}>Tidak ada sesi aktif.</div>
+                      ) : activeUsers.map(au => (
+                        <div key={au.sessionId} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:8, background: au.email===user.email ? T.greenLt : "transparent" }}>
+                          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E", flexShrink:0 }} />
+                          <div style={{ minWidth:0 }}>
+                            <div style={{ fontSize:12, fontWeight:600, color:T.gray800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
+                              {au.nama || au.email} {au.email===user.email && "(Anda)"}
+                            </div>
+                            <div style={{ fontSize:10, color:T.gray400 }}>{au.role}{isSuperAdminEmail(au.email) ? " · 👑 Super Admin" : ""}</div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* User section */}
               {fbReady ? (
                 user ? (
@@ -6076,7 +6201,7 @@ export default function GWGSuperApp() {
         {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="bagihasil" && canAccessTab("bagihasil",{ isAdmin, isManajer }) && <TabBagiHasil db={db} analytics={analytics} save={save} />}
-        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} />}
+        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={activeUsers} />}
       </div>
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
