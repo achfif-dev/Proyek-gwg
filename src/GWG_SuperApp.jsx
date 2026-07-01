@@ -5912,17 +5912,41 @@ export default function GWGSuperApp() {
   // ini di-embed (sticky bisa gagal kalau parent punya overflow sendiri).
   // Tinggi header diukur otomatis (beda-beda di mobile vs desktop) lalu
   // dipakai sebagai spacer supaya konten di bawahnya tidak ketutupan.
+  //
+  // Diukur berkali-kali (bukan cuma sekali saat mount) karena tinggi header
+  // bisa berubah SETELAH render pertama akibat hal-hal yang di luar kendali
+  // urutan render React: font web yang baru selesai dimuat, foto profil
+  // Google (user.photoURL) yang baru selesai di-fetch dari jaringan, atau
+  // address bar browser HP yang muncul/hilang saat discroll. ResizeObserver
+  // menangani perubahan susulan secara real-time, sedangkan beberapa
+  // pengukuran ulang di awal (rAF + timeout bertahap) menutup celah race
+  // condition sebelum ResizeObserver sempat terpasang/bereaksi. Ditambah
+  // buffer +4px supaya tidak pernah kurang 1px pun (konten tidak akan
+  // pernah ketutupan/terpotong walau ada pembulatan sub-pixel).
   const headerRef = useRef(null);
   const [headerHeight, setHeaderHeight] = useState(0);
+  const [spacerReady, setSpacerReady] = useState(false);
   useLayoutEffect(() => {
     const el = headerRef.current;
     if (!el) return;
-    const measure = () => setHeaderHeight(el.offsetHeight);
+    const measure = () => setHeaderHeight(Math.ceil(el.getBoundingClientRect().height) + 4);
     measure();
+    const raf1 = requestAnimationFrame(() => { measure(); requestAnimationFrame(measure); });
+    const t1 = setTimeout(measure, 150);
+    const t2 = setTimeout(measure, 500);
+    const t3 = setTimeout(() => { measure(); setSpacerReady(true); }, 700);
+    if (document.fonts?.ready) document.fonts.ready.then(measure).catch(()=>{});
+    window.addEventListener("load", measure);
     const ro = new ResizeObserver(measure);
     ro.observe(el);
     window.addEventListener("resize", measure);
-    return () => { ro.disconnect(); window.removeEventListener("resize", measure); };
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("load", measure);
+      cancelAnimationFrame(raf1);
+      clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
+    };
   }, []);
   // Header "dinamis": otomatis sembunyi (geser ke atas) saat user menggulir
   // KE BAWAH (supaya tidak menutupi/memakan ruang konten di bawahnya), dan
@@ -5991,6 +6015,7 @@ export default function GWGSuperApp() {
       .gw-header-activeusers button { padding: clamp(4px, 1.2vw, 6px) clamp(8px, 2.5vw, 12px) !important; font-size: clamp(10.5px, 2.6vw, 12px) !important; }
 
       @media (max-width: 640px) {
+        .gw-header-top { padding-top: 10px !important; padding-bottom: 10px !important; }
         .gw-header-subtitle { display: none; }
         .gw-grid2, .gw-grid3 { grid-template-columns: 1fr !important; }
         .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
@@ -6517,10 +6542,13 @@ export default function GWGSuperApp() {
 
       {/* Spacer — mengganti "ruang" yang tadinya ditempati header sebelum
           header dijadikan position:fixed, supaya konten di bawah tidak
-          ketutupan/ketumpuk. Tingginya diukur otomatis dari header asli,
-          dan ikut mengecil ke 0 saat header disembunyikan (scroll ke bawah)
-          supaya konten benar-benar naik mengisi ruang yang dibebaskan. */}
-      <div style={{ height: headerHidden ? 0 : headerHeight, transition: "height 0.28s ease" }} />
+          ketutupan/ketumpuk. Tingginya diukur otomatis dari header asli
+          (+ buffer kecil), dan ikut mengecil ke 0 saat header disembunyikan
+          (scroll ke bawah) supaya konten benar-benar naik mengisi ruang
+          yang dibebaskan. Transisi baru diaktifkan setelah pengukuran awal
+          stabil (spacerReady), supaya tidak ada jeda animasi yang bikin
+          konten sempat "ketutupan" sesaat saat halaman pertama kali dibuka. */}
+      <div style={{ height: headerHidden ? 0 : headerHeight, transition: spacerReady ? "height 0.28s ease" : "none" }} />
 
       {/* CONTENT */}
       <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
