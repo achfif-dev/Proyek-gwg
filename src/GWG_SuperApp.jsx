@@ -5966,43 +5966,13 @@ export default function GWGSuperApp() {
       clearTimeout(t1); clearTimeout(t2); clearTimeout(t3);
     };
   }, [headerEl]);
-  // Header "dinamis": otomatis sembunyi (geser ke atas) saat user menggulir
-  // KE BAWAH (supaya tidak menutupi/memakan ruang konten di bawahnya), dan
-  // langsung muncul lagi begitu user menggulir ke ATAS sedikit saja — jadi
-  // menu hamburger tetap gampang dijangkau kapan pun dibutuhkan, tanpa
-  // header terus-menerus makan tempat selagi user cuma mau baca konten.
-  const [headerHidden, setHeaderHidden] = useState(false);
-  useEffect(() => {
-    let lastY = window.scrollY;
-    let lastToggleAt = 0;
-    let ticking = false;
-    // Ambang batas (hysteresis) dinaikkan + ditambah jeda waktu minimum
-    // antar-toggle. Geseran kecil (di bawah 28px) atau perubahan arah yang
-    // terlalu cepat menyusul toggle sebelumnya (di bawah 220ms) diabaikan.
-    // Kombinasi jarak + waktu ini menghilangkan rasa "jitter/getar" pada
-    // gerakan scroll kecil, karena header hanya bereaksi ke gerakan geser
-    // yang jelas-jelas disengaja, bukan tiap goyangan halus jari di layar.
-    const DIST_THRESHOLD = 28;
-    const TIME_COOLDOWN = 220;
-    const onScroll = () => {
-      if (ticking) return;
-      ticking = true;
-      requestAnimationFrame(() => {
-        const y = Math.max(0, window.scrollY);
-        const diff = y - lastY;
-        const now = performance.now();
-        if (Math.abs(diff) > DIST_THRESHOLD && (now - lastToggleAt) > TIME_COOLDOWN) {
-          if (diff > 0 && y > headerHeight) { setHeaderHidden(true); lastToggleAt = now; }
-          else if (diff < 0) { setHeaderHidden(false); lastToggleAt = now; }
-          lastY = y;
-        }
-        if (y <= 4) setHeaderHidden(false); // selalu tampil kalau sudah di paling atas
-        ticking = false;
-      });
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, [headerHeight]);
+  // Header dibuat PERMANEN diam di atas (freeze), persis seperti header di
+  // halaman chat ini — tidak lagi sembunyi/muncul otomatis saat di-scroll
+  // (pendekatan itu dilepas karena walau sudah dikasih hysteresis + debounce,
+  // tetap terasa jitter/kedip saat digeser bolak-balik pelan, mis. lagi cari
+  // data). Konten di bawahnya tetap dijamin tidak ketutupan lewat spacer
+  // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
+  // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser } = useDB(user);
   const analytics = useAnalytics(db);
@@ -6449,14 +6419,11 @@ export default function GWGSuperApp() {
 
   return (
     <div style={{ minHeight:"100vh", background:T.bg, fontFamily:"'Inter',system-ui,sans-serif" }}>
-      {/* HEADER — dibuat "fixed" (freeze) terhadap viewport saat halaman
-          di-scroll ke bawah, supaya menu hamburger (☰) untuk pindah tab
-          selalu mudah dijangkau tanpa perlu scroll balik ke atas dulu.
-          Pakai position:fixed (bukan sticky) supaya tetap diam walau app
-          ini di-embed di dalam container dengan scroll sendiri. */}
+      {/* HEADER — dibuat "fixed" (freeze) terhadap viewport, selalu diam di
+          atas layar persis seperti header halaman chat ini. Pakai
+          position:fixed (bukan sticky) supaya tetap diam walau app ini
+          di-embed di dalam container dengan scroll sendiri. */}
       <div ref={headerRef} style={{ position:"fixed", top:0, left:0, right:0, zIndex:100,
-          transform: headerHidden ? "translateY(-100%)" : "translateY(0)",
-          transition: "transform 0.28s ease",
           background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`, boxShadow:"0 2px 12px rgba(0,0,0,.15)" }}>
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 20px" }}>
           <div className="gw-header-top" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
@@ -6574,12 +6541,9 @@ export default function GWGSuperApp() {
       {/* Spacer — mengganti "ruang" yang tadinya ditempati header sebelum
           header dijadikan position:fixed, supaya konten di bawah tidak
           ketutupan/ketumpuk. Tingginya diukur otomatis dari header asli
-          (+ buffer kecil), dan ikut mengecil ke 0 saat header disembunyikan
-          (scroll ke bawah) supaya konten benar-benar naik mengisi ruang
-          yang dibebaskan. Transisi baru diaktifkan setelah pengukuran awal
-          stabil (spacerReady), supaya tidak ada jeda animasi yang bikin
-          konten sempat "ketutupan" sesaat saat halaman pertama kali dibuka. */}
-      <div style={{ height: headerHidden ? 0 : headerHeight, transition: spacerReady ? "height 0.28s ease" : "none" }} />
+          (+ buffer kecil) dan tetap dijaga sinkron kalau tinggi header
+          berubah (rotasi layar, resize, dll — lihat efek pengukuran di atas). */}
+      <div style={{ height: headerHeight, transition: spacerReady ? "height 0.28s ease" : "none" }} />
 
       {/* CONTENT */}
       <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
