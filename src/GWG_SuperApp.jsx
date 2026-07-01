@@ -1283,6 +1283,7 @@ function HeaderMenu({ items, icon="☰", title="Menu" }) {
 function ImportMenu({ label="Import", onTemplate, onParseRows }) {
   const [open, setOpen] = useState(false);
   const [result, setResult] = useState(null);
+  const [pending, setPending] = useState(null); // { title, message, dupList, onConfirm }
   const fileRef = useRef(null);
   const ref = useRef(null);
   const menuStyle = useClampedMenuPosition(open, ref, 230);
@@ -1305,13 +1306,23 @@ function ImportMenu({ label="Import", onTemplate, onParseRows }) {
         const sheet = wb.Sheets[sheetName];
         const rows = XLSX.utils.sheet_to_json(sheet, { defval:"" });
         const res = onParseRows(rows);
-        setResult(res);
+        // Jika hasil parsing menemukan baris yang berpotensi duplikat, jangan
+        // langsung commit — tanyakan dulu ke user mau tetap ditambahkan atau
+        // dilewati, baru tampilkan hasil akhir setelah dikonfirmasi.
+        if (res && res.needsConfirm) setPending(res);
+        else setResult(res);
       } catch (err) {
         setResult({ added:0, skipped:0, errors:["Gagal membaca file: " + err.message] });
       }
     };
     reader.onerror = () => setResult({ added:0, skipped:0, errors:["Gagal membaca file."] });
     reader.readAsArrayBuffer(file);
+  }
+
+  function resolvePending(includeDuplicates) {
+    const finalRes = pending.onConfirm(includeDuplicates);
+    setPending(null);
+    setResult(finalRes);
   }
 
   return (
@@ -1338,6 +1349,24 @@ function ImportMenu({ label="Import", onTemplate, onParseRows }) {
         </div>
       )}
       <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFile} />
+      {pending && (
+        <Modal title={pending.title || "⚠️ Data Duplikat Ditemukan"} onClose={()=>setPending(null)}>
+          <div style={{ fontSize:13, color:T.gray800, marginBottom:10 }}>{pending.message}</div>
+          <div style={{ maxHeight:220, overflow:"auto", fontSize:12, color:T.red, background:T.redLt,
+            borderRadius:8, padding:"10px 12px", lineHeight:1.7, marginBottom:14 }}>
+            {pending.dupList.map((d,i) => <div key={i}>• {d}</div>)}
+          </div>
+          <div style={{ fontSize:12, color:T.gray400, marginBottom:14 }}>
+            Pilih "Lewati Duplikat" (disarankan) agar tidak ada nama toko yang sama dalam satu rute,
+            atau "Tetap Tambahkan Semua" jika duplikat ini memang disengaja.
+          </div>
+          <div style={{ display:"flex", gap:8, justifyContent:"flex-end", flexWrap:"wrap" }}>
+            <Btn variant="secondary" onClick={()=>setPending(null)}>Batalkan Impor</Btn>
+            <Btn variant="danger" onClick={()=>resolvePending(true)}>Tetap Tambahkan Semua</Btn>
+            <Btn onClick={()=>resolvePending(false)}>Lewati Duplikat</Btn>
+          </div>
+        </Modal>
+      )}
       {result && (
         <Modal title="📊 Hasil Import Excel" onClose={()=>setResult(null)}>
           <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
@@ -1832,6 +1861,45 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
   const [selectedIds, setSelectedIds] = useState([]);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
+  // Deteksi wilayah duplikat (nama sama, tidak case-sensitive, abaikan spasi
+  // berlebih) yang mungkin sudah kadung tersimpan dari sebelum validasi
+  // duplikat ini ada, atau dari sinkronisasi ganda antar perangkat.
+  // Dikelompokkan supaya bisa digabungkan jadi satu wilayah saja.
+  const dupGroups = useMemo(() => {
+    const map = new Map();
+    (db.wilayah||[]).forEach(w => {
+      const key = normTxt(w.nama);
+      if (!key) return;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(w);
+    });
+    return [...map.values()].filter(g => g.length > 1);
+  }, [db.wilayah]);
+  const totalDup = dupGroups.reduce((n,g) => n + (g.length-1), 0);
+
+  // Gabungkan setiap grup duplikat menjadi satu wilayah "utama" (yang dipilih
+  // adalah wilayah dengan ID terlama / pertama dibuat, supaya rute & toko yang
+  // sudah lama terhubung tidak berubah ID rujukannya). Semua rute yang tadinya
+  // menunjuk ke wilayah duplikat dialihkan ke wilayah utama, baru kemudian
+  // wilayah duplikatnya dihapus. Aman dipakai berkali-kali (idempotent).
+  function mergeDuplikat() {
+    if (totalDup === 0) return;
+    const ringkasan = dupGroups.map(g => `• "${g[0].nama}" — ${g.length} entri`).join("\n");
+    if (!confirm(`Ditemukan ${dupGroups.length} nama wilayah yang duplikat:\n\n${ringkasan}\n\nSemua rute yang terhubung akan dialihkan ke satu wilayah utama (yang paling lama dibuat), lalu data duplikatnya dihapus. Lanjutkan?`)) return;
+
+    dupGroups.forEach(group => {
+      const sortedGroup = [...group].sort((a,b) => String(a.id).localeCompare(String(b.id)));
+      const utama = sortedGroup[0];
+      sortedGroup.slice(1).forEach(dup => {
+        (db.rute||[]).filter(r => r.wilayahId === dup.id).forEach(r => {
+          updateRecord("rute", r.id, { wilayahId: utama.id });
+        });
+        deleteRecord("wilayah", dup.id);
+      });
+    });
+    alert("✅ Wilayah duplikat berhasil digabungkan.");
+  }
+
   function toggleSelect(id) {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
   }
@@ -1860,6 +1928,7 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
       const rute=(db.rute||[]).find(r=>r.id===t.ruteId);
       return rute?.wilayahId===w.id;
     }).length,
+    isDuplikat: dupGroups.some(g => g.some(x=>x.id===w.id)),
   }));
 
   function openAdd() { setForm({ nama:"", deskripsi:"" }); setModal("add"); }
@@ -1882,7 +1951,11 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
 
   const cols = [
     { key:"id",        label:"ID",         render: v=><Badge color={T.blue}>{v}</Badge> },
-    { key:"nama",      label:"Nama Wilayah", render: v=><b>{v}</b> },
+    { key:"nama",      label:"Nama Wilayah", render: (v,row)=>(
+        <span style={{ display:"flex", alignItems:"center", gap:6 }}>
+          <b>{v}</b>{row.isDuplikat && <Badge color={T.red}>⚠️ Duplikat</Badge>}
+        </span>
+      ) },
     { key:"deskripsi", label:"Deskripsi" },
     { key:"jumlahRute",label:"Rute",       render: v=><Badge color={T.teal}>{v} rute</Badge> },
     { key:"jumlahToko",label:"Toko",       render: v=><Badge color={T.green}>{v} toko</Badge> },
@@ -1897,9 +1970,22 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={enriched} columns={cols} title="Data Wilayah" filename="wilayah" />
+          {totalDup > 0 && (
+            <Btn variant="danger" onClick={mergeDuplikat} icon="🧹">
+              Gabungkan {totalDup} Duplikat
+            </Btn>
+          )}
           <Btn onClick={openAdd} icon="＋">Tambah Wilayah</Btn>
         </div>
       </div>
+      {totalDup > 0 && (
+        <div style={{ background:T.redLt, color:T.red, padding:"10px 14px", borderRadius:10,
+          fontSize:13, marginBottom:14, display:"flex", alignItems:"center", gap:8 }}>
+          ⚠️ Ditemukan nama wilayah yang duplikat (mis. dua "Bangkalan Utara"). Ini bisa membuat
+          nama wilayah muncul dua kali di semua filter. Klik <b>"Gabungkan {totalDup} Duplikat"</b> untuk
+          merapikannya secara otomatis — rute yang terhubung akan dipindah ke satu wilayah utama.
+        </div>
+      )}
       <FilterBar filters={[{ key:"q", label:"Cari Wilayah", value:filter.q }]}
         onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:""})} />
       <BulkActionBar
@@ -2193,8 +2279,11 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   // Import Toko dari Excel
   function importTokoFromRows(rows) {
     const errors = [];
-    let added = 0, skipped = 0;
-    const newToko = [...(db.toko||[])];
+    let skipped = 0;
+    const existingToko = [...(db.toko||[])];
+    const toAdd = [];          // toko baru yang aman langsung ditambahkan (tidak ada duplikat)
+    const dupCandidates = [];  // { tokoObj, label } — nama toko duplikat dalam rute yang sama, menunggu keputusan user
+
     rows.forEach((row, i) => {
       const rowNum = i + 2; // header = baris 1
       const nama = String(row["Nama Toko*"] ?? row["Nama Toko"] ?? "").trim();
@@ -2202,10 +2291,14 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       if (!nama || !ruteNama) { errors.push(`Baris ${rowNum}: Nama Toko & Rute wajib diisi`); skipped++; return; }
       const ruteObj = (db.rute||[]).find(r => r.nama.toLowerCase() === ruteNama.toLowerCase());
       if (!ruteObj) { errors.push(`Baris ${rowNum}: Rute "${ruteNama}" tidak ditemukan di Master Rute`); skipped++; return; }
-      // Validasi duplikat toko saat import: nama toko sama dalam rute yang sama
-      // (baik sudah ada di data sebelumnya, maupun duplikat antar baris import ini).
-      const isDup = newToko.some(t => normTxt(t.nama) === normTxt(nama) && t.ruteId === ruteObj.id);
-      if (isDup) { errors.push(`Baris ${rowNum}: Toko "${nama}" sudah ada (duplikat) di rute "${ruteObj.nama}"`); skipped++; return; }
+      // Cek duplikat nama toko dalam rute yang sama (baik sudah ada di data
+      // sebelumnya, maupun duplikat antar baris lain dalam file import ini).
+      // TIDAK langsung dilewati — dikumpulkan dulu, lalu user ditanya apakah
+      // tetap ingin menambahkannya atau melewatinya, supaya tidak ada nama
+      // toko yang sama tanpa sengaja tercatat dua kali dalam satu rute.
+      const isDup = existingToko.some(t => normTxt(t.nama) === normTxt(nama) && t.ruteId === ruteObj.id)
+        || toAdd.some(t => normTxt(t.nama) === normTxt(nama) && t.ruteId === ruteObj.id)
+        || dupCandidates.some(d => normTxt(d.tokoObj.nama) === normTxt(nama) && d.tokoObj.ruteId === ruteObj.id);
       let status = String(row["Status"] ?? "Aktif").trim();
       if (!["Aktif","Non-Aktif","Baru"].includes(status)) status = "Aktif";
       const catatan = String(row["Catatan"] ?? "").trim();
@@ -2214,7 +2307,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         const v = String(row[`Jual: ${p.nama}`] ?? "").trim().toLowerCase();
         produkFlags[`produk_${p.id}`] = ["ya","yes","true","1"].includes(v);
       });
-      const newId = genId("T", newToko);
+      const newId = genId("T", [...existingToko, ...toAdd, ...dupCandidates.map(d=>d.tokoObj)]);
       const prefix = "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-";
       const counter = newId.replace("T","");
       const today = new Date().toISOString().slice(0,10);
@@ -2225,11 +2318,33 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         const stokVal = Number(row[`Stok: ${p.nama}`] ?? row[`Stok ${p.nama}`] ?? 0);
         stokFromExcel[`stok_${p.id}`] = isNaN(stokVal) ? 0 : stokVal;
       });
-      newToko.push({ id:newId, nama, ruteId:ruteObj.id, status, catatan, kode:prefix+counter, tanggalMasuk:tanggalMasukImport, ...produkFlags, ...stokFromExcel });
-      added++;
+      const tokoObj = { id:newId, nama, ruteId:ruteObj.id, status, catatan, kode:prefix+counter, tanggalMasuk:tanggalMasukImport, ...produkFlags, ...stokFromExcel };
+      if (isDup) {
+        dupCandidates.push({ tokoObj, label: `Toko "${nama}" di rute "${ruteObj.nama}" (baris ${rowNum})` });
+      } else {
+        toAdd.push(tokoObj);
+      }
     });
-    if (added > 0) save({ ...db, toko:newToko });
-    return { added, skipped, errors };
+
+    // Komit final: dipanggil langsung kalau tidak ada duplikat sama sekali,
+    // atau dipanggil setelah user memilih di dialog konfirmasi duplikat.
+    function commit(includeDuplicates) {
+      const finalNew = includeDuplicates ? [...toAdd, ...dupCandidates.map(d=>d.tokoObj)] : toAdd;
+      const skippedDup = includeDuplicates ? 0 : dupCandidates.length;
+      if (finalNew.length > 0) save({ ...db, toko:[...existingToko, ...finalNew] });
+      return { added: finalNew.length, skipped: skipped + skippedDup, errors };
+    }
+
+    if (dupCandidates.length > 0) {
+      return {
+        needsConfirm: true,
+        title: "⚠️ Toko Duplikat Ditemukan",
+        message: `Ditemukan ${dupCandidates.length} toko dengan nama yang sama pada rute yang sama:`,
+        dupList: dupCandidates.map(d => d.label),
+        onConfirm: commit, // onConfirm(true) = tetap tambahkan semua, onConfirm(false) = lewati yang duplikat
+      };
+    }
+    return commit(false);
   }
 
   const cols = [
