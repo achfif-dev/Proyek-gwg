@@ -1435,9 +1435,9 @@ function Btn({ children, onClick, variant="primary", size="md", icon, disabled, 
   );
 }
 
-function Card({ children, style={}, padding=20 }) {
+function Card({ children, style={}, padding=20, className }) {
   return (
-    <div style={{ background:T.white, borderRadius:14, border:`1px solid ${T.gray200}`,
+    <div className={className} style={{ background:T.white, borderRadius:14, border:`1px solid ${T.gray200}`,
       padding, boxShadow:"0 1px 4px rgba(0,0,0,.05)", ...style }}>
       {children}
     </div>
@@ -1725,14 +1725,14 @@ function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, onToggl
 
 function StatCard({ label, value, sub, icon, color=T.green, bg }) {
   return (
-    <Card style={{ background:bg||color+"0D", border:`1.5px solid ${color}22` }}>
+    <Card className="gw-statcard" style={{ background:bg||color+"0D", border:`1.5px solid ${color}22` }}>
       <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
-        <div>
-          <div style={{ fontSize:11, fontWeight:700, color, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>{label}</div>
-          <div style={{ fontSize:26, fontWeight:800, color:T.gray800, lineHeight:1 }}>{value}</div>
+        <div style={{ minWidth:0 }}>
+          <div className="gw-statcard-label" style={{ fontSize:11, fontWeight:700, color, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 }}>{label}</div>
+          <div className="gw-statcard-value" style={{ fontSize:26, fontWeight:800, color:T.gray800, lineHeight:1.15, wordBreak:"break-word" }}>{value}</div>
           {sub && <div style={{ fontSize:12, color:T.gray400, marginTop:4 }}>{sub}</div>}
         </div>
-        <div style={{ fontSize:28, opacity:.8 }}>{icon}</div>
+        <div className="gw-statcard-icon" style={{ fontSize:28, opacity:.8, flexShrink:0, marginLeft:8 }}>{icon}</div>
       </div>
     </Card>
   );
@@ -4134,7 +4134,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
       </div>
       <div style={{ fontSize:12, color:T.gray400, marginBottom:20 }}>Data real-time dari semua master data & kontrol bulanan</div>
 
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
+      <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
         <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${(db.toko||[]).length} total`} icon="🏪" color={T.green} />
         <StatCard label="Total Wilayah"   value={(db.wilayah||[]).length} sub={`${(db.rute||[]).length} rute`}   icon="📍" color={T.teal} />
         <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub="bulan ini"                           icon="💰" color={T.gold} />
@@ -5812,11 +5812,24 @@ export default function GWGSuperApp() {
         .gw-header-subtitle { display: none; }
         .gw-header-logo { width: 36px !important; height: 36px !important; }
         .gw-header-title { font-size: 16px !important; }
+        .gw-header-revenue { padding: 5px 10px !important; font-size: 11px !important; }
+        .gw-header-activeusers button { padding: 5px 9px !important; font-size: 11px !important; }
         .gw-grid2, .gw-grid3 { grid-template-columns: 1fr !important; }
+        .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+        .gw-statcard { padding: 12px !important; }
+        .gw-statcard-value { font-size: 19px !important; }
+        .gw-statcard-label { font-size: 9.5px !important; }
         .gw-modal-body { padding: 16px !important; }
         .gw-modal-header { padding: 14px 16px !important; }
         .gw-content { padding: 14px 10px !important; }
         table { font-size: 11px !important; }
+      }
+      @media (max-width: 400px) {
+        .gw-hide-xs { display: none !important; }
+        .gw-header-revenue, .gw-header-activeusers button { padding: 4px 8px !important; }
+        .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 6px !important; }
+        .gw-statcard { padding: 10px !important; }
+        .gw-statcard-value { font-size: 17px !important; }
       }
     `;
     document.head.appendChild(style);
@@ -6179,18 +6192,18 @@ export default function GWGSuperApp() {
               </div>
             </div>
             <div className="gw-header-actions" style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600 }}>
-                💰 Rev: {fmtRp(analytics.totalRev)}
+              <div className="gw-header-revenue" style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}>
+                💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(analytics.totalRev)}
               </div>
 
               {/* Panel "Pengguna Aktif" — daftar sesi/perangkat yang sedang online real-time */}
               {user && (
-                <div style={{ position:"relative" }}>
+                <div className="gw-header-activeusers" style={{ position:"relative" }}>
                   <button onClick={() => setShowActiveUsers(v => !v)}
                     title="Pengguna sedang aktif"
-                    style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer" }}>
+                    style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
                     <span style={{ width:8, height:8, borderRadius:"50%", background:"#22C55E", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
-                    🟢 {activeUsers.length} Aktif
+                    🟢 {activeUsers.length}<span className="gw-hide-xs"> Aktif</span>
                   </button>
                   {showActiveUsers && (
                     <div style={{ position:"absolute", right:0, top:"110%", background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", minWidth:240, maxHeight:320, overflowY:"auto", zIndex:50, padding:8 }}>
@@ -6218,13 +6231,14 @@ export default function GWGSuperApp() {
               {/* User section */}
               {fbReady ? (
                 user ? (
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div className="gw-header-userinfo" style={{ display:"flex", alignItems:"center", gap:8, minWidth:0 }}>
                     {user.photoURL && (
-                      <img src={user.photoURL} alt="" style={{ width:30, height:30, borderRadius:"50%", border:"2px solid rgba(255,255,255,.4)" }} />
+                      <img src={user.photoURL} alt="" style={{ width:30, height:30, borderRadius:"50%", border:"2px solid rgba(255,255,255,.4)", flexShrink:0 }} />
                     )}
-                    <div style={{ fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600 }}>
-                      {user.displayName?.split(" ")[0]}
-                      <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400 }}>
+                    <div style={{ fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, minWidth:0 }}>
+                      <div style={{ maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.displayName?.split(" ")[0]}</div>
+                      <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
+                      <span className="gw-hide-xs">
                       {syncError ? (
                         <span style={{ color:"#FCA5A5" }}>⚠️ Gagal sync</span>
                       ) : syncing ? (
@@ -6235,6 +6249,7 @@ export default function GWGSuperApp() {
                         <span>☁️ Terhubung</span>
                       )}
                       {" ·"}{" "}
+                      </span>
                       <span style={{ background: daruratAktif ? "#DC2626" : "rgba(255,255,255,.2)", borderRadius:4, padding:"0 5px", fontWeight:700 }}>
                         {userRole}{daruratAktif && " ⚠️"}
                       </span>
