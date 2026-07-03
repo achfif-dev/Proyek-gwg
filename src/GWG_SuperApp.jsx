@@ -1102,10 +1102,20 @@ function useDB(user) {
     try { localStorage.setItem(`gwg_backup_${dateKey}`, JSON.stringify(snapshot)); } catch {}
 
     // 2) Salinan cloud — supaya bisa dipulihkan dari perangkat lain juga.
-    if (user && firebaseDB) {
+    // Status keberhasilannya dikembalikan (cloudOk/cloudError), BUKAN cuma
+    // di-console.warn diam-diam, supaya tombol di UI bisa menampilkan pesan
+    // sukses/gagal yang sesungguhnya ke pengguna — sebelumnya tombol "Simpan
+    // Snapshot ke Cloud" tidak memberi konfirmasi apa pun walau gagal.
+    let cloudOk = false, cloudError = null;
+    if (!user) {
+      cloudError = "Belum login — backup cloud butuh akun Google aktif.";
+    } else if (!firebaseDB) {
+      cloudError = "Firebase belum aktif (aplikasi berjalan di Mode Lokal).";
+    } else {
       try {
         const { db: rtdb, ref, set, get } = firebaseDB;
         await set(ref(rtdb, `gwg_data/_backups/${dateKey}`), snapshot);
+        cloudOk = true;
         const listSnap = await get(ref(rtdb, `gwg_data/_backups`));
         const all = listSnap.val();
         if (all) {
@@ -1117,9 +1127,11 @@ function useDB(user) {
         }
       } catch (e) {
         console.warn("Backup ke cloud gagal (salinan lokal tetap tersimpan):", e);
+        cloudError = e.message;
       }
     }
-    return snapshot;
+    return { snapshot, cloudOk, cloudError };
+
   }, [user]);
 
   // Auto-backup 1x per hari per perangkat. Dipasang lewat efek terpisah agar
@@ -6784,6 +6796,7 @@ export default function GWGSuperApp() {
   const [showBackup, setShowBackup] = useState(false);
   const [backupList, setBackupList] = useState([]);
   const [backupLoading, setBackupLoading] = useState(false);
+  const [backupCloudMsg, setBackupCloudMsg] = useState(null); // { ok, message } — hasil klik "Simpan Snapshot ke Cloud"
   const [restoring, setRestoring] = useState(false); // true selama proses tulis restore berjalan (cegah klik ganda + kasih indikator)
   const [restoreTarget, setRestoreTarget] = useState(null); // snapshot yang mau direstore (perlu konfirmasi)
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
@@ -7329,9 +7342,9 @@ export default function GWGSuperApp() {
       {
         label: "💾⚡ Backup Cepat (unduh sekarang)",
         onClick: async () => {
-          const snap = await backupNow(db, { reason: "manual-cepat" });
-          if (snap) {
-            downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, snap);
+          const result = await backupNow(db, { reason: "manual-cepat" });
+          if (result?.snapshot) {
+            downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, result.snapshot);
           }
         },
       },
@@ -7502,7 +7515,7 @@ export default function GWGSuperApp() {
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
       {showBackup && isAdmin && (
-        <Modal title="💾 Backup & Restore Data" onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); setRestoreFileError(""); }}>
+        <Modal title="💾 Backup & Restore Data" onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); setRestoreFileError(""); setBackupCloudMsg(null); }}>
           <div style={{ padding:"4px 0 8px" }}>
             <div style={{ fontSize:13, color:T.gray400, marginBottom:16 }}>
               Sistem otomatis membuat backup 1x/hari ke cloud. Anda juga bisa membuat backup manual kapan saja, atau mengunduh salinan ke perangkat.
@@ -7512,13 +7525,17 @@ export default function GWGSuperApp() {
               <Btn onClick={() => downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, { ts:new Date().toISOString(), reason:"manual-download", data:db })}>
                 ⬇️ Unduh Backup Sekarang (.json)
               </Btn>
-              <Btn variant="secondary" onClick={async () => {
+              <Btn variant="secondary" disabled={backupLoading} onClick={async () => {
                 setBackupLoading(true);
-                await backupNow(db, { reason: "manual" });
+                setBackupCloudMsg(null);
+                const result = await backupNow(db, { reason: "manual" });
+                setBackupCloudMsg(result.cloudOk
+                  ? { ok: true, message: "✅ Snapshot berhasil disimpan ke Firebase." }
+                  : { ok: false, message: `⚠️ Gagal menyimpan ke cloud: ${result.cloudError || "tidak diketahui"}. Salinan lokal tetap tersimpan di perangkat ini.` });
                 setBackupList(await listBackups());
                 setBackupLoading(false);
               }}>
-                ☁️ Simpan Snapshot ke Cloud (Firebase)
+                {backupLoading ? "⏳ Menyimpan..." : "☁️ Simpan Snapshot ke Cloud (Firebase)"}
               </Btn>
               {/* ── GOOGLE DRIVE UPLOAD ── */}
               <Btn
@@ -7542,6 +7559,15 @@ export default function GWGSuperApp() {
                 {gDriveLoading ? "Mengunggah…" : "Upload ke Google Drive"}
               </Btn>
             </div>
+
+            {backupCloudMsg && (
+              <div style={{ padding:"8px 12px", borderRadius:8, marginBottom:16, fontSize:12,
+                background: backupCloudMsg.ok ? "#E6F4ED" : "#FEF2F2",
+                color: backupCloudMsg.ok ? "#0F4C35" : "#DC2626",
+                border: `1px solid ${backupCloudMsg.ok ? "#6EE7B7" : "#FCA5A5"}` }}>
+                {backupCloudMsg.message}
+              </div>
+            )}
 
             <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, marginTop:8 }}>Pulihkan dari File Backup</div>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
