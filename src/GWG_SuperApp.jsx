@@ -244,7 +244,7 @@ const CATATAN_STATUS = {
 // ─────────────────────────────────────────────
 //  FIREBASE SDK LOADER
 // ─────────────────────────────────────────────
-let firebaseApp = null, firebaseDB = null, firebaseAuth = null, firebaseStorage = null;
+let firebaseApp = null, firebaseDB = null, firebaseAuth = null;
 let firebaseReady = false;
 
 async function initFirebase() {
@@ -254,15 +254,9 @@ async function initFirebase() {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
     const { getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
     const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
-    // Firebase Storage — dipakai KHUSUS untuk arsip data kontrol tahun lama
-    // (lihat archiveKontrolYear di bawah). Kuotanya terpisah dari Realtime
-    // Database (5GB gratis vs 1GB), jadi data historis yang jarang dibuka
-    // bisa "dipindah" ke sini supaya kuota RTDB tetap lega untuk data aktif.
-    const { getStorage, ref: sRef, uploadString, getDownloadURL, deleteObject, listAll, getMetadata } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js");
     firebaseApp = initializeApp(FIREBASE_CONFIG);
     firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
-    firebaseStorage = { storage: getStorage(firebaseApp), ref: sRef, uploadString, getDownloadURL, deleteObject, listAll, getMetadata };
     firebaseReady = true;
     return true;
   } catch (e) {
@@ -431,6 +425,78 @@ function downloadJSON(filename, obj) {
   }
 }
 
+// Ambil access token OAuth2 Google (untuk panggil Google Drive REST API
+// langsung dari browser). Dipakai bersama oleh fitur "Upload ke Google
+// Drive" (backup manual) dan fitur arsip Kontrol Bulanan, supaya tidak
+// dobel logic dan token yang sama (di-cache di window.__gwg_gtoken selama
+// ~55 menit) bisa dipakai ulang tanpa memicu popup login berkali-kali.
+// ⚠ SYARAT: "Google Drive API" harus aktif di Google Cloud Console untuk
+//   project Firebase ini, dan scope drive.file harus diizinkan di OAuth
+//   consent screen — tanpa ini, panggilan akan gagal 403/insufficientScope.
+async function getGDriveAccessToken() {
+  if (window.__gwg_gtoken && window.__gwg_gtoken_exp > Date.now()) {
+    return window.__gwg_gtoken;
+  }
+  if (!firebaseAuth) throw new Error("Firebase Auth belum siap.");
+  const provider = new firebaseAuth.GoogleAuthProvider();
+  provider.addScope("https://www.googleapis.com/auth/drive.file");
+  const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
+  const { GoogleAuthProvider } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+  const cred = GoogleAuthProvider.credentialFromResult(result);
+  if (!cred?.accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
+  window.__gwg_gtoken = cred.accessToken;
+  window.__gwg_gtoken_exp = Date.now() + 55 * 60 * 1000;
+  return cred.accessToken;
+}
+
+// Upload satu file JSON ke Google Drive (multipart upload, Drive API v3).
+// Mengembalikan { id, name, webViewLink } file yang baru dibuat.
+async function gdriveUploadJSON(filename, obj, description) {
+  const accessToken = await getGDriveAccessToken();
+  const content = JSON.stringify(obj, null, 2);
+  const metadata = { name: filename, mimeType: "application/json", description };
+  const boundary = "gwg_boundary_xyz";
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+  const multipartBody = new Blob([
+    delimiter, "Content-Type: application/json; charset=UTF-8\r\n\r\n", JSON.stringify(metadata),
+    delimiter, "Content-Type: application/json\r\n\r\n", content,
+    closeDelimiter,
+  ]);
+  const resp = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
+    { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary="${boundary}"` }, body: multipartBody }
+  );
+  if (!resp.ok) {
+    const errJson = await resp.json().catch(() => ({}));
+    throw new Error(errJson?.error?.message || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
+// Unduh isi (bukan hanya metadata) satu file dari Google Drive, by file ID.
+async function gdriveDownloadJSON(fileId) {
+  const accessToken = await getGDriveAccessToken();
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  return resp.json();
+}
+
+// Hapus permanen satu file dari Google Drive, by file ID.
+async function gdriveDeleteFile(fileId) {
+  const accessToken = await getGDriveAccessToken();
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok && resp.status !== 404) {
+    const errJson = await resp.json().catch(() => ({}));
+    throw new Error(errJson?.error?.message || `HTTP ${resp.status}`);
+  }
+}
+
 // Bangun daftar kolom otomatis dari isi record (union semua key yang
 // muncul), untuk export CSV/Excel data arsip — bentuk record kontrol tidak
 // perlu diketahui persis di sini, cukup ambil semua field yang ada.
@@ -440,6 +506,81 @@ function autoColumns(records) {
   return Array.from(keys).map(k => ({ key: k, label: k }));
 }
 
+
+// ─────────────────────────────────────────────
+//  GOOGLE DRIVE HELPERS — dipakai bareng oleh backup manual & arsip data
+// ─────────────────────────────────────────────
+// Drive dipilih (bukan Firebase Storage) supaya tetap 100% gratis tanpa
+// perlu upgrade project Firebase ke paket berbayar (Blaze) — Google kini
+// mewajibkan kartu pembayaran untuk sekadar MENGAKTIFKAN Storage, walau
+// kuota gratisnya tetap ada. Drive API tidak punya syarat itu.
+//
+// ⚠ SYARAT: "Google Drive API" harus aktif di Google Cloud Console untuk
+//   project Firebase ini, dan scope "drive.file" ditambahkan ke OAuth
+//   consent screen. Tanpa ini, permintaan token akan gagal.
+
+// Ambil OAuth2 access token Google (bukan token Firebase biasa) — dipakai
+// cache di window selama sesi supaya tidak selalu memicu popup login ulang.
+async function getGoogleAccessToken() {
+  if (window.__gwg_gtoken && window.__gwg_gtoken_exp > Date.now()) {
+    return window.__gwg_gtoken;
+  }
+  if (!firebaseAuth) throw new Error("Firebase Auth tidak siap.");
+  const provider = new firebaseAuth.GoogleAuthProvider();
+  provider.addScope("https://www.googleapis.com/auth/drive.file");
+  const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
+  const { GoogleAuthProvider } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+  const cred = GoogleAuthProvider.credentialFromResult(result);
+  if (!cred?.accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
+  window.__gwg_gtoken = cred.accessToken;
+  window.__gwg_gtoken_exp = Date.now() + 55 * 60 * 1000; // token Google valid ~1 jam, kasih margin aman
+  return cred.accessToken;
+}
+
+// Upload satu object sebagai file JSON ke Drive (multipart upload, Drive API v3).
+async function driveUploadJSON(accessToken, filename, obj, description) {
+  const content = JSON.stringify(obj, null, 2);
+  const metadata = { name: filename, mimeType: "application/json", description };
+  const boundary = "gwg_boundary_xyz";
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+  const multipartBody = new Blob([
+    delimiter, "Content-Type: application/json; charset=UTF-8\r\n\r\n", JSON.stringify(metadata),
+    delimiter, "Content-Type: application/json\r\n\r\n", content,
+    closeDelimiter,
+  ]);
+  const resp = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary="${boundary}"` },
+    body: multipartBody,
+  });
+  if (!resp.ok) {
+    const errJson = await resp.json().catch(() => ({}));
+    throw new Error(errJson?.error?.message || `HTTP ${resp.status}`);
+  }
+  return resp.json(); // { id, name, webViewLink }
+}
+
+// Unduh isi file JSON dari Drive berdasarkan fileId.
+async function driveDownloadJSON(accessToken, fileId) {
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok) throw new Error(`HTTP ${resp.status} — file mungkin sudah dihapus dari Drive.`);
+  return resp.json();
+}
+
+// Hapus satu file dari Drive berdasarkan fileId.
+async function driveDeleteFile(accessToken, fileId) {
+  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${accessToken}` },
+  });
+  if (!resp.ok && resp.status !== 404) { // 404 = sudah terhapus, anggap sukses
+    const errJson = await resp.json().catch(() => ({}));
+    throw new Error(errJson?.error?.message || `HTTP ${resp.status}`);
+  }
+}
 
 function useDB(user) {
   const [db, setDB] = useState(() => {
@@ -1242,36 +1383,44 @@ function useDB(user) {
   }, [pushUpdates]);
 
   // ─────────────────────────────────────────────
-  //  ARSIP TAHUN LAMA (Firebase Storage) — hemat kuota Realtime Database
+  //  ARSIP TAHUN LAMA (Google Drive) — hemat kuota Realtime Database
   // ─────────────────────────────────────────────
   // "kontrol" adalah tabel yang paling cepat membesar (bertambah tiap
   // kunjungan x tiap toko x tiap bulan), jadi paling berpengaruh ke kuota
   // gratis RTDB (1GB). Data tahun-tahun lama jarang dibuka lagi setelah
-  // laporan tahunannya selesai, jadi kita pindahkan ke Firebase Storage
-  // (kuota terpisah, 5GB gratis) sebagai SATU file JSON per tahun — jauh
-  // lebih hemat daripada tetap tersimpan sebagai ribuan node di RTDB.
-  // Data TIDAK dihapus permanen: tetap bisa dilihat & diexport kapan saja
-  // lewat viewArchivedKontrolYear / exportArchivedKontrolYear di bawah.
+  // laporan tahunannya selesai, jadi kita pindahkan ke Google Drive (15GB
+  // gratis, tanpa perlu upgrade paket Firebase) sebagai SATU file JSON per
+  // tahun — jauh lebih hemat daripada tetap tersimpan sebagai ribuan node
+  // di RTDB. Data TIDAK dihapus permanen: tetap bisa dilihat & diexport
+  // kapan saja lewat viewArchivedKontrolYear di bawah.
+  //
+  // Index ringan (fileId per tahun) disimpan di RTDB path
+  // `kontrolArchiveIndex` supaya daftar "sudah diarsipkan" bisa ditampilkan
+  // tanpa perlu login/panggil Drive API dulu — token Google (popup) baru
+  // diminta saat admin benar-benar klik Lihat/Export/Hapus/Arsipkan.
   const [archivedKontrolYears, setArchivedKontrolYears] = useState([]); // tahun yang sudah diarsipkan (dari index ringan)
+  const archiveIndexRef = useRef({}); // { [year]: { fileId, driveLink } } — untuk lookup fileId tanpa query ulang
 
   const refreshArchivedYears = useCallback(async () => {
     if (!firebaseDB) return;
     try {
       const { db: rtdb, ref, get } = firebaseDB;
       const snap = await get(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex`));
-      setArchivedKontrolYears(Object.keys(snap.val() || {}).sort());
+      const all = snap.val() || {};
+      archiveIndexRef.current = all;
+      setArchivedKontrolYears(Object.keys(all).sort());
     } catch (e) { console.warn("Gagal memuat daftar arsip:", e); }
   }, []);
 
   useEffect(() => { if (user && firebaseDB) refreshArchivedYears(); }, [user, refreshArchivedYears]);
 
-  // Pindahkan satu tahun data kontrol dari RTDB → Firebase Storage.
+  // Pindahkan satu tahun data kontrol dari RTDB → Google Drive.
   // Urutan PENTING demi keamanan data: upload & VERIFIKASI dulu baru hapus
   // dari RTDB — kalau upload gagal di tengah jalan, data asli di RTDB tidak
   // disentuh sama sekali (tidak ada risiko kehilangan data).
   const archiveKontrolYear = useCallback(async (year) => {
     year = String(year);
-    if (!user || !firebaseDB || !firebaseStorage) return { ok: false, message: "Firebase belum siap." };
+    if (!user || !firebaseDB) return { ok: false, message: "Firebase belum siap." };
     const { db: rtdb, ref, get, set } = firebaseDB;
     try {
       // 1) Ambil seluruh data tahun ini langsung dari RTDB (bukan dari
@@ -1284,19 +1433,22 @@ function useDB(user) {
       }
       const recordCount = Object.keys(yearData).length;
 
-      // 2) Upload sebagai satu file JSON ke Storage, lalu VERIFIKASI
-      //    metadata-nya benar-benar tersimpan sebelum lanjut menghapus.
-      const { storage, ref: sRef, uploadString, getMetadata } = firebaseStorage;
-      const fileRef = sRef(storage, `arsip/kontrol_${year}.json`);
-      const payload = JSON.stringify({ year, archivedAt: new Date().toISOString(), recordCount, data: yearData });
-      await uploadString(fileRef, payload, "raw", { contentType: "application/json" });
-      const meta = await getMetadata(fileRef); // lempar error kalau ternyata gagal tersimpan
-      if (!meta || meta.size <= 0) {
-        return { ok: false, message: "Upload arsip tampak gagal (file kosong) — data ASLI di database tidak diubah, aman untuk dicoba lagi." };
+      // 2) Upload sebagai satu file JSON ke Google Drive. Kalau upload
+      //    gagal (exception dilempar dari dalam gdriveUploadJSON), fungsi
+      //    berhenti di sini lewat catch di bawah — RTDB tidak disentuh.
+      const archivedAt = new Date().toISOString();
+      const fileData = await gdriveUploadJSON(
+        `gwg_arsip_kontrol_${year}.json`,
+        { year, archivedAt, recordCount, data: yearData },
+        `GWG SuperApp - Arsip Kontrol Bulanan tahun ${year}`
+      );
+      if (!fileData?.id) {
+        return { ok: false, message: "Upload arsip tampak gagal (tidak dapat file ID) — data ASLI di database tidak diubah, aman untuk dicoba lagi." };
       }
 
       // 3) Baru sekarang aman menghapus dari RTDB + hentikan listener
-      //    tahun tsb kalau sedang aktif, dan perbarui index.
+      //    tahun tsb kalau sedang aktif, dan perbarui index (sekarang
+      //    menyimpan fileId Drive, bukan cuma `true`).
       if (kontrolYearUnsubsRef.current[year]) {
         kontrolYearUnsubsRef.current[year]();
         delete kontrolYearUnsubsRef.current[year];
@@ -1304,7 +1456,11 @@ function useDB(user) {
       delete kontrolByYearRef.current[year];
       await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), null);
       await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), null);
-      await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), true);
+      await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), {
+        fileId: fileData.id,
+        driveLink: fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`,
+        archivedAt, recordCount,
+      });
 
       // 4) Bersihkan tahun ini dari state lokal (db.kontrol gabungan)
       //    supaya UI tidak lagi menampilkan data yang sudah dipindah.
@@ -1316,32 +1472,28 @@ function useDB(user) {
       });
       await refreshArchivedYears();
 
-      return { ok: true, recordCount, message: `${recordCount} data kontrol tahun ${year} berhasil diarsipkan ke Storage dan dihapus dari database aktif.` };
+      return { ok: true, recordCount, message: `${recordCount} data kontrol tahun ${year} berhasil diarsipkan ke Google Drive dan dihapus dari database aktif.` };
     } catch (e) {
       console.warn(`Gagal mengarsipkan tahun ${year}:`, e);
       return { ok: false, message: `Gagal mengarsipkan: ${e.message}. Data ASLI tidak diubah — aman untuk dicoba lagi.` };
     }
   }, [user, refreshArchivedYears]);
 
-  // Unduh & baca isi satu file arsip — HANYA UNTUK DILIHAT/DIEXPORT, tidak
-  // ditulis balik ke db.kontrol aktif (supaya tidak tercampur/konflik
-  // dengan data yang sedang live-sync). Dipanggil dari UI saat admin klik
-  // "Lihat" pada tahun yang sudah diarsipkan.
+  // Unduh & baca isi satu file arsip dari Drive — HANYA UNTUK DILIHAT/
+  // DIEXPORT, tidak ditulis balik ke db.kontrol aktif (supaya tidak
+  // tercampur/konflik dengan data yang sedang live-sync). Dipanggil dari
+  // UI saat admin klik "Lihat" pada tahun yang sudah diarsipkan.
   const viewArchivedKontrolYear = useCallback(async (year) => {
     year = String(year);
-    if (!firebaseStorage) return { ok: false, message: "Firebase Storage belum siap.", records: [] };
+    const entry = archiveIndexRef.current[year];
+    if (!entry?.fileId) return { ok: false, message: "Data arsip tahun ini tidak ditemukan di index.", records: [] };
     try {
-      const { storage, ref: sRef, getDownloadURL } = firebaseStorage;
-      const fileRef = sRef(storage, `arsip/kontrol_${year}.json`);
-      const url = await getDownloadURL(fileRef);
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const parsed = await res.json();
+      const parsed = await gdriveDownloadJSON(entry.fileId);
       const records = mapToArr(parsed.data || {});
       return { ok: true, records, archivedAt: parsed.archivedAt, recordCount: parsed.recordCount ?? records.length };
     } catch (e) {
       console.warn(`Gagal membaca arsip tahun ${year}:`, e);
-      return { ok: false, message: `Gagal membuka arsip: ${e.message}`, records: [] };
+      return { ok: false, message: `Gagal membuka arsip dari Google Drive: ${e.message}`, records: [] };
     }
   }, []);
 
@@ -1355,21 +1507,23 @@ function useDB(user) {
     return result;
   }, [viewArchivedKontrolYear]);
 
-  // Hapus permanen satu arsip dari Storage (dipisah dari archiveKontrolYear
-  // supaya penghapusan permanen selalu perlu langkah eksplisit tersendiri
-  // dari admin — bukan efek samping otomatis dari aksi lain).
+  // Hapus permanen satu arsip dari Google Drive (dipisah dari
+  // archiveKontrolYear supaya penghapusan permanen selalu perlu langkah
+  // eksplisit tersendiri dari admin — bukan efek samping otomatis dari
+  // aksi lain).
   const deleteArchivedKontrolYear = useCallback(async (year) => {
     year = String(year);
-    if (!firebaseStorage || !firebaseDB) return { ok: false, message: "Firebase belum siap." };
+    const entry = archiveIndexRef.current[year];
+    if (!firebaseDB) return { ok: false, message: "Firebase belum siap." };
+    if (!entry?.fileId) return { ok: false, message: "Data arsip tahun ini tidak ditemukan di index." };
     try {
-      const { storage, ref: sRef, deleteObject } = firebaseStorage;
-      await deleteObject(sRef(storage, `arsip/kontrol_${year}.json`));
+      await gdriveDeleteFile(entry.fileId);
       const { db: rtdb, ref, set } = firebaseDB;
       await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), null);
       await refreshArchivedYears();
       return { ok: true };
     } catch (e) {
-      return { ok: false, message: `Gagal menghapus arsip: ${e.message}` };
+      return { ok: false, message: `Gagal menghapus arsip dari Google Drive: ${e.message}` };
     }
   }, [refreshArchivedYears]);
 
@@ -7033,89 +7187,16 @@ export default function GWGSuperApp() {
 
   const uploadToGDrive = useCallback(async () => {
     if (!user) { alert("Login dengan Google terlebih dahulu."); return; }
-
-    // Ambil access token dari provider Google yang sudah di-link Firebase Auth.
-    // getIdToken() menghasilkan JWT Firebase — bukan OAuth2 access token untuk
-    // Google API. Kita butuh access token Google, yang disimpan di
-    // providerData / credential saat sign-in. Firebase tidak menyimpannya
-    // langsung di objek user, jadi kita gunakan getIdTokenResult lalu coba
-    // reauthenticate via GoogleAuthProvider.credential() untuk mendapat token
-    // OAuth yang segar via silent sign-in.
     setGDriveLoading(true);
     setGDriveMsg(null);
     try {
-      // Coba dapatkan Google OAuth2 access token via Firebase auth.
-      // Metode: paksa re-link credential Google untuk mendapat accessToken.
-      let accessToken = null;
-
-      if (window.__gwg_gtoken && window.__gwg_gtoken_exp > Date.now()) {
-        // Pakai token cache jika belum expire (token Google valid ~1 jam)
-        accessToken = window.__gwg_gtoken;
-      } else {
-        // Tidak ada cache — minta user re-auth (popup Google) untuk mendapat token OAuth baru.
-        // Popup dibutuhkan pertama kali; setelah itu token di-cache selama sesi.
-        if (!firebaseAuth) throw new Error("Firebase Auth tidak siap.");
-        const provider = new firebaseAuth.GoogleAuthProvider();
-        provider.addScope("https://www.googleapis.com/auth/drive.file");
-        const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
-        // Firebase v9+ menyimpan credential di result
-        const { GoogleAuthProvider } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
-        const cred = GoogleAuthProvider.credentialFromResult(result);
-        if (!cred?.accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
-        accessToken = cred.accessToken;
-        // Cache token (expire dalam 55 menit untuk safety margin)
-        window.__gwg_gtoken = accessToken;
-        window.__gwg_gtoken_exp = Date.now() + 55 * 60 * 1000;
-      }
-
-      // Buat konten JSON backup
       const ts = new Date().toISOString();
       const filename = `gwg_backup_${ts.slice(0,19).replace(/[:T]/g,"-")}.json`;
-      const content = JSON.stringify({ ts, reason: "gdrive-manual", data: db }, null, 2);
-      const contentBlob = new Blob([content], { type: "application/json" });
-
-      // Metadata file di Drive
-      const metadata = {
-        name: filename,
-        mimeType: "application/json",
-        description: `GWG SuperApp backup - ${ts}`,
-        // Simpan di folder "GWG Backup" jika sudah dibuat, atau di root Drive
-      };
-
-      // Multipart upload ke Drive API v3
-      const boundary = "gwg_backup_boundary_xyz";
-      const delimiter = `\r\n--${boundary}\r\n`;
-      const closeDelimiter = `\r\n--${boundary}--`;
-
-      const multipartBody = new Blob([
-        delimiter,
-        "Content-Type: application/json; charset=UTF-8\r\n\r\n",
-        JSON.stringify(metadata),
-        delimiter,
-        "Content-Type: application/json\r\n\r\n",
-        content,
-        closeDelimiter,
-      ]);
-
-      const resp = await fetch(
-        "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": `multipart/related; boundary="${boundary}"`,
-          },
-          body: multipartBody,
-        }
+      const fileData = await gdriveUploadJSON(
+        filename,
+        { ts, reason: "gdrive-manual", data: db },
+        `GWG SuperApp backup - ${ts}`
       );
-
-      if (!resp.ok) {
-        const errJson = await resp.json().catch(() => ({}));
-        const msg = errJson?.error?.message || `HTTP ${resp.status}`;
-        throw new Error(msg);
-      }
-
-      const fileData = await resp.json();
       const viewLink = fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`;
       setGDriveMsg({
         ok: true,
@@ -7632,12 +7713,13 @@ export default function GWGSuperApp() {
               })}
             </div>
 
-            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🗄️ Arsipkan Tahun Lama ke Storage</div>
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🗄️ Arsipkan Tahun Lama ke Google Drive</div>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
-              Pindahkan data kontrol satu tahun dari Realtime Database (kuota 1GB) ke Firebase Storage (kuota
-              terpisah, 5GB) sebagai satu file arsip. Data <b>tidak hilang</b> — tetap bisa dilihat &amp; diexport
-              kapan saja lewat daftar arsip di bawah. Sebaiknya jangan arsipkan tahun berjalan/tahun kemarin
-              yang masih sering dibuka.
+              Pindahkan data kontrol satu tahun dari Realtime Database (kuota 1GB) ke Google Drive Anda (15GB
+              gratis, tanpa perlu upgrade paket Firebase) sebagai satu file arsip. Data <b>tidak hilang</b> — tetap
+              bisa dilihat &amp; diexport kapan saja lewat daftar arsip di bawah. Sebaiknya jangan arsipkan tahun
+              berjalan/tahun kemarin yang masih sering dibuka. Aksi ini akan meminta izin akses Google Drive
+              (popup login) jika belum pernah diberikan sebelumnya.
             </div>
             <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
               {availableKontrolYears.filter(y => !archivedKontrolYears.includes(y)).length === 0 && (
@@ -7646,7 +7728,7 @@ export default function GWGSuperApp() {
               {availableKontrolYears.filter(y => !archivedKontrolYears.includes(y)).map(y => (
                 <Btn key={`arch-${y}`} variant="secondary" size="sm" disabled={archivingYear === y}
                   onClick={async () => {
-                    if (!confirm(`Arsipkan data kontrol tahun ${y}?\n\nData akan dipindah ke Firebase Storage dan dihapus dari database aktif (tetap bisa dilihat/diexport lagi kapan saja dari daftar arsip).`)) return;
+                    if (!confirm(`Arsipkan data kontrol tahun ${y}?\n\nData akan dipindah ke Google Drive Anda dan dihapus dari database aktif (tetap bisa dilihat/diexport lagi kapan saja dari daftar arsip). Anda mungkin diminta login/izin akses Google Drive.`)) return;
                     setArchivingYear(y);
                     setArchiveMsg(null);
                     const result = await archiveKontrolYear(y);
@@ -7750,7 +7832,7 @@ export default function GWGSuperApp() {
                 <div style={{ background:"#fff", borderRadius:12, padding:20, maxWidth:420, width:"100%" }}>
                   <div style={{ fontSize:15, fontWeight:700, marginBottom:8, color:"#991B1B" }}>⚠️ Hapus Arsip Permanen</div>
                   <div style={{ fontSize:13, color:T.gray600, marginBottom:12, lineHeight:1.6 }}>
-                    Ini akan menghapus arsip tahun <b>{deleteArchiveConfirmYear}</b> secara permanen dari Firebase Storage.
+                    Ini akan menghapus arsip tahun <b>{deleteArchiveConfirmYear}</b> secara permanen dari Google Drive.
                     Data <b>TIDAK BISA</b> dikembalikan setelah ini. Pastikan sudah export/simpan sendiri kalau masih perlu.
                   </div>
                   <input type="text" value={deleteArchiveConfirmText} onChange={e => setDeleteArchiveConfirmText(e.target.value)}
