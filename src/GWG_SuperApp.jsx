@@ -21,6 +21,149 @@ const FIREBASE_CONFIG = {
 const FIREBASE_CONFIGURED = !FIREBASE_CONFIG.apiKey.includes("XXXXX");
 
 // ─────────────────────────────────────────────
+//  OFFLINE STORAGE (IndexedDB) — cache lokal database untuk mode offline
+// ─────────────────────────────────────────────
+// localStorage dibatasi ~5-10MB per origin dan bisa DIAM-DIAM GAGAL menulis
+// (quota exceeded) begitu tabel besar seperti "kontrol"/"toko" bertambah
+// banyak seiring waktu — sebelumnya kegagalan ini ditelan oleh `catch {}`
+// sehingga data terbaru tidak benar-benar tersimpan lokal walau terlihat
+// baik-baik saja di UI. IndexedDB tidak punya batas praktis seperti itu
+// (biasanya ratusan MB - beberapa GB tergantung browser/perangkat), jadi
+// kita jadikan IndexedDB sebagai penyimpan cadangan lokal UTAMA, sementara
+// localStorage tetap ditulis juga (untuk kompatibilitas & load pertama yang
+// sinkron/instan sebelum IndexedDB sempat dibuka).
+const IDB_NAME = "gwg_offline_db";
+const IDB_STORE = "kv";
+// "writeQueue": antrean perubahan yang BELUM berhasil dikirim ke Firebase —
+// keyPath = "path" (path Firebase relatif, mis. "toko/T001"), jadi kalau
+// user mengedit path yang sama berkali-kali saat offline, cukup versi
+// TERAKHIR yang tersimpan (put menimpa key yang sama), bukan riwayat
+// bertumpuk. Ini yang membuat perubahan dari sales di lapangan (sinyal
+// lemah/hilang) TIDAK PERNAH hilang walau app ditutup/HP restart sebelum
+// sempat online lagi — begitu online, antrean ini otomatis dikirim ulang.
+const IDB_QUEUE_STORE = "writeQueue";
+let idbOpenPromise = null;
+function openIDB() {
+  if (idbOpenPromise) return idbOpenPromise;
+  idbOpenPromise = new Promise((resolve) => {
+    if (typeof indexedDB === "undefined") { resolve(null); return; }
+    try {
+      const req = indexedDB.open(IDB_NAME, 2);
+      req.onupgradeneeded = () => {
+        const dbConn = req.result;
+        if (!dbConn.objectStoreNames.contains(IDB_STORE)) dbConn.createObjectStore(IDB_STORE);
+        if (!dbConn.objectStoreNames.contains(IDB_QUEUE_STORE)) dbConn.createObjectStore(IDB_QUEUE_STORE, { keyPath: "path" });
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(null); // IndexedDB tidak tersedia (mis. private mode Safari) → fallback localStorage saja
+    } catch { resolve(null); }
+  });
+  return idbOpenPromise;
+}
+async function idbSet(key, value) {
+  const db = await openIDB();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch { resolve(); }
+  });
+}
+async function idbGet(key) {
+  const db = await openIDB();
+  if (!db) return undefined;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => resolve(undefined);
+    } catch { resolve(undefined); }
+  });
+}
+// ── Antrean tulis offline (durable) ─────────────────────────────────────
+async function queueWrite(path, value) {
+  const db = await openIDB();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      tx.objectStore(IDB_QUEUE_STORE).put({ path, value, ts: Date.now() });
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch { resolve(); }
+  });
+}
+async function queueRemove(path) {
+  const db = await openIDB();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      tx.objectStore(IDB_QUEUE_STORE).delete(path);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch { resolve(); }
+  });
+}
+async function queueGetAll() {
+  const db = await openIDB();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readonly");
+      const req = tx.objectStore(IDB_QUEUE_STORE).getAll();
+      req.onsuccess = () => resolve(req.result || []);
+      req.onerror = () => resolve([]);
+    } catch { resolve([]); }
+  });
+}
+async function queueCount() {
+  const db = await openIDB();
+  if (!db) return 0;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readonly");
+      const req = tx.objectStore(IDB_QUEUE_STORE).count();
+      req.onsuccess = () => resolve(req.result || 0);
+      req.onerror = () => resolve(0);
+    } catch { resolve(0); }
+  });
+}
+// Titik tunggal untuk menyimpan seluruh state `db` secara lokal. Dipanggil
+// di SETIAP tempat yang dulu memanggil localStorage.setItem("gwg_db_v2", ...)
+// langsung — perilaku localStorage dipertahankan (sinkron, cepat), ditambah
+// tulis ke IndexedDB (async, best-effort, tidak memblokir UI) sebagai
+// cadangan berkapasitas besar yang jauh lebih tahan dipakai offline.
+function saveLocalDB(data) {
+  try { localStorage.setItem("gwg_db_v2", JSON.stringify(data)); } catch {}
+  idbSet("gwg_db_v2", data);
+}
+
+// Hook status koneksi — dipakai untuk menampilkan indikator "Offline" di
+// header dan (nantinya) untuk menahan/menunda aksi yang butuh jaringan.
+// navigator.onLine mendeteksi status koneksi perangkat secara umum (WiFi/
+// data seluler mati/nyala); ini sudah cukup untuk kebanyakan kasus offline
+// di lapangan (mis. sinyal hilang saat kunjungan toko).
+function useOnlineStatus() {
+  const [isOnline, setIsOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine));
+  useEffect(() => {
+    const goOnline = () => setIsOnline(true);
+    const goOffline = () => setIsOnline(false);
+    window.addEventListener("online", goOnline);
+    window.addEventListener("offline", goOffline);
+    return () => {
+      window.removeEventListener("online", goOnline);
+      window.removeEventListener("offline", goOffline);
+    };
+  }, []);
+  return isOnline;
+}
+
+// ─────────────────────────────────────────────
 //  SUPER ADMIN — satu akun tetap yang TIDAK BISA diturunkan/dihapus
 //  oleh Admin lain manapun (termasuk dirinya sendiri lewat UI).
 //  Isi dengan email Google akun pemilik aplikasi. Kosongkan ("") untuk
@@ -289,6 +432,19 @@ function useDB(user) {
       return saved ? JSON.parse(saved) : DB_EMPTY;
     } catch { return DB_EMPTY; }
   });
+  // Hidrasi dari IndexedDB begitu tersedia (di render pertama kita hanya
+  // sempat membaca localStorage secara sinkron di atas). Kalau IndexedDB
+  // punya salinan — misalnya localStorage gagal menyimpan versi terbaru
+  // karena kuota penuh — timpa state dengan versi IndexedDB yang lebih
+  // lengkap. Ini membuat data offline tetap utuh walau app baru dibuka
+  // ulang dalam kondisi tanpa internet sama sekali.
+  useEffect(() => {
+    let cancelled = false;
+    idbGet("gwg_db_v2").then((saved) => {
+      if (!cancelled && saved) setDB(saved);
+    });
+    return () => { cancelled = true; };
+  }, []);
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [syncError, setSyncError] = useState(null);
@@ -438,7 +594,7 @@ function useDB(user) {
             remoteRef.current.kontrol = merged;
             setDB(prev => {
               const next = { ...prev, kontrol: mapToArr(merged) };
-              try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+              saveLocalDB(next);
               return next;
             });
           };
@@ -494,7 +650,7 @@ function useDB(user) {
             remoteRef.current[key] = { ...localMap };
             setDB(prev => {
               const next = { ...prev, [key]: mapToArr(localMap) };
-              try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+              saveLocalDB(next);
               return next;
             });
           };
@@ -550,7 +706,7 @@ function useDB(user) {
             const next = { ...prev };
             if (LIST_TABLES.includes(key)) next[key] = mapToArr(val);
             else next[key] = val ?? (key === "stokAwal" ? {} : null);
-            try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+            saveLocalDB(next);
             return next;
           });
           markLoadedAndFlush(key);
@@ -589,7 +745,7 @@ function useDB(user) {
       remoteRef.current.kontrol = merged;
       setDB(prev => {
         const next = { ...prev, kontrol: mapToArr(merged) };
-        try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+        saveLocalDB(next);
         return next;
       });
     };
@@ -665,17 +821,72 @@ function useDB(user) {
     }
   }, [user]);
 
-  // Tulis HANYA path/record yang benar-benar berubah ke Firebase, dibanding
-  // snapshot remote terakhir yang kita punya. `updates` adalah object dengan
-  // key berupa path relatif ("toko/T001", "kontrol", dst) dan value berupa
-  // data baru untuk path itu (atau null untuk menghapus).
+  // Status antrean tulis offline — jumlah perubahan yang BELUM berhasil
+  // dikirim ke Firebase (tersimpan aman di IndexedDB). Dipakai untuk
+  // menampilkan "N perubahan menunggu sinkron" di header.
+  const [pendingSync, setPendingSync] = useState(0);
+  const flushingRef = useRef(false);
+  const refreshPendingCount = useCallback(() => {
+    queueCount().then(setPendingSync);
+  }, []);
+
+  // Kirim ulang SEMUA perubahan yang masih tertunda di antrean lokal, satu
+  // per satu, secara berurutan (path yang sama hanya tersimpan sebagai versi
+  // TERAKHIR — lihat queueWrite). Kalau satu path gagal (kemungkinan besar
+  // masih offline), langsung berhenti — sisanya dicoba lagi di kesempatan
+  // berikutnya (event 'online' berikutnya / retry berkala), supaya tidak
+  // spam percobaan yang pasti gagal saat memang belum ada sinyal.
+  const flushWriteQueue = useCallback(async () => {
+    if (!firebaseDB || !basePathRef.current || flushingRef.current) return;
+    flushingRef.current = true;
+    try {
+      const { db: rtdb, ref, set } = firebaseDB;
+      const entries = await queueGetAll();
+      for (const { path, value } of entries) {
+        try {
+          await set(ref(rtdb, `gwg_data/shared/${path}`), value);
+          await queueRemove(path);
+        } catch (e) {
+          console.warn("Sinkron tertunda (kemungkinan masih offline):", path, e);
+          break; // hentikan, coba lagi nanti begitu online/retry berikutnya
+        }
+      }
+    } finally {
+      flushingRef.current = false;
+      refreshPendingCount();
+    }
+  }, [refreshPendingCount]);
+
+  // Coba flush antrean: (1) begitu user login & Firebase siap — menyapu
+  // sisa antrean dari sesi sebelumnya yang mungkin belum sempat terkirim;
+  // (2) setiap kali koneksi kembali online; (3) berkala tiap 30 detik
+  // sebagai jaring pengaman untuk kondisi sinyal naik-turun (lebih andal
+  // daripada hanya mengandalkan event 'online' browser, yang di HP kadang
+  // tidak selalu akurat mendeteksi koneksi data seluler yang lemah).
+  useEffect(() => {
+    if (!user || !firebaseDB) return;
+    refreshPendingCount();
+    flushWriteQueue();
+    const onOnline = () => flushWriteQueue();
+    window.addEventListener("online", onOnline);
+    const interval = setInterval(flushWriteQueue, 30000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      clearInterval(interval);
+    };
+  }, [user, flushWriteQueue, refreshPendingCount]);
+
+  // Tulis HANYA path/record yang benar-benar berubah. Setiap perubahan
+  // SELALU dicatat dulu ke antrean lokal durable (IndexedDB) — baru
+  // kemudian dicoba dikirim ke Firebase. Kalau gagal/offline, perubahan
+  // TETAP AMAN tersimpan di antrean dan otomatis dikirim ulang begitu
+  // koneksi kembali, walau app sempat ditutup/HP mati di antaranya.
   const pushUpdates = useCallback((updates) => {
+    const entries = Object.entries(updates).map(([path, value]) => [path, value === undefined ? null : value]);
+    Promise.all(entries.map(([path, value]) => queueWrite(path, value))).then(refreshPendingCount);
     if (!user || !firebaseDB || !basePathRef.current) return;
-    const { db: rtdb, ref, set } = firebaseDB;
-    Object.entries(updates).forEach(([path, value]) => {
-      set(ref(rtdb, `gwg_data/shared/${path}`), value === undefined ? null : value).catch(console.warn);
-    });
-  }, [user]);
+    flushWriteQueue();
+  }, [user, flushWriteQueue, refreshPendingCount]);
 
   // save() generik dipertahankan agar kode lama (stok update, import excel,
   // config bagi hasil) yang memanggil save(newDB) tetap berfungsi tanpa
@@ -712,7 +923,7 @@ function useDB(user) {
       if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
       if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
       if (Object.keys(updates).length) pushUpdates(updates);
-      try { localStorage.setItem("gwg_db_v2", JSON.stringify(newDB)); } catch {}
+      saveLocalDB(newDB);
       return newDB;
     });
   }, [pushUpdates]);
@@ -726,7 +937,7 @@ function useDB(user) {
     setDB(prevDB => {
       const nextArr = [...(prevDB[table]||[]), record];
       const next = { ...prevDB, [table]: nextArr };
-      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      saveLocalDB(next);
       if (table === "kontrol") {
         const y = kontrolYearOf(record);
         pushUpdates({ [`kontrol/${y}/${record.id}`]: record, [`kontrolYearsIndex/${y}`]: true });
@@ -747,7 +958,7 @@ function useDB(user) {
         return mergedRecord;
       });
       const next = { ...prevDB, [table]: nextArr };
-      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      saveLocalDB(next);
       if (mergedRecord) {
         if (table === "kontrol") {
           const oldYear = kontrolYearOf(oldRecord);
@@ -775,7 +986,7 @@ function useDB(user) {
       const targetRecord = table === "kontrol" ? (prevDB[table]||[]).find(r => r.id === id) : null;
       const nextArr = (prevDB[table]||[]).filter(r => r.id !== id);
       const next = { ...prevDB, [table]: nextArr };
-      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      saveLocalDB(next);
       // Jika menghapus pengguna, tandai emailnya di blacklist agar tidak
       // auto-register ulang ketika pengguna tersebut refresh browser.
       // KECUALI untuk email Super Admin — akun ini TIDAK BOLEH pernah masuk
@@ -820,7 +1031,7 @@ function useDB(user) {
         return mergedRecord;
       });
       const next = { ...prevDB, toko: nextArr };
-      try { localStorage.setItem("gwg_db_v2", JSON.stringify(next)); } catch {}
+      saveLocalDB(next);
       if (mergedRecord) pushUpdates({ [`toko/${tokoId}`]: mergedRecord });
       return next;
     });
@@ -833,7 +1044,7 @@ function useDB(user) {
     // di bawah).
     backupNow(db, { reason: "sebelum-reset" });
     setDB(DB_EMPTY);
-    try { localStorage.setItem("gwg_db_v2", JSON.stringify(DB_EMPTY)); } catch {}
+    saveLocalDB(DB_EMPTY);
     // Reset menghapus SETIAP path tabel secara eksplisit (bukan menulis satu
     // blob kosong ke root), supaya konsisten dengan skema per-path di atas.
     const updates = {};
@@ -947,7 +1158,7 @@ function useDB(user) {
   const restoreBackup = useCallback(async (snapshotData) => {
     const restored = { ...DB_EMPTY, ...snapshotData };
     setDB(restored);
-    try { localStorage.setItem("gwg_db_v2", JSON.stringify(restored)); } catch {}
+    saveLocalDB(restored);
 
     const failed = [];
 
@@ -1039,7 +1250,7 @@ function useDB(user) {
     } catch {}
   }, []);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration };
 }
 
 
@@ -6416,6 +6627,7 @@ function canAccessTab(tabKey, { isAdmin, isManajer }) {
 }
 
 export default function GWGSuperApp() {
+  const isOnline = useOnlineStatus();
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showReset, setShowReset] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState("");
@@ -6511,7 +6723,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Mobile-friendly: pastikan viewport meta tag benar agar tampilan tidak
@@ -6995,7 +7207,15 @@ export default function GWGSuperApp() {
                 <div className="gw-header-title" style={{ fontSize:20, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>Generasi Wangi Group</div>
                 <div className="gw-header-subtitle" style={{ fontSize:11, color:"rgba(255,255,255,.7)", letterSpacing:"0.08em", textTransform:"uppercase" }}>
                   Super App · Sistem Manajemen Konsinyasi
-                  {syncing && <span style={{ marginLeft:8, background:"rgba(255,255,255,.2)", borderRadius:99, padding:"1px 8px", fontSize:10 }}>🔄 Sinkronisasi...</span>}
+                  {!isOnline ? (
+                    <span style={{ marginLeft:8, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
+                      📴 Offline{pendingSync > 0 ? ` · ${pendingSync} tersimpan` : ""}
+                    </span>
+                  ) : pendingSync > 0 ? (
+                    <span style={{ marginLeft:8, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>🔄 Mengirim {pendingSync} perubahan...</span>
+                  ) : syncing && (
+                    <span style={{ marginLeft:8, background:"rgba(255,255,255,.2)", borderRadius:99, padding:"1px 8px", fontSize:10 }}>🔄 Sinkronisasi...</span>
+                  )}
                 </div>
               </div>
             </div>
@@ -7051,7 +7271,13 @@ export default function GWGSuperApp() {
                       <div style={{ maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.displayName?.split(" ")[0]}</div>
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
                       <span className="gw-hide-xs">
-                      {syncError ? (
+                      {!isOnline ? (
+                        <span style={{ color:"#FCD34D" }} title="Tidak ada koneksi internet — perubahan tersimpan di perangkat ini dan akan sinkron otomatis begitu online kembali">
+                          📴 Offline{pendingSync > 0 ? ` · ${pendingSync} menunggu` : " · data lokal"}
+                        </span>
+                      ) : pendingSync > 0 ? (
+                        <span style={{ color:"#FCD34D" }} title="Sedang mengirim perubahan yang tersimpan saat offline">🔄 Mengirim {pendingSync} perubahan...</span>
+                      ) : syncError ? (
                         <span style={{ color:"#FCA5A5" }}>⚠️ Gagal sync</span>
                       ) : syncing ? (
                         <span>🔄 Sinkronisasi...</span>
