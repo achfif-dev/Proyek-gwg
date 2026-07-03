@@ -930,15 +930,76 @@ function useDB(user) {
   // Restore dari satu snapshot backup — menulis ulang SEMUA tabel secara
   // eksplisit (beda dengan save() yang hanya mengirim yang berubah), supaya
   // hasil restore benar-benar identik dengan snapshot yang dipilih.
-  const restoreBackup = useCallback((snapshotData) => {
+  //
+  // PENTING (bugfix): versi lama fungsi ini menulis "kontrol" lewat
+  // pushUpdates() sama seperti tabel kecil lainnya — sebagai SATU blob flat
+  // di root path "kontrol". Padahal listener pembaca kontrol HANYA membaca
+  // path "kontrol/{tahun}/{id}" (dipartisi per tahun). Akibatnya data
+  // kontrol/penjualan hasil restore tertulis ke Firebase, tapi di path yang
+  // tidak pernah dibaca ulang oleh aplikasi → terlihat "hilang" setelah
+  // refresh/login ulang. Sekarang "kontrol" ditulis terpisah, dipartisi per
+  // tahun, SAMA PERSIS seperti save()/addRecord().
+  //
+  // Selain itu, semua penulisan sekarang di-await dan errornya dikumpulkan
+  // lalu dikembalikan ke pemanggil (bukan cuma console.warn diam-diam),
+  // supaya kalau tabel besar (toko/kontrol) gagal tertulis karena koneksi
+  // terputus, ADMIN DIBERI TAHU — bukan mengira restore sudah berhasil.
+  const restoreBackup = useCallback(async (snapshotData) => {
     const restored = { ...DB_EMPTY, ...snapshotData };
     setDB(restored);
     try { localStorage.setItem("gwg_db_v2", JSON.stringify(restored)); } catch {}
-    const updates = {};
-    LIST_TABLES.forEach(key => { updates[key] = arrToMap(restored[key]); });
-    updates.stokAwal = restored.stokAwal || {};
-    updates.bagiHasilConfig = restored.bagiHasilConfig ?? null;
-    pushUpdates(updates);
+
+    const failed = [];
+
+    if (firebaseDB) {
+      const { db: rtdb, ref, set } = firebaseDB;
+      const writeTable = async (key, value) => {
+        try { await set(ref(rtdb, `gwg_data/shared/${key}`), value); }
+        catch (e) { console.warn(`Gagal restore tabel "${key}":`, e); failed.push(key); }
+      };
+      await Promise.all([
+        writeTable("wilayah", arrToMap(restored.wilayah)),
+        writeTable("rute", arrToMap(restored.rute)),
+        writeTable("toko", arrToMap(restored.toko)),
+        writeTable("produk", arrToMap(restored.produk)),
+        writeTable("pengguna", arrToMap(restored.pengguna)),
+        writeTable("penyesuaian", arrToMap(restored.penyesuaian)),
+        writeTable("penjualanLuar", arrToMap(restored.penjualanLuar)),
+        writeTable("stokAwal", restored.stokAwal || {}),
+        writeTable("bagiHasilConfig", restored.bagiHasilConfig ?? null),
+      ]);
+
+      // "kontrol" — bersihkan dulu node lama (termasuk sisa blob flat dari
+      // restore versi lama, kalau ada) SEBELUM menulis partisi baru, supaya
+      // tidak ada data ganda/nyasar tercampur di root "kontrol".
+      try {
+        await set(ref(rtdb, `gwg_data/shared/kontrol`), null);
+        const kontrolByYear = {};
+        (restored.kontrol || []).forEach(rec => {
+          const y = kontrolYearOf(rec);
+          (kontrolByYear[y] = kontrolByYear[y] || {})[rec.id] = rec;
+        });
+        for (const [year, recs] of Object.entries(kontrolByYear)) {
+          await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), recs);
+          await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), true);
+        }
+      } catch (e) {
+        console.warn('Gagal restore tabel "kontrol":', e);
+        failed.push("kontrol");
+      }
+    } else {
+      // Mode lokal tanpa Firebase: cukup pushUpdates seperti semula.
+      const updates = {};
+      LIST_TABLES.forEach(key => { updates[key] = arrToMap(restored[key]); });
+      updates.stokAwal = restored.stokAwal || {};
+      updates.bagiHasilConfig = restored.bagiHasilConfig ?? null;
+      pushUpdates(updates);
+    }
+
+    if (failed.length > 0) {
+      return { ok: false, failed, message: `Sebagian data GAGAL disimpan ke cloud (kemungkinan koneksi terputus): ${failed.join(", ")}. Coba ulangi restore dengan koneksi lebih stabil — jangan tutup halaman saat proses berjalan.` };
+    }
+    return { ok: true };
   }, [pushUpdates]);
 
   // Ambil daftar email yang sedang diblokir (sudah dihapus admin) dari
@@ -6363,6 +6424,7 @@ export default function GWGSuperApp() {
   const [showBackup, setShowBackup] = useState(false);
   const [backupList, setBackupList] = useState([]);
   const [backupLoading, setBackupLoading] = useState(false);
+  const [restoring, setRestoring] = useState(false); // true selama proses tulis restore berjalan (cegah klik ganda + kasih indikator)
   const [restoreTarget, setRestoreTarget] = useState(null); // snapshot yang mau direstore (perlu konfirmasi)
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [restoreFileError, setRestoreFileError] = useState(""); // error saat baca file backup lokal/Drive
@@ -7257,16 +7319,23 @@ export default function GWGSuperApp() {
               <Btn variant="secondary" onClick={()=>{ setRestoreTarget(null); setRestoreConfirmText(""); }}>Batal</Btn>
               <Btn
                 variant="danger"
-                disabled={restoreConfirmText.trim().toUpperCase() !== "PULIHKAN"}
-                onClick={()=>{
-                  if (!isAdmin || restoreConfirmText.trim().toUpperCase() !== "PULIHKAN") return;
-                  restoreBackup(restoreTarget.data);
+                disabled={restoreConfirmText.trim().toUpperCase() !== "PULIHKAN" || restoring}
+                onClick={async ()=>{
+                  if (!isAdmin || restoreConfirmText.trim().toUpperCase() !== "PULIHKAN" || restoring) return;
+                  setRestoring(true);
+                  const result = await restoreBackup(restoreTarget.data);
+                  setRestoring(false);
                   setRestoreTarget(null);
                   setRestoreConfirmText("");
                   setShowBackup(false);
+                  if (result && result.ok === false) {
+                    alert("⚠️ Restore SEBAGIAN gagal!\n\n" + result.message);
+                  } else {
+                    alert("✅ Restore berhasil. Data toko/kontrol besar mungkin perlu beberapa detik untuk tampil sepenuhnya — tunggu status sinkron selesai sebelum menutup aplikasi.");
+                  }
                 }}
               >
-                Ya, Pulihkan Sekarang
+                {restoring ? "Memulihkan..." : "Ya, Pulihkan Sekarang"}
               </Btn>
             </div>
           </div>
