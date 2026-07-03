@@ -23,7 +23,7 @@
 9. [Pencegahan Data Duplikat](#9-pencegahan-data-duplikat)
 10. [Mode Lokal vs Mode Cloud (Firebase)](#10-mode-lokal-vs-mode-cloud-firebase)
 11. [Mode Offline & Sinkronisasi Otomatis](#11-mode-offline--sinkronisasi-otomatis)
-12. [Arsip Data Lama (Firebase Storage)](#12-arsip-data-lama-firebase-storage)
+12. [Arsip Data Lama (Google Drive)](#12-arsip-data-lama-google-drive)
 13. [Instalasi & Menjalankan Secara Lokal](#13-instalasi--menjalankan-secara-lokal)
 14. [Build Production & Deploy](#14-build-production--deploy)
 15. [Install sebagai Aplikasi (PWA) & Membuat APK Android](#15-install-sebagai-aplikasi-pwa--membuat-apk-android)
@@ -47,7 +47,7 @@ GWG Super App adalah aplikasi web (Progressive Web App) yang menangani seluruh p
 - **Backup otomatis**, restore, dan reset database dengan pengaman berlapis.
 - **Impor/Ekspor** data lewat Excel, CSV, PDF, HTML, JPG, JSON.
 - **Bekerja penuh walau offline/sinyal lemah** — perubahan tersimpan aman di perangkat dan otomatis sinkron begitu online lagi.
-- **Arsip otomatis** data lama ke Firebase Storage supaya kuota database gratis tidak cepat penuh, tanpa kehilangan data histori.
+- **Arsip data lama** ke Google Drive (15GB gratis, tanpa perlu upgrade paket Firebase) supaya kuota database gratis tidak cepat penuh, tanpa kehilangan data histori.
 - **Bisa diinstall** langsung dari browser (Android/iOS/Desktop) seperti aplikasi native, bahkan bisa dibungkus jadi file `.apk`.
 
 Aplikasi bisa berjalan dalam dua mode:
@@ -65,7 +65,7 @@ Aplikasi bisa berjalan dalam dua mode:
 | PWA / offline | **vite-plugin-pwa** (Workbox) — auto-generate service worker & manifest |
 | Backend / database | **Firebase Realtime Database** (data aktif, real-time) |
 | Autentikasi | **Firebase Authentication** (Login Google) |
-| Arsip data lama | **Firebase Storage** (file JSON per tahun) |
+| Arsip data lama | **Google Drive** via Drive REST API (file JSON per tahun, 15GB gratis) |
 | Cache & antrean offline | **IndexedDB** (native browser API) + `localStorage` (fallback) |
 | Ekspor data | **SheetJS (xlsx)**, serta generator CSV/PDF/HTML/JPG buatan sendiri |
 | Hosting | **Netlify** (juga kompatibel dengan Vercel) |
@@ -123,10 +123,11 @@ Struktur data disusun berjenjang (hierarkis), dan **wajib diisi berurutan dari a
 
 ### A. Konfigurasi Firebase (opsional, untuk mode cloud/multi-perangkat)
 1. Buka [Firebase Console](https://console.firebase.google.com).
-2. Buat proyek baru → aktifkan **Realtime Database**, **Authentication (Google)**, dan **Storage**.
+2. Buat proyek baru → aktifkan **Realtime Database** dan **Authentication (Google)**.
 3. Ambil konfigurasi SDK Web (Project Settings → SDK Config).
 4. Buka file `src/GWG_SuperApp.jsx`, isi variabel `FIREBASE_CONFIG` di bagian atas file dengan konfigurasi tersebut.
 5. Jika belum dikonfigurasi, aplikasi tetap berjalan dalam **Mode Lokal** (data tersimpan di browser saja, tanpa login).
+6. *(Opsional, hanya untuk fitur "Upload ke Google Drive" & "Arsip Kontrol")* — di [Google Cloud Console](https://console.cloud.google.com) untuk project yang sama, aktifkan **Google Drive API**, lalu tambahkan scope `https://www.googleapis.com/auth/drive.file` ke OAuth consent screen.
 
 ### B. Login Pertama Kali
 1. Buka aplikasi, klik **"Masuk dengan Google"**.
@@ -335,20 +336,22 @@ Aplikasi ini dirancang untuk tetap bisa dipakai penuh oleh sales di lapangan **w
 
 ---
 
-## 12. Arsip Data Lama (Firebase Storage)
+## 12. Arsip Data Lama (Google Drive)
 
-Karena tabel **Kontrol Bulanan** terus bertambah tiap bulan, ada mekanisme arsip untuk menjaga kuota gratis Firebase Realtime Database (1GB) tidak cepat penuh dalam pemakaian bertahun-tahun.
+Karena tabel **Kontrol Bulanan** terus bertambah tiap bulan, ada mekanisme arsip untuk menjaga kuota gratis Firebase Realtime Database (1GB) tidak cepat penuh dalam pemakaian bertahun-tahun. Arsip disimpan ke **Google Drive** (bukan Firebase Storage) — Google kini mewajibkan paket berbayar (Blaze) hanya untuk *mengaktifkan* Firebase Storage, sedangkan Google Drive API tidak punya syarat itu dan tetap 100% gratis (15GB).
 
-**Cara kerja** *(menu Admin → "🗄️ Arsipkan Tahun Lama ke Storage")*:
+**Cara kerja** *(menu Admin → "🗄️ Arsipkan Tahun Lama ke Google Drive")*:
 1. Admin pilih tahun yang mau diarsipkan (disarankan tahun yang laporannya sudah selesai / jarang dibuka lagi).
-2. Data tahun tersebut diambil dari Realtime Database, digabung jadi **satu file JSON**, lalu diunggah ke **Firebase Storage** (kuota terpisah, 5GB gratis).
-3. Setelah upload **terverifikasi berhasil**, barulah data tahun itu dihapus dari Realtime Database — kalau upload gagal di tengah jalan, data asli **tidak disentuh sama sekali** (aman dicoba ulang).
+2. Data tahun tersebut diambil dari Realtime Database, digabung jadi **satu file JSON**, lalu diunggah ke **Google Drive** milik admin yang login (butuh izin akses Drive sekali lewat popup, token di-cache ~55 menit).
+3. Setelah upload **berhasil dan file ID-nya didapat**, barulah data tahun itu dihapus dari Realtime Database — kalau upload gagal di tengah jalan, data asli **tidak disentuh sama sekali** (aman dicoba ulang).
 4. Tahun yang sudah diarsipkan muncul di daftar **"📦 Data Kontrol yang Sudah Diarsipkan"** dengan 3 aksi:
-   - **👁️ Lihat** — buka & tampilkan datanya langsung di app (tanpa ditulis balik ke database aktif).
+   - **👁️ Lihat** — unduh & tampilkan datanya langsung di app (tanpa ditulis balik ke database aktif).
    - **⬇️ Export Excel** — unduh sebagai file `.xlsx` lengkap.
-   - **🗑️ Hapus** — hapus permanen dari Storage (perlu konfirmasi ketik "HAPUS", terpisah dari aksi arsip supaya tidak terhapus tidak sengaja).
+   - **🗑️ Hapus** — hapus permanen dari Google Drive (perlu konfirmasi ketik "HAPUS", terpisah dari aksi arsip supaya tidak terhapus tidak sengaja).
 
 Data yang diarsipkan **tidak pernah hilang** — hanya dipindah tempat penyimpanan, dan tetap bisa dilihat/diekspor kapan pun dibutuhkan untuk laporan atau audit tahun-tahun sebelumnya.
+
+> ⚠️ **Syarat teknis**: fitur ini memakai Google Drive REST API langsung dari browser, jadi **"Google Drive API"** harus diaktifkan di Google Cloud Console untuk project Firebase Anda, dan scope `https://www.googleapis.com/auth/drive.file` harus tersedia di layar izin OAuth (OAuth consent screen). Tanpa ini, permintaan token akan gagal dengan error 403/insufficientScope. Ini adalah syarat yang sama dengan fitur "Upload ke Google Drive" pada menu Backup, yang memakai mekanisme login/token yang sama.
 
 ---
 
@@ -477,7 +480,7 @@ Proyek-gwg-main/
 - Akun **Super Admin** dikunci permanen di kode (`SUPER_ADMIN_EMAIL`) dan tidak bisa direbut, diubah, atau dihapus lewat antarmuka aplikasi oleh siapa pun.
 - Sistem tidak akan pernah membiarkan jumlah Admin turun ke nol lewat tab Pengguna (baik lewat hapus maupun ubah role), untuk mencegah aplikasi terkunci total dari akses admin.
 - Email yang dihapus Admin masuk daftar blokir sehingga tidak otomatis mendaftar ulang — mencegah akun bekas karyawan/mitra login kembali tanpa sepengetahuan Admin.
-- Proses arsip ke Firebase Storage selalu **upload dulu → verifikasi → baru hapus dari database aktif**, sehingga tidak ada risiko kehilangan data walau koneksi terputus di tengah proses.
+- Proses arsip ke Google Drive selalu **upload dulu → dapat file ID sukses → baru hapus dari database aktif**, sehingga tidak ada risiko kehilangan data walau koneksi terputus di tengah proses.
 - Perubahan data offline disimpan di antrean lokal (IndexedDB) yang **tidak menumpuk versi lama** — hanya versi terakhir per data yang dikirim, mencegah data usang menimpa data terbaru saat kembali online.
 
 ---
