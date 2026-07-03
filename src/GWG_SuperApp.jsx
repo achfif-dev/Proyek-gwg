@@ -244,7 +244,7 @@ const CATATAN_STATUS = {
 // ─────────────────────────────────────────────
 //  FIREBASE SDK LOADER
 // ─────────────────────────────────────────────
-let firebaseApp = null, firebaseDB = null, firebaseAuth = null;
+let firebaseApp = null, firebaseDB = null, firebaseAuth = null, firebaseStorage = null;
 let firebaseReady = false;
 
 async function initFirebase() {
@@ -254,9 +254,15 @@ async function initFirebase() {
     const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
     const { getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
     const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+    // Firebase Storage — dipakai KHUSUS untuk arsip data kontrol tahun lama
+    // (lihat archiveKontrolYear di bawah). Kuotanya terpisah dari Realtime
+    // Database (5GB gratis vs 1GB), jadi data historis yang jarang dibuka
+    // bisa "dipindah" ke sini supaya kuota RTDB tetap lega untuk data aktif.
+    const { getStorage, ref: sRef, uploadString, getDownloadURL, deleteObject, listAll, getMetadata } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-storage.js");
     firebaseApp = initializeApp(FIREBASE_CONFIG);
     firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
+    firebaseStorage = { storage: getStorage(firebaseApp), ref: sRef, uploadString, getDownloadURL, deleteObject, listAll, getMetadata };
     firebaseReady = true;
     return true;
   } catch (e) {
@@ -424,6 +430,16 @@ function downloadJSON(filename, obj) {
     alert("Gagal membuat file backup: " + e.message);
   }
 }
+
+// Bangun daftar kolom otomatis dari isi record (union semua key yang
+// muncul), untuk export CSV/Excel data arsip — bentuk record kontrol tidak
+// perlu diketahui persis di sini, cukup ambil semua field yang ada.
+function autoColumns(records) {
+  const keys = new Set();
+  records.forEach(r => Object.keys(r || {}).forEach(k => keys.add(k)));
+  return Array.from(keys).map(k => ({ key: k, label: k }));
+}
+
 
 function useDB(user) {
   const [db, setDB] = useState(() => {
@@ -1213,6 +1229,138 @@ function useDB(user) {
     return { ok: true };
   }, [pushUpdates]);
 
+  // ─────────────────────────────────────────────
+  //  ARSIP TAHUN LAMA (Firebase Storage) — hemat kuota Realtime Database
+  // ─────────────────────────────────────────────
+  // "kontrol" adalah tabel yang paling cepat membesar (bertambah tiap
+  // kunjungan x tiap toko x tiap bulan), jadi paling berpengaruh ke kuota
+  // gratis RTDB (1GB). Data tahun-tahun lama jarang dibuka lagi setelah
+  // laporan tahunannya selesai, jadi kita pindahkan ke Firebase Storage
+  // (kuota terpisah, 5GB gratis) sebagai SATU file JSON per tahun — jauh
+  // lebih hemat daripada tetap tersimpan sebagai ribuan node di RTDB.
+  // Data TIDAK dihapus permanen: tetap bisa dilihat & diexport kapan saja
+  // lewat viewArchivedKontrolYear / exportArchivedKontrolYear di bawah.
+  const [archivedKontrolYears, setArchivedKontrolYears] = useState([]); // tahun yang sudah diarsipkan (dari index ringan)
+
+  const refreshArchivedYears = useCallback(async () => {
+    if (!firebaseDB) return;
+    try {
+      const { db: rtdb, ref, get } = firebaseDB;
+      const snap = await get(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex`));
+      setArchivedKontrolYears(Object.keys(snap.val() || {}).sort());
+    } catch (e) { console.warn("Gagal memuat daftar arsip:", e); }
+  }, []);
+
+  useEffect(() => { if (user && firebaseDB) refreshArchivedYears(); }, [user, refreshArchivedYears]);
+
+  // Pindahkan satu tahun data kontrol dari RTDB → Firebase Storage.
+  // Urutan PENTING demi keamanan data: upload & VERIFIKASI dulu baru hapus
+  // dari RTDB — kalau upload gagal di tengah jalan, data asli di RTDB tidak
+  // disentuh sama sekali (tidak ada risiko kehilangan data).
+  const archiveKontrolYear = useCallback(async (year) => {
+    year = String(year);
+    if (!user || !firebaseDB || !firebaseStorage) return { ok: false, message: "Firebase belum siap." };
+    const { db: rtdb, ref, get, set } = firebaseDB;
+    try {
+      // 1) Ambil seluruh data tahun ini langsung dari RTDB (bukan dari
+      //    state lokal, supaya akurat walau tahun ini belum/sudah pernah
+      //    dimuat manual di perangkat ini).
+      const snap = await get(ref(rtdb, `gwg_data/shared/kontrol/${year}`));
+      const yearData = snap.val();
+      if (!yearData || Object.keys(yearData).length === 0) {
+        return { ok: false, message: `Tidak ada data kontrol tahun ${year} untuk diarsipkan.` };
+      }
+      const recordCount = Object.keys(yearData).length;
+
+      // 2) Upload sebagai satu file JSON ke Storage, lalu VERIFIKASI
+      //    metadata-nya benar-benar tersimpan sebelum lanjut menghapus.
+      const { storage, ref: sRef, uploadString, getMetadata } = firebaseStorage;
+      const fileRef = sRef(storage, `arsip/kontrol_${year}.json`);
+      const payload = JSON.stringify({ year, archivedAt: new Date().toISOString(), recordCount, data: yearData });
+      await uploadString(fileRef, payload, "raw", { contentType: "application/json" });
+      const meta = await getMetadata(fileRef); // lempar error kalau ternyata gagal tersimpan
+      if (!meta || meta.size <= 0) {
+        return { ok: false, message: "Upload arsip tampak gagal (file kosong) — data ASLI di database tidak diubah, aman untuk dicoba lagi." };
+      }
+
+      // 3) Baru sekarang aman menghapus dari RTDB + hentikan listener
+      //    tahun tsb kalau sedang aktif, dan perbarui index.
+      if (kontrolYearUnsubsRef.current[year]) {
+        kontrolYearUnsubsRef.current[year]();
+        delete kontrolYearUnsubsRef.current[year];
+      }
+      delete kontrolByYearRef.current[year];
+      await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), null);
+      await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), null);
+      await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), true);
+
+      // 4) Bersihkan tahun ini dari state lokal (db.kontrol gabungan)
+      //    supaya UI tidak lagi menampilkan data yang sudah dipindah.
+      setLoadedKontrolYears(prev => prev.filter(y => y !== year));
+      setDB(prev => {
+        const next = { ...prev, kontrol: prev.kontrol.filter(rec => kontrolYearOf(rec) !== year) };
+        saveLocalDB(next);
+        return next;
+      });
+      await refreshArchivedYears();
+
+      return { ok: true, recordCount, message: `${recordCount} data kontrol tahun ${year} berhasil diarsipkan ke Storage dan dihapus dari database aktif.` };
+    } catch (e) {
+      console.warn(`Gagal mengarsipkan tahun ${year}:`, e);
+      return { ok: false, message: `Gagal mengarsipkan: ${e.message}. Data ASLI tidak diubah — aman untuk dicoba lagi.` };
+    }
+  }, [user, refreshArchivedYears]);
+
+  // Unduh & baca isi satu file arsip — HANYA UNTUK DILIHAT/DIEXPORT, tidak
+  // ditulis balik ke db.kontrol aktif (supaya tidak tercampur/konflik
+  // dengan data yang sedang live-sync). Dipanggil dari UI saat admin klik
+  // "Lihat" pada tahun yang sudah diarsipkan.
+  const viewArchivedKontrolYear = useCallback(async (year) => {
+    year = String(year);
+    if (!firebaseStorage) return { ok: false, message: "Firebase Storage belum siap.", records: [] };
+    try {
+      const { storage, ref: sRef, getDownloadURL } = firebaseStorage;
+      const fileRef = sRef(storage, `arsip/kontrol_${year}.json`);
+      const url = await getDownloadURL(fileRef);
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const parsed = await res.json();
+      const records = mapToArr(parsed.data || {});
+      return { ok: true, records, archivedAt: parsed.archivedAt, recordCount: parsed.recordCount ?? records.length };
+    } catch (e) {
+      console.warn(`Gagal membaca arsip tahun ${year}:`, e);
+      return { ok: false, message: `Gagal membuka arsip: ${e.message}`, records: [] };
+    }
+  }, []);
+
+  // Export arsip ke file yang bisa dibuka di HP/komputer manapun (JSON
+  // mentah — untuk Excel/CSV, ambil `records`-nya lewat viewArchivedKontrolYear
+  // lalu pakai exportExcel/exportCSV yang sudah ada, dipanggil dari UI).
+  const exportArchivedKontrolYear = useCallback(async (year) => {
+    const result = await viewArchivedKontrolYear(year);
+    if (!result.ok) return result;
+    downloadJSON(`arsip_kontrol_${year}`, result.records);
+    return result;
+  }, [viewArchivedKontrolYear]);
+
+  // Hapus permanen satu arsip dari Storage (dipisah dari archiveKontrolYear
+  // supaya penghapusan permanen selalu perlu langkah eksplisit tersendiri
+  // dari admin — bukan efek samping otomatis dari aksi lain).
+  const deleteArchivedKontrolYear = useCallback(async (year) => {
+    year = String(year);
+    if (!firebaseStorage || !firebaseDB) return { ok: false, message: "Firebase belum siap." };
+    try {
+      const { storage, ref: sRef, deleteObject } = firebaseStorage;
+      await deleteObject(sRef(storage, `arsip/kontrol_${year}.json`));
+      const { db: rtdb, ref, set } = firebaseDB;
+      await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), null);
+      await refreshArchivedYears();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: `Gagal menghapus arsip: ${e.message}` };
+    }
+  }, [refreshArchivedYears]);
+
   // Ambil daftar email yang sedang diblokir (sudah dihapus admin) dari
   // Firebase, supaya bisa ditampilkan & dikelola di UI Tab Pengguna.
   const listDeletedUsers = useCallback(async () => {
@@ -1250,7 +1398,7 @@ function useDB(user) {
     } catch {}
   }, []);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear };
 }
 
 
@@ -6644,6 +6792,13 @@ export default function GWGSuperApp() {
   const [migrating, setMigrating] = useState(false); // migrasi struktur kontrol → partisi tahun sedang berjalan
   const [migrationResult, setMigrationResult] = useState(null); // { ok, message } hasil migrasi terakhir
   const [migrateConfirmText, setMigrateConfirmText] = useState("");
+  const [archivingYear, setArchivingYear] = useState(null); // tahun yang sedang diproses arsip
+  const [archiveMsg, setArchiveMsg] = useState(null); // { ok, message } hasil aksi arsip terakhir
+  const [viewArchiveYear, setViewArchiveYear] = useState(null); // tahun yang sedang dibuka untuk dilihat (modal)
+  const [viewArchiveData, setViewArchiveData] = useState(null); // { records, archivedAt, recordCount } | "loading" | null
+  const [exportingArchiveYear, setExportingArchiveYear] = useState(null);
+  const [deleteArchiveConfirmYear, setDeleteArchiveConfirmYear] = useState(null);
+  const [deleteArchiveConfirmText, setDeleteArchiveConfirmText] = useState("");
   const [loginError, setLoginError] = useState("");
   const [showActiveUsers, setShowActiveUsers] = useState(false);
   // Ref tombol "Pengguna Aktif" + posisi panel yang selalu di-clamp di dalam
@@ -6723,7 +6878,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Mobile-friendly: pastikan viewport meta tag benar agar tampilan tidak
@@ -7450,6 +7605,144 @@ export default function GWGSuperApp() {
                 );
               })}
             </div>
+
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🗄️ Arsipkan Tahun Lama ke Storage</div>
+            <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
+              Pindahkan data kontrol satu tahun dari Realtime Database (kuota 1GB) ke Firebase Storage (kuota
+              terpisah, 5GB) sebagai satu file arsip. Data <b>tidak hilang</b> — tetap bisa dilihat &amp; diexport
+              kapan saja lewat daftar arsip di bawah. Sebaiknya jangan arsipkan tahun berjalan/tahun kemarin
+              yang masih sering dibuka.
+            </div>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
+              {availableKontrolYears.filter(y => !archivedKontrolYears.includes(y)).length === 0 && (
+                <div style={{ fontSize:12, color:T.gray400 }}>Tidak ada tahun yang bisa diarsipkan saat ini.</div>
+              )}
+              {availableKontrolYears.filter(y => !archivedKontrolYears.includes(y)).map(y => (
+                <Btn key={`arch-${y}`} variant="secondary" size="sm" disabled={archivingYear === y}
+                  onClick={async () => {
+                    if (!confirm(`Arsipkan data kontrol tahun ${y}?\n\nData akan dipindah ke Firebase Storage dan dihapus dari database aktif (tetap bisa dilihat/diexport lagi kapan saja dari daftar arsip).`)) return;
+                    setArchivingYear(y);
+                    setArchiveMsg(null);
+                    const result = await archiveKontrolYear(y);
+                    setArchiveMsg(result);
+                    setArchivingYear(null);
+                  }}>
+                  {archivingYear === y ? `⏳ Mengarsipkan ${y}...` : `🗄️ Arsipkan ${y}`}
+                </Btn>
+              ))}
+            </div>
+            {archiveMsg && (
+              <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
+                background: archiveMsg.ok ? "#DCFCE7" : "#FEE2E2", color: archiveMsg.ok ? "#166534" : "#991B1B" }}>
+                {archiveMsg.ok ? "✅ " : "⚠️ "}{archiveMsg.message}
+              </div>
+            )}
+
+            {archivedKontrolYears.length > 0 && (
+              <>
+                <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>📦 Data Kontrol yang Sudah Diarsipkan</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:16 }}>
+                  {archivedKontrolYears.map(y => (
+                    <div key={`archrow-${y}`} style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap",
+                      padding:"8px 10px", borderRadius:8, background:T.gray50, border:`1px solid ${T.gray200}` }}>
+                      <span style={{ fontSize:13, fontWeight:600, flex:1 }}>📅 Tahun {y}</span>
+                      <Btn variant="secondary" size="sm"
+                        onClick={async () => {
+                          setViewArchiveYear(y);
+                          setViewArchiveData("loading");
+                          const result = await viewArchivedKontrolYear(y);
+                          setViewArchiveData(result.ok ? result : { ok:false, message: result.message, records: [] });
+                        }}>👁️ Lihat</Btn>
+                      <Btn variant="secondary" size="sm" disabled={exportingArchiveYear === y}
+                        onClick={async () => {
+                          setExportingArchiveYear(y);
+                          const result = await viewArchivedKontrolYear(y);
+                          if (result.ok) {
+                            exportExcel(result.records, autoColumns(result.records), `Arsip Kontrol ${y}`, `arsip_kontrol_${y}`);
+                          } else {
+                            alert(result.message || "Gagal mengekspor arsip.");
+                          }
+                          setExportingArchiveYear(null);
+                        }}>{exportingArchiveYear === y ? "⏳ Menyiapkan..." : "⬇️ Export Excel"}</Btn>
+                      <Btn variant="danger" size="sm" onClick={() => { setDeleteArchiveConfirmYear(y); setDeleteArchiveConfirmText(""); }}>🗑️ Hapus</Btn>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {viewArchiveYear && (
+              <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000,
+                display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
+                onClick={() => { setViewArchiveYear(null); setViewArchiveData(null); }}>
+                <div style={{ background:"#fff", borderRadius:12, padding:20, maxWidth:640, maxHeight:"80vh",
+                  overflow:"auto", width:"100%" }} onClick={e => e.stopPropagation()}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                    <div style={{ fontSize:15, fontWeight:700 }}>📦 Arsip Kontrol {viewArchiveYear}</div>
+                    <button onClick={() => { setViewArchiveYear(null); setViewArchiveData(null); }}
+                      style={{ border:"none", background:"none", fontSize:18, cursor:"pointer" }}>✕</button>
+                  </div>
+                  {viewArchiveData === "loading" && <div style={{ fontSize:13, color:T.gray400 }}>⏳ Memuat arsip dari Storage...</div>}
+                  {viewArchiveData && viewArchiveData !== "loading" && !viewArchiveData.ok && (
+                    <div style={{ fontSize:13, color:"#991B1B" }}>⚠️ {viewArchiveData.message}</div>
+                  )}
+                  {viewArchiveData && viewArchiveData !== "loading" && viewArchiveData.ok && (
+                    <>
+                      <div style={{ fontSize:12, color:T.gray400, marginBottom:10 }}>
+                        {viewArchiveData.recordCount} data · diarsipkan {viewArchiveData.archivedAt ? new Date(viewArchiveData.archivedAt).toLocaleString("id-ID") : "-"}
+                      </div>
+                      <div style={{ overflowX:"auto" }}>
+                        <table style={{ width:"100%", fontSize:11, borderCollapse:"collapse" }}>
+                          <thead><tr>
+                            {autoColumns(viewArchiveData.records).slice(0,8).map(c => (
+                              <th key={c.key} style={{ textAlign:"left", padding:"4px 6px", borderBottom:`2px solid ${T.gray200}`, whiteSpace:"nowrap" }}>{c.label}</th>
+                            ))}
+                          </tr></thead>
+                          <tbody>
+                            {viewArchiveData.records.slice(0,100).map((r,i) => (
+                              <tr key={i} style={{ borderBottom:`1px solid ${T.gray100}` }}>
+                                {autoColumns(viewArchiveData.records).slice(0,8).map(c => (
+                                  <td key={c.key} style={{ padding:"4px 6px", whiteSpace:"nowrap" }}>{String(r[c.key] ?? "")}</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {viewArchiveData.records.length > 100 && (
+                        <div style={{ fontSize:11, color:T.gray400, marginTop:8 }}>Menampilkan 100 dari {viewArchiveData.records.length} data. Gunakan "Export Excel" untuk melihat semuanya.</div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {deleteArchiveConfirmYear && (
+              <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000,
+                display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
+                <div style={{ background:"#fff", borderRadius:12, padding:20, maxWidth:420, width:"100%" }}>
+                  <div style={{ fontSize:15, fontWeight:700, marginBottom:8, color:"#991B1B" }}>⚠️ Hapus Arsip Permanen</div>
+                  <div style={{ fontSize:13, color:T.gray600, marginBottom:12, lineHeight:1.6 }}>
+                    Ini akan menghapus arsip tahun <b>{deleteArchiveConfirmYear}</b> secara permanen dari Firebase Storage.
+                    Data <b>TIDAK BISA</b> dikembalikan setelah ini. Pastikan sudah export/simpan sendiri kalau masih perlu.
+                  </div>
+                  <input type="text" value={deleteArchiveConfirmText} onChange={e => setDeleteArchiveConfirmText(e.target.value)}
+                    placeholder="Ketik HAPUS untuk konfirmasi"
+                    style={{ width:"100%", padding:"8px 10px", fontSize:13, border:`1px solid ${T.gray200}`, borderRadius:8, marginBottom:12, fontFamily:"inherit" }} />
+                  <div style={{ display:"flex", gap:8, justifyContent:"flex-end" }}>
+                    <Btn variant="secondary" size="sm" onClick={() => setDeleteArchiveConfirmYear(null)}>Batal</Btn>
+                    <Btn variant="danger" size="sm" disabled={deleteArchiveConfirmText.trim().toUpperCase() !== "HAPUS"}
+                      onClick={async () => {
+                        const y = deleteArchiveConfirmYear;
+                        setDeleteArchiveConfirmYear(null);
+                        const result = await deleteArchivedKontrolYear(y);
+                        setArchiveMsg(result.ok ? { ok:true, message:`Arsip tahun ${y} berhasil dihapus permanen.` } : result);
+                      }}>Hapus Permanen</Btn>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🔧 Migrasi Struktur Data Lama</div>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
