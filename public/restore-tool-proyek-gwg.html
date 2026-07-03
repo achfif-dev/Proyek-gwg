@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Alat Pulihkan Backup — proyek-gwg</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    background: #F5F6F5; margin: 0; padding: 16px; color: #1F2937;
+  }
+  .card {
+    background: #fff; border-radius: 12px; padding: 20px;
+    max-width: 520px; margin: 0 auto 16px; box-shadow: 0 1px 3px rgba(0,0,0,.08);
+  }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.sub { color: #6B7280; font-size: 13px; margin: 0 0 16px; }
+  button {
+    background: #0F4C35; color: #fff; border: none; border-radius: 8px;
+    padding: 12px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+    width: 100%; margin-top: 8px;
+  }
+  button:disabled { background: #9CA3AF; }
+  button.secondary { background: #fff; color: #0F4C35; border: 1.5px solid #0F4C35; }
+  button.danger { background: #DC2626; }
+  input[type="file"] { width: 100%; margin-top: 8px; font-size: 13px; }
+  input[type="text"] {
+    width: 100%; padding: 10px 12px; font-size: 14px; border: 1px solid #E5E7EB;
+    border-radius: 8px; margin-top: 8px; text-align: center; letter-spacing: 1px;
+  }
+  .status { font-size: 13px; margin-top: 12px; white-space: pre-wrap; line-height: 1.6; }
+  .ok { color: #0F4C35; }
+  .err { color: #DC2626; }
+  .warn { color: #B45309; }
+  .progress-wrap { background: #E5E7EB; border-radius: 6px; height: 10px; margin-top: 10px; overflow: hidden; }
+  .progress-bar { background: #0F4C35; height: 100%; width: 0%; transition: width .2s; }
+  .row { display: flex; justify-content: space-between; font-size: 12px; color: #6B7280; margin-top: 4px; }
+  code { background: #F3F4F6; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <h1>🔧 Alat Pulihkan Backup (Ringan)</h1>
+  <p class="sub">
+    Alat terpisah dari aplikasi utama — dipakai KHUSUS untuk memulihkan backup
+    berukuran besar (ribuan toko / ratusan kontrol) tanpa membuat browser HP
+    kehabisan memori. Setelah selesai, buka aplikasi utama seperti biasa.
+  </p>
+
+  <div id="authSection">
+    <button id="btnLogin">🔑 Login dengan Google</button>
+    <div id="authStatus" class="status"></div>
+  </div>
+
+  <div id="fileSection" class="hidden">
+    <p class="sub" style="margin-top:16px;">Pilih file backup <code>.json</code> yang sebelumnya diunduh dari menu "Backup & Restore".</p>
+    <input type="file" id="fileInput" accept=".json,application/json" />
+    <div id="fileStatus" class="status"></div>
+  </div>
+
+  <div id="confirmSection" class="hidden">
+    <p class="sub" style="margin-top:16px; color:#B45309; font-weight:600;">
+      ⚠️ Ini akan MENGGANTI seluruh data toko, kontrol (penjualan), wilayah, rute, dll di cloud dengan isi file ini. Tindakan tidak bisa dibatalkan.
+    </p>
+    <p class="sub">Ketik <b>PULIHKAN</b> untuk mengaktifkan tombol:</p>
+    <input type="text" id="confirmInput" placeholder="Ketik PULIHKAN" />
+    <button id="btnRestore" class="danger" disabled>Ya, Pulihkan Sekarang</button>
+  </div>
+
+  <div id="progressSection" class="hidden">
+    <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
+    <div class="row"><span id="progressLabel">Memulai...</span><span id="progressPct">0%</span></div>
+    <div id="progressLog" class="status"></div>
+  </div>
+
+  <div id="doneSection" class="hidden">
+    <div id="doneMsg" class="status"></div>
+    <button id="btnBack" class="secondary">Selesai — Kembali ke Aplikasi Utama</button>
+  </div>
+</div>
+
+<script type="module">
+  const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyBBAWDbCtCde8mgRgASZ7nl36bfEwZaPM4",
+    authDomain: "proyek-gwg.firebaseapp.com",
+    databaseURL: "https://proyek-gwg-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "proyek-gwg",
+    storageBucket: "proyek-gwg.firebasestorage.app",
+    messagingSenderId: "481668966064",
+    appId: "1:481668966064:web:8b1bbc7a1c1eac71bb3d75",
+  };
+
+  const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna", "penyesuaian", "penjualanLuar"];
+  const CHUNK_SIZE = 200; // jumlah record per batch tulis — kecil supaya ringan di memori HP
+
+  function kontrolYearOf(record) {
+    const y = (record && record.tanggal || "").slice(0, 4);
+    return /^\d{4}$/.test(y) ? y : String(new Date().getFullYear());
+  }
+  function chunk(arr, size) {
+    const out = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+  function el(id) { return document.getElementById(id); }
+  function log(msg, cls) {
+    const p = document.createElement("div");
+    if (cls) p.className = cls;
+    p.textContent = msg;
+    el("progressLog").appendChild(p);
+    el("progressLog").scrollTop = el("progressLog").scrollHeight;
+  }
+  function setProgress(pct, label) {
+    el("progressBar").style.width = pct + "%";
+    el("progressPct").textContent = pct + "%";
+    el("progressLabel").textContent = label;
+  }
+
+  let app, db, auth, dbRef, dbSet, dbUpdate, dbGet;
+  let backupData = null;
+
+  async function initFirebase() {
+    const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
+    const { getDatabase, ref, set, update, get } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
+    const { getAuth, GoogleAuthProvider, signInWithPopup, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+    app = initializeApp(FIREBASE_CONFIG);
+    db = getDatabase(app);
+    dbRef = ref; dbSet = set; dbUpdate = update; dbGet = get;
+    auth = getAuth(app);
+
+    return new Promise((resolve) => {
+      onAuthStateChanged(auth, (user) => {
+        if (user) {
+          el("authStatus").innerHTML = `<span class="ok">✅ Login sebagai ${user.email}</span>`;
+          el("btnLogin").textContent = "Login ulang";
+          el("fileSection").classList.remove("hidden");
+        }
+        resolve(user);
+      });
+    }).then((user) => {
+      el("btnLogin").onclick = async () => {
+        const provider = new GoogleAuthProvider();
+        try { await signInWithPopup(auth, provider); }
+        catch (e) { el("authStatus").innerHTML = `<span class="err">Login gagal: ${e.message}</span>`; }
+      };
+    });
+  }
+
+  el("fileInput").addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    el("fileStatus").textContent = "Membaca file...";
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target.result);
+        const data = parsed && parsed.data ? parsed.data : parsed;
+        const looksValid = data && ["wilayah","rute","toko","produk","kontrol","pengguna"].some(k => Array.isArray(data[k]));
+        if (!looksValid) {
+          el("fileStatus").innerHTML = `<span class="err">⚠️ File tidak dikenali sebagai backup GWG SuperApp yang valid.</span>`;
+          return;
+        }
+        backupData = data;
+        const counts = LIST_TABLES.map(k => `${k}: ${(data[k]||[]).length}`).join(" · ");
+        el("fileStatus").innerHTML = `<span class="ok">✅ File terbaca.</span>\n${counts}`;
+        el("confirmSection").classList.remove("hidden");
+      } catch (err) {
+        el("fileStatus").innerHTML = `<span class="err">⚠️ Gagal membaca file: ${err.message}</span>`;
+      }
+    };
+    reader.onerror = () => { el("fileStatus").innerHTML = `<span class="err">⚠️ Gagal membaca file dari perangkat.</span>`; };
+    reader.readAsText(file);
+  });
+
+  el("confirmInput").addEventListener("input", (e) => {
+    el("btnRestore").disabled = e.target.value.trim().toUpperCase() !== "PULIHKAN";
+  });
+
+  el("btnRestore").addEventListener("click", async () => {
+    if (!backupData) return;
+    el("confirmSection").classList.add("hidden");
+    el("fileSection").classList.add("hidden");
+    el("progressSection").classList.remove("hidden");
+    await runRestore(backupData);
+  });
+
+  el("btnBack").addEventListener("click", () => {
+    window.location.href = "/"; // kembali ke aplikasi utama
+  });
+
+  async function writeChunked(tableKey, records, weightStart, weightEnd) {
+    const groups = chunk(records, CHUNK_SIZE);
+    if (groups.length === 0) { setProgress(weightEnd, `${tableKey}: kosong, dilewati`); return; }
+    for (let i = 0; i < groups.length; i++) {
+      const updates = {};
+      groups[i].forEach(rec => { if (rec && rec.id != null) updates[`${tableKey}/${rec.id}`] = rec; });
+      let attempt = 0;
+      while (true) {
+        try {
+          await dbUpdate(dbRef(db, `gwg_data/shared`), updates);
+          break;
+        } catch (e) {
+          attempt++;
+          if (attempt >= 3) { log(`❌ Gagal menulis batch ${i+1}/${groups.length} tabel "${tableKey}": ${e.message}`, "err"); throw e; }
+          log(`⚠️ Percobaan ulang batch ${i+1}/${groups.length} tabel "${tableKey}" (${attempt})...`, "warn");
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      }
+      const pct = Math.round(weightStart + (weightEnd - weightStart) * ((i+1) / groups.length));
+      setProgress(pct, `${tableKey}: batch ${i+1}/${groups.length} (${groups[i].length} record)`);
+      // beri jeda kecil supaya browser sempat garbage-collect & tidak "unresponsive"
+      await new Promise(r => setTimeout(r, 150));
+    }
+    log(`✅ ${tableKey}: ${records.length} record tersimpan.`, "ok");
+  }
+
+  async function writeSmallTable(tableKey, arrOrObj) {
+    const map = {};
+    (arrOrObj || []).forEach(r => { if (r && r.id != null) map[r.id] = r; });
+    await dbSet(dbRef(db, `gwg_data/shared/${tableKey}`), map);
+  }
+
+  async function runRestore(data) {
+    try {
+      log("Membersihkan node lama...");
+      // Bersihkan tabel besar dulu (toko & kontrol) supaya tidak tercampur sisa data lama
+      await dbSet(dbRef(db, `gwg_data/shared/toko`), null);
+      await dbSet(dbRef(db, `gwg_data/shared/kontrol`), null);
+      setProgress(2, "Menulis tabel kecil...");
+
+      // Tabel kecil: wilayah, rute, produk, pengguna, penyesuaian, penjualanLuar — langsung set (biasanya sedikit)
+      const smallTables = ["wilayah","rute","produk","pengguna","penyesuaian","penjualanLuar"];
+      for (const t of smallTables) {
+        await writeSmallTable(t, data[t]);
+        log(`✅ ${t}: ${(data[t]||[]).length} record tersimpan.`, "ok");
+      }
+      await dbSet(dbRef(db, `gwg_data/shared/stokAwal`), data.stokAwal || {});
+      await dbSet(dbRef(db, `gwg_data/shared/bagiHasilConfig`), data.bagiHasilConfig ?? null);
+      setProgress(10, "Menulis data toko (bertahap)...");
+
+      // Toko — tabel besar, ditulis bertahap
+      await writeChunked("toko", data.toko || [], 10, 55);
+
+      // Kontrol — dipartisi per tahun, tiap tahun ditulis bertahap
+      setProgress(55, "Mengelompokkan kontrol per tahun...");
+      const kontrolByYear = {};
+      (data.kontrol || []).forEach(rec => {
+        const y = kontrolYearOf(rec);
+        (kontrolByYear[y] = kontrolByYear[y] || []).push(rec);
+      });
+      const years = Object.keys(kontrolByYear).sort();
+      const totalKontrol = (data.kontrol || []).length || 1;
+      let doneKontrol = 0;
+      for (const year of years) {
+        const recs = kontrolByYear[year];
+        const groups = chunk(recs, CHUNK_SIZE);
+        for (let i = 0; i < groups.length; i++) {
+          const updates = {};
+          groups[i].forEach(rec => { updates[`kontrol/${year}/${rec.id}`] = rec; });
+          await dbUpdate(dbRef(db, `gwg_data/shared`), updates);
+          doneKontrol += groups[i].length;
+          const pct = 55 + Math.round(40 * (doneKontrol / totalKontrol));
+          setProgress(pct, `kontrol ${year}: batch ${i+1}/${groups.length}`);
+          await new Promise(r => setTimeout(r, 150));
+        }
+        await dbSet(dbRef(db, `gwg_data/shared/kontrolYearsIndex/${year}`), true);
+        log(`✅ kontrol ${year}: ${recs.length} record tersimpan.`, "ok");
+      }
+      if (years.length === 0) log("kontrol: kosong, dilewati.", "warn");
+
+      setProgress(100, "Selesai!");
+      el("progressSection").classList.add("hidden");
+      el("doneSection").classList.remove("hidden");
+      el("doneMsg").innerHTML = `<span class="ok">✅ Restore selesai.\n\nwilayah: ${(data.wilayah||[]).length}\nrute: ${(data.rute||[]).length}\ntoko: ${(data.toko||[]).length}\nkontrol: ${(data.kontrol||[]).length}\npengguna: ${(data.pengguna||[]).length}\n\nSilakan buka aplikasi utama & refresh untuk memastikan data muncul.</span>`;
+    } catch (e) {
+      el("progressSection").classList.add("hidden");
+      el("doneSection").classList.remove("hidden");
+      el("doneMsg").innerHTML = `<span class="err">❌ Restore terhenti karena error: ${e.message}\n\nData yang sudah sempat tertulis TIDAK hilang (per-batch), tapi belum tentu lengkap. Coba jalankan ulang alat ini — batch yang sudah tersimpan akan ditimpa ulang dengan aman.</span>`;
+    }
+  }
+
+  initFirebase();
+</script>
+
+</body>
+</html>
