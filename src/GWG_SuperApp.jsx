@@ -315,12 +315,21 @@ function useAuth() {
         // plugin Google Sign-In native; plugin ini otomatis menyinkronkan
         // hasil login ke instance Firebase Auth JS di atas juga, jadi
         // onAuthStateChanged tetap terpicu seperti biasa.
-        await FirebaseAuthentication.signInWithGoogle();
+        // Timeout 20 detik ditambahkan supaya kalau proses macet (misalnya
+        // provider Google belum diaktifkan di Firebase Console, atau
+        // koneksi bermasalah), tombol tidak "membeku" selamanya — pesan
+        // error akan muncul dan tombol bisa dicoba lagi.
+        await Promise.race([
+          FirebaseAuthentication.signInWithGoogle(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(
+            "Login timeout (20 detik). Cek: (1) provider Google sudah Enabled di Firebase Console → Authentication → Sign-in method, (2) koneksi internet stabil."
+          )), 20000)),
+        ]);
       } else {
         const provider = new firebaseAuth.GoogleAuthProvider();
         await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
       }
-    } catch (e) { alert("Login gagal: "+e.message); }
+    } catch (e) { throw new Error(e.message || "Login gagal"); }
   };
 
   const logout = async () => {
@@ -7573,7 +7582,7 @@ export default function GWGSuperApp() {
                   </div>
                   </div>
                 ) : (
-                  <Btn variant="secondary" size="sm" onClick={loginGoogle}
+                  <Btn variant="secondary" size="sm" onClick={() => loginGoogle().catch(e => alert("Login gagal: "+e.message))}
                     style={{ background:"rgba(255,255,255,.15)", color:"#fff", border:"1px solid rgba(255,255,255,.3)" }}>
                     <span style={{ fontSize:14 }}>G</span> Login Google
                   </Btn>
