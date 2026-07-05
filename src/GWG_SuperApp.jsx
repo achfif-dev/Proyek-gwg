@@ -563,11 +563,14 @@ async function gdriveUploadJSON(filename, obj, description) {
   const boundary = "gwg_boundary_xyz";
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelimiter = `\r\n--${boundary}--`;
-  const multipartBody = new Blob([
-    delimiter, "Content-Type: application/json; charset=UTF-8\r\n\r\n", JSON.stringify(metadata),
-    delimiter, "Content-Type: application/json\r\n\r\n", content,
-    closeDelimiter,
-  ]);
+  // String biasa (bukan Blob) — CapacitorHttp (native networking di APK,
+  // dipakai supaya fetch() tidak diblokir CORS) tidak menangani body
+  // ber-tipe Blob dengan benar saat menyeberang ke sisi native, sehingga
+  // isinya bisa rusak dan ditolak Google dengan HTTP 400.
+  const multipartBody =
+    delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) +
+    delimiter + "Content-Type: application/json\r\n\r\n" + content +
+    closeDelimiter;
   const resp = await fetch(
     "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
     { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary="${boundary}"` }, body: multipartBody }
@@ -637,11 +640,10 @@ async function driveUploadJSON(accessToken, filename, obj, description) {
   const boundary = "gwg_boundary_xyz";
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelimiter = `\r\n--${boundary}--`;
-  const multipartBody = new Blob([
-    delimiter, "Content-Type: application/json; charset=UTF-8\r\n\r\n", JSON.stringify(metadata),
-    delimiter, "Content-Type: application/json\r\n\r\n", content,
-    closeDelimiter,
-  ]);
+  const multipartBody =
+    delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) +
+    delimiter + "Content-Type: application/json\r\n\r\n" + content +
+    closeDelimiter;
   const resp = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary="${boundary}"` },
