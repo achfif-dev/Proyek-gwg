@@ -1,0 +1,58 @@
+name: Build Android APK
+
+# Jalan otomatis tiap push ke branch main, dan juga bisa dipicu manual
+# lewat tab "Actions" di GitHub (tombol "Run workflow") tanpa perlu terminal.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java (dibutuhkan Gradle/Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies npm
+        run: npm install
+
+      - name: Build web app (Vite)
+        run: npm run build
+
+      - name: Tambahkan platform Android (Capacitor)
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          else
+            npx cap sync android
+          fi
+
+      - name: Sinkronkan aset web ke Android
+        run: npx cap sync android
+
+      - name: Build APK debug
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gwg-superapp-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
