@@ -5398,6 +5398,15 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   const [rankingScope, setRankingScope] = useState("semua"); // 3bulan | 6bulan | tahunIni | semua
   const [rankingSortBy, setRankingSortBy] = useState("terjual"); // terjual | revenue
 
+  // ─── Rekap Siklus per Wilayah ───
+  // Untuk kasus kontrol yang mulai pertengahan bulan & berakhir awal bulan
+  // berikutnya (tidak pas batas kalender), supaya progres 1 wilayah tetap
+  // bisa dipantau utuh dari rute pertama sampai rute terakhir dalam 1
+  // putaran, bukan terpotong batas bulan.
+  const [filterSiklusWilayah, setFilterSiklusWilayah] = useState(salesWilayahId||"");
+  const [filterSiklusStart, setFilterSiklusStart] = useState("");
+  const [filterSiklusEnd, setFilterSiklusEnd] = useState("");
+
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
   const ruteOpts = useMemo(() => {
@@ -5417,6 +5426,51 @@ function TabRekap({ db, analytics, salesWilayahId }) {
 
   // Enrich kontrol dengan info wilayah/rute
   const enrichKontrol = useMemo(() => analytics.kontrol, [analytics.kontrol]);
+
+  // Deteksi otomatis rentang siklus TERAKHIR untuk wilayah terpilih: mundur
+  // dari tanggal kontrol paling baru, selama jeda antar tanggal kontrol
+  // berurutan tidak lebih dari 10 hari (dianggap masih 1 putaran/siklus
+  // yang sama). Kalau jeda lebih dari itu, dianggap sudah siklus baru.
+  const SIKLUS_GAP_DAYS = 10;
+  const siklusAutoRange = useMemo(() => {
+    if (!filterSiklusWilayah) return null;
+    const dates = [...new Set(enrichKontrol.filter(k=>k.wilayahId===filterSiklusWilayah).map(k=>k.tanggal))].sort();
+    if (!dates.length) return null;
+    let end = dates[dates.length-1];
+    let start = end;
+    for (let i = dates.length-2; i >= 0; i--) {
+      const diffDays = (new Date(start) - new Date(dates[i])) / 86400000;
+      if (diffDays > SIKLUS_GAP_DAYS) break;
+      start = dates[i];
+    }
+    return { start, end };
+  }, [enrichKontrol, filterSiklusWilayah]);
+
+  // Auto-isi tanggal mulai/selesai begitu wilayah dipilih/diganti — tetap
+  // bisa digeser manual sesudahnya lewat input tanggal di filter panel.
+  useEffect(() => {
+    if (siklusAutoRange) {
+      setFilterSiklusStart(siklusAutoRange.start);
+      setFilterSiklusEnd(siklusAutoRange.end);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterSiklusWilayah]);
+
+  // Urutan alami nama rute (BKLU1, BKLU2, ..., BKLU14 terurut benar sesuai
+  // angkanya, bukan terurut sebagai teks biasa yang akan taruh BKLU14
+  // sebelum BKLU2).
+  function naturalRouteSort(a, b) {
+    const parse = (s) => {
+      const m = String(s||"").match(/^(.*?)(\d+)?$/);
+      return { prefix: (m?.[1]||"").toLowerCase(), num: m?.[2]!=null ? parseInt(m[2],10) : null };
+    };
+    const pa = parse(a), pb = parse(b);
+    if (pa.prefix !== pb.prefix) return pa.prefix.localeCompare(pb.prefix);
+    if (pa.num==null && pb.num==null) return 0;
+    if (pa.num==null) return -1;
+    if (pb.num==null) return 1;
+    return pa.num - pb.num;
+  }
 
   // ─── HELPER: agregasi produk per entri kontrol ───
   function sumProduk(rows) {
@@ -5495,6 +5549,34 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     }
     return hasil;
   }, [enrichKontrol, filterTanggal, filterWilayah, filterRute, produkAktif, analytics.penjualanLuar]);
+
+  // ─── SIKLUS PER WILAYAH (rentang bebas, dari rute pertama s/d terakhir) ───
+  const rekapSiklus = useMemo(() => {
+    if (!filterSiklusWilayah || !filterSiklusStart || !filterSiklusEnd) return [];
+    const rows = enrichKontrol.filter(k =>
+      k.wilayahId === filterSiklusWilayah &&
+      k.tanggal >= filterSiklusStart && k.tanggal <= filterSiklusEnd
+    );
+    const byRute = {};
+    rows.forEach(k => {
+      const key = k.ruteId || "NORUTE";
+      if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, rows:[] };
+      byRute[key].rows.push(k);
+    });
+    const hasil = Object.values(byRute).map(g => {
+      const sp = sumProduk(g.rows);
+      return {
+        ...g,
+        jumlahToko: g.rows.length,
+        totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
+        totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
+        ...sp,
+        detail: g.rows,
+      };
+    });
+    hasil.sort((a,b)=>naturalRouteSort(a.ruteNama, b.ruteNama));
+    return hasil;
+  }, [enrichKontrol, filterSiklusWilayah, filterSiklusStart, filterSiklusEnd, produkAktif]);
 
   // ─── BULANAN PER WILAYAH ───
   const rekapBulanan = useMemo(() => {
@@ -5769,6 +5851,14 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     const scopeLabel = { semua:"Semua Waktu", tahunIni:"Tahun Ini", "3bulan":"3 Bulan Terakhir", "6bulan":"6 Bulan Terakhir" }[rankingScope];
     activeTitle = `Ranking Toko Terlaris — ${scopeLabel}${filterWilayah?" – "+(db.wilayah||[]).find(w=>w.id===filterWilayah)?.nama||"":""}`;
     activeFilename = `ranking_toko_${rankingScope}`;
+  } else if (mode==="siklus") {
+    activeData = rekapSiklus;
+    activeCols = colsHarian;
+    const wilNama = (db.wilayah||[]).find(w=>w.id===filterSiklusWilayah)?.nama || "";
+    activeTitle = filterSiklusWilayah
+      ? `Siklus Kontrol ${wilNama} (${filterSiklusStart||"?"} s/d ${filterSiklusEnd||"?"})`
+      : "Siklus Kontrol — pilih wilayah dulu";
+    activeFilename = `siklus_${filterSiklusWilayah||"wilayah"}_${filterSiklusStart||""}_${filterSiklusEnd||""}`;
   } else {
     activeData = rekapTahunan;
     activeCols = filterWilayah ? colsKuartalRute : colsKuartalWil;
@@ -5899,6 +5989,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"bulanan",  label:"📆 Bulanan" },
     { key:"kuartal",  label:"📊 Kuartal" },
     { key:"tahunan",  label:"📈 Tahunan" },
+    { key:"siklus",   label:"🔁 Siklus Wilayah" },
     { key:"ranking",  label:"🏆 Ranking Toko" },
   ];
 
@@ -5978,8 +6069,9 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       <div style={{ background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10,
         padding:"14px 16px", marginBottom:16, display:"flex", gap:12, flexWrap:"wrap", alignItems:"flex-end" }}>
         
-        {/* Filter Wilayah — disembunyikan untuk Sales yang wilayahnya terkunci */}
-        {isSalesRestricted ? (
+        {/* Filter Wilayah — disembunyikan untuk Sales yang wilayahnya terkunci,
+            dan untuk mode Siklus (yang punya field wilayah sendiri di bawah) */}
+        {mode==="siklus" ? null : isSalesRestricted ? (
           <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
             padding:"8px 14px", fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, flex:1, minWidth:160 }}>
             🔒 Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
@@ -5993,6 +6085,43 @@ function TabRekap({ db, analytics, salesWilayahId }) {
               {wilayahOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           </div>
+        )}
+
+        {/* Filter Siklus per Wilayah: pilih wilayah + rentang tanggal bebas
+            (auto-terdeteksi dari siklus terakhir, tapi bisa digeser manual) */}
+        {mode==="siklus" && (
+          <>
+            {isSalesRestricted ? (
+              <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
+                padding:"8px 14px", fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, flex:1, minWidth:160 }}>
+                🔒 Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+              </div>
+            ) : (
+              <div style={{ minWidth:160, flex:1 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Wilayah</div>
+                <select value={filterSiklusWilayah} onChange={e=>setFilterSiklusWilayah(e.target.value)}
+                  style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                  <option value="">— Pilih Wilayah —</option>
+                  {wilayahOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            )}
+            <div style={{ minWidth:150 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Dari Tanggal</div>
+              <input type="date" value={filterSiklusStart} onChange={e=>setFilterSiklusStart(e.target.value)}
+                style={{ padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }} />
+            </div>
+            <div style={{ minWidth:150 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Sampai Tanggal</div>
+              <input type="date" value={filterSiklusEnd} onChange={e=>setFilterSiklusEnd(e.target.value)}
+                style={{ padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }} />
+            </div>
+            {filterSiklusWilayah && (
+              <Btn variant="secondary" size="sm" onClick={() => {
+                if (siklusAutoRange) { setFilterSiklusStart(siklusAutoRange.start); setFilterSiklusEnd(siklusAutoRange.end); }
+              }}>🔄 Deteksi Ulang Otomatis</Btn>
+            )}
+          </>
         )}
 
         {/* Filter tanggal (harian) */}
