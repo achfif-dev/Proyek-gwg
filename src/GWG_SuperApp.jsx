@@ -2,6 +2,7 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
 import * as XLSX from "xlsx";
 import { Network } from "@capacitor/network";
 import { Capacitor } from "@capacitor/core";
+import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 // Firebase sekarang di-import langsung dari npm (bukan dynamic import dari CDN
 // gstatic seperti sebelumnya). Ini membuat kode Firebase ikut ter-bundle ke
 // dalam file APK, jadi saat app dibuka di sinyal lemah tidak perlu lagi
@@ -13,8 +14,8 @@ import {
   onChildRemoved, off, onDisconnect, serverTimestamp, remove,
 } from "firebase/database";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect,
-  getRedirectResult, signOut, onAuthStateChanged,
+  getAuth, GoogleAuthProvider, signInWithPopup,
+  signOut, onAuthStateChanged,
 } from "firebase/auth";
 
 // ─────────────────────────────────────────────
@@ -272,7 +273,7 @@ async function initFirebase() {
     // ter-bundle sejak build time (lihat import di bagian atas file).
     firebaseApp = initializeApp(FIREBASE_CONFIG);
     firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove };
-    firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged };
+    firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
   } catch (e) {
@@ -293,9 +294,6 @@ function useAuth() {
     initFirebase().then(ok => {
       setFbReady(ok);
       if (ok && firebaseAuth) {
-        // Menangkap hasil login setelah redirect kembali ke app (dipakai
-        // saat login lewat signInWithRedirect di WebView native/APK).
-        firebaseAuth.getRedirectResult(firebaseAuth.auth).catch(() => {});
         const unsub = firebaseAuth.onAuthStateChanged(firebaseAuth.auth, u => {
           setUser(u);
           setLoading(false);
@@ -309,14 +307,17 @@ function useAuth() {
 
   const loginGoogle = async () => {
     if (!firebaseAuth) return;
-    const provider = new firebaseAuth.GoogleAuthProvider();
     try {
-      // Popup Google Sign-In sering diblokir/gagal di WebView native (APK).
-      // Di app native (Capacitor) pakai redirect; di browser biasa (PWA/web)
-      // tetap pakai popup seperti semula agar pengalamannya tidak berubah.
       if (Capacitor.isNativePlatform()) {
-        await firebaseAuth.signInWithRedirect(firebaseAuth.auth, provider);
+        // Redirect/popup berbasis web TIDAK bisa dipakai di WebView native
+        // (APK) — Google akan coba redirect balik ke "localhost" yang tidak
+        // ada servernya, jadi gagal "connection refused". Solusinya pakai
+        // plugin Google Sign-In native; plugin ini otomatis menyinkronkan
+        // hasil login ke instance Firebase Auth JS di atas juga, jadi
+        // onAuthStateChanged tetap terpicu seperti biasa.
+        await FirebaseAuthentication.signInWithGoogle();
       } else {
+        const provider = new firebaseAuth.GoogleAuthProvider();
         await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
       }
     } catch (e) { alert("Login gagal: "+e.message); }
