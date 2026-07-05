@@ -2,6 +2,8 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
 import * as XLSX from "xlsx";
 import { Network } from "@capacitor/network";
 import { Capacitor } from "@capacitor/core";
+import { Filesystem, Directory } from "@capacitor/filesystem";
+import { Share } from "@capacitor/share";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 // Firebase sekarang di-import langsung dari npm (bukan dynamic import dari CDN
 // gstatic seperti sebelumnya). Ini membuat kode Firebase ikut ter-bundle ke
@@ -336,7 +338,17 @@ function useAuth() {
 
   const logout = async () => {
     if (!firebaseAuth) return;
-    try { await firebaseAuth.signOut(firebaseAuth.auth); } catch {}
+    try {
+      // Sebelumnya cuma logout dari sisi JS. Sesi Google di sisi NATIVE
+      // tetap tersimpan (di-cache oleh Google Play Services), makanya waktu
+      // login lagi, dialog pilih akun tidak muncul — otomatis masuk pakai
+      // akun yang sama. signOut() di plugin native ini yang membersihkan
+      // cache itu juga.
+      if (Capacitor.isNativePlatform()) {
+        try { await FirebaseAuthentication.signOut(); } catch {}
+      }
+      await firebaseAuth.signOut(firebaseAuth.auth);
+    } catch {}
   };
 
   return { user, loading, fbReady, loginGoogle, logout };
@@ -451,15 +463,46 @@ function decodeEmailKey(key) {
   return (key || "").replace(/_dot_/g, ".").replace(/_at_/g, "@");
 }
 
-// Memicu unduhan file JSON ke perangkat pengguna (dipakai fitur Backup).
-function downloadJSON(filename, obj) {
-  try {
-    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+// Simpan/bagikan file di APK native — mekanisme <a download> browser TIDAK
+// berfungsi di WebView native (Capacitor), jadi file harus ditulis lewat
+// plugin Filesystem lalu dibuka lewat dialog "Bagikan/Simpan ke...". Di web
+// biasa (PWA/browser), tetap pakai cara unduhan lama seperti sebelumnya.
+async function saveOrShareBlob(blob, filename) {
+  if (!Capacitor.isNativePlatform()) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = filename;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
+    return;
+  }
+  const base64 = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(String(reader.result).split(",")[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+  const result = await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Cache });
+  await Share.share({ title: filename, url: result.uri });
+}
+
+// Sama seperti saveOrShareBlob, tapi khusus workbook Excel (SheetJS) supaya
+// tidak perlu diubah ke Blob dulu — XLSX bisa langsung menulis base64.
+async function saveWorkbookNative(wb, filename) {
+  if (!Capacitor.isNativePlatform()) {
+    XLSX.writeFile(wb, filename);
+    return;
+  }
+  const base64 = XLSX.write(wb, { bookType: "xlsx", type: "base64" });
+  const result = await Filesystem.writeFile({ path: filename, data: base64, directory: Directory.Cache });
+  await Share.share({ title: filename, url: result.uri });
+}
+
+// Memicu unduhan file JSON ke perangkat pengguna (dipakai fitur Backup).
+async function downloadJSON(filename, obj) {
+  try {
+    const blob = new Blob([JSON.stringify(obj, null, 2)], { type: "application/json" });
+    await saveOrShareBlob(blob, filename);
   } catch (e) {
     alert("Gagal membuat file backup: " + e.message);
   }
@@ -473,20 +516,42 @@ function downloadJSON(filename, obj) {
 // ⚠ SYARAT: "Google Drive API" harus aktif di Google Cloud Console untuk
 //   project Firebase ini, dan scope drive.file harus diizinkan di OAuth
 //   consent screen — tanpa ini, panggilan akan gagal 403/insufficientScope.
-async function getGDriveAccessToken() {
+// Ambil OAuth2 access token Google dengan scope Drive (dipakai sama-sama
+// oleh backup manual & arsip Kontrol Bulanan). Popup berbasis web (yang
+// dipakai versi lama) TIDAK berfungsi di WebView native (APK) — untuk app
+// native, scope tambahan diminta langsung lewat plugin Google Sign-In
+// native (FirebaseAuthentication), yang mengembalikan accessToken OAuth
+// selain idToken biasa.
+const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+
+async function getGoogleDriveAccessToken() {
   if (window.__gwg_gtoken && window.__gwg_gtoken_exp > Date.now()) {
     return window.__gwg_gtoken;
   }
   if (!firebaseAuth) throw new Error("Firebase Auth belum siap.");
-  const provider = new firebaseAuth.GoogleAuthProvider();
-  provider.addScope("https://www.googleapis.com/auth/drive.file");
-  const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
-  const { GoogleAuthProvider } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
-  const cred = GoogleAuthProvider.credentialFromResult(result);
-  if (!cred?.accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
-  window.__gwg_gtoken = cred.accessToken;
+  let accessToken;
+  if (Capacitor.isNativePlatform()) {
+    const result = await FirebaseAuthentication.signInWithGoogle({ scopes: [DRIVE_SCOPE] });
+    accessToken = result?.credential?.accessToken;
+    if (result?.credential?.idToken) {
+      const cred = firebaseAuth.GoogleAuthProvider.credential(result.credential.idToken, result.credential.accessToken);
+      await firebaseAuth.signInWithCredential(firebaseAuth.auth, cred).catch(() => {});
+    }
+  } else {
+    const provider = new firebaseAuth.GoogleAuthProvider();
+    provider.addScope(DRIVE_SCOPE);
+    const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
+    const cred = firebaseAuth.GoogleAuthProvider.credentialFromResult(result);
+    accessToken = cred?.accessToken;
+  }
+  if (!accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
+  window.__gwg_gtoken = accessToken;
   window.__gwg_gtoken_exp = Date.now() + 55 * 60 * 1000;
-  return cred.accessToken;
+  return accessToken;
+}
+
+async function getGDriveAccessToken() {
+  return getGoogleDriveAccessToken();
 }
 
 // Upload satu file JSON ke Google Drive (multipart upload, Drive API v3).
@@ -562,19 +627,7 @@ function autoColumns(records) {
 // Ambil OAuth2 access token Google (bukan token Firebase biasa) — dipakai
 // cache di window selama sesi supaya tidak selalu memicu popup login ulang.
 async function getGoogleAccessToken() {
-  if (window.__gwg_gtoken && window.__gwg_gtoken_exp > Date.now()) {
-    return window.__gwg_gtoken;
-  }
-  if (!firebaseAuth) throw new Error("Firebase Auth tidak siap.");
-  const provider = new firebaseAuth.GoogleAuthProvider();
-  provider.addScope("https://www.googleapis.com/auth/drive.file");
-  const result = await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
-  const { GoogleAuthProvider } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
-  const cred = GoogleAuthProvider.credentialFromResult(result);
-  if (!cred?.accessToken) throw new Error("Gagal mendapat access token Google. Pastikan scope Drive sudah diaktifkan di Google Cloud Console.");
-  window.__gwg_gtoken = cred.accessToken;
-  window.__gwg_gtoken_exp = Date.now() + 55 * 60 * 1000; // token Google valid ~1 jam, kasih margin aman
-  return cred.accessToken;
+  return getGoogleDriveAccessToken();
 }
 
 // Upload satu object sebagai file JSON ke Drive (multipart upload, Drive API v3).
@@ -1724,7 +1777,7 @@ function useAnalytics(db) {
 // ─────────────────────────────────────────────
 //  EXPORT UTILITIES
 // ─────────────────────────────────────────────
-function exportCSV(data, columns, filename) {
+async function exportCSV(data, columns, filename) {
   const header = columns.map(c => `"${c.label}"`).join(",");
   const rows = data.map(row =>
     columns.map(c => {
@@ -1735,20 +1788,16 @@ function exportCSV(data, columns, filename) {
   );
   const csv = [header, ...rows].join("\n");
   const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href = url; a.download = filename + ".csv"; a.click();
-  URL.revokeObjectURL(url);
+  await saveOrShareBlob(blob, filename + ".csv");
 }
 
-function exportJSON(data, filename) {
+async function exportJSON(data, filename) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href = url; a.download = filename + ".json"; a.click();
-  URL.revokeObjectURL(url);
+  await saveOrShareBlob(blob, filename + ".json");
 }
 
 // Export Excel (XLSX) menggunakan SheetJS
-function exportExcel(data, columns, title, filename) {
+async function exportExcel(data, columns, title, filename) {
   try {
     const header = columns.map(c => c.label);
     const rows = data.map(row =>
@@ -1782,7 +1831,7 @@ function exportExcel(data, columns, title, filename) {
     ]);
     XLSX.utils.book_append_sheet(wb, infoWs, "Info");
 
-    XLSX.writeFile(wb, filename + ".xlsx");
+    await saveWorkbookNative(wb, filename + ".xlsx");
   } catch(e) {
     alert("Gagal ekspor Excel: " + e.message);
   }
@@ -2013,10 +2062,9 @@ function exportJPG(data, columns, title, filename) {
       ctx.fillText(`${title} · ${now}`, MARGIN + tableWidth, y + 24);
       ctx.textAlign = "left";
 
-      const link = document.createElement("a");
-      link.href = canvas.toDataURL("image/jpeg", 0.92);
-      link.download = filename + ".jpg";
-      link.click();
+      canvas.toBlob(async (blob) => {
+        await saveOrShareBlob(blob, filename + ".jpg");
+      }, "image/jpeg", 0.92);
     }
 
     // Coba gambar logo GWG dulu (lingkaran kecil di header); kalau gagal
@@ -2043,7 +2091,7 @@ function exportJPG(data, columns, title, filename) {
   }
 }
 
-function exportHTML(data, columns, title, filename) {
+async function exportHTML(data, columns, title, filename) {
   const rows = data.map(row =>
     `<tr>${columns.map(c => {
       const val = row[c.key] ?? "—";
@@ -2057,15 +2105,13 @@ function exportHTML(data, columns, title, filename) {
   </head><body><h1>${title}</h1><p>Diekspor: ${new Date().toLocaleString("id-ID")}</p>
   <table><thead><tr>${columns.map(c=>`<th>${c.label}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
   const blob = new Blob([html], { type: "text/html" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a"); a.href = url; a.download = filename + ".html"; a.click();
-  URL.revokeObjectURL(url);
+  await saveOrShareBlob(blob, filename + ".html");
 }
 
 // ─────────────────────────────────────────────
 //  IMPORT UTILITIES (Excel) — Template & Reader
 // ─────────────────────────────────────────────
-function downloadTokoTemplate(db) {
+async function downloadTokoTemplate(db) {
   try {
     const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
     const header = ["Nama Toko*", "Rute*", "Status", "Catatan", ...produkAktif.map(p=>`Jual: ${p.nama}`), ...produkAktif.map(p=>`Stok: ${p.nama}`)];
@@ -2098,13 +2144,13 @@ function downloadTokoTemplate(db) {
     infoWs["!cols"] = [{ wch: 28 }, { wch: 22 }];
     XLSX.utils.book_append_sheet(wb, infoWs, "Petunjuk");
 
-    XLSX.writeFile(wb, "template_import_toko.xlsx");
+    await saveWorkbookNative(wb, "template_import_toko.xlsx");
   } catch(e) {
     alert("Gagal membuat template: " + e.message);
   }
 }
 
-function downloadKontrolTemplate(db) {
+async function downloadKontrolTemplate(db) {
   try {
     const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
     const header = ["Toko*", "Tanggal* (YYYY-MM-DD)", "Status Kunjungan", "Catatan",
@@ -2141,7 +2187,7 @@ function downloadKontrolTemplate(db) {
     infoWs["!cols"] = [{ wch: 28 }, { wch: 22 }];
     XLSX.utils.book_append_sheet(wb, infoWs, "Petunjuk");
 
-    XLSX.writeFile(wb, "template_import_kontrol.xlsx");
+    await saveWorkbookNative(wb, "template_import_kontrol.xlsx");
   } catch(e) {
     alert("Gagal membuat template: " + e.message);
   }
@@ -5381,6 +5427,22 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     return res;
   }
 
+  // ─── HELPER: bikin baris "Penjualan Luar Rute" (dipakai di semua mode
+  //     rekap — harian/bulanan/kuartal/tahunan — supaya penjualan yang
+  //     tidak terikat rute/wilayah tetap kelihatan rinciannya, bukan cuma
+  //     nambah ke Total Revenue secara diam-diam). ───
+  function luarRuteRow(luarRows, extra) {
+    const sp = sumProduk(luarRows);
+    return {
+      wilayahId: "LUAR_RUTE", ruteId: "LUAR_RUTE",
+      wilayahNama: "🛣️ Penjualan Luar Rute", ruteNama: "🛣️ Penjualan Luar Rute",
+      jumlahKunjungan: luarRows.length, jumlahToko: luarRows.length,
+      totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
+      totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
+      ...sp, detail: luarRows, ...extra,
+    };
+  }
+
   // ─── HARIAN PER RUTE ───
   const rekapHarian = useMemo(() => {
     const rows = enrichKontrol.filter(k =>
@@ -5395,7 +5457,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, rows:[] };
       byRute[key].rows.push(k);
     });
-    return Object.values(byRute).map(g => {
+    const hasil = Object.values(byRute).map(g => {
       const sp = sumProduk(g.rows);
       return {
         ...g,
@@ -5406,7 +5468,31 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         detail: g.rows,
       };
     });
-  }, [enrichKontrol, filterTanggal, filterWilayah, filterRute, produkAktif]);
+
+    // ✅ Ikutkan Penjualan Luar Rute pada tanggal yang sama sebagai kelompok
+    // tersendiri, supaya produk yang terjual di luar rute kontrol tetap
+    // terlihat rinciannya di rekap harian — sebelumnya catatan ini cuma
+    // menambah ke Total Revenue tanpa rincian produk apa yang terjual.
+    // Hanya ditampilkan saat tidak sedang memfilter wilayah/rute tertentu,
+    // karena catatan "luar rute" memang tidak terikat ke rute/wilayah manapun.
+    if (!filterWilayah && !filterRute) {
+      const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal === filterTanggal);
+      if (luarRows.length) {
+        const sp = sumProduk(luarRows);
+        hasil.push({
+          ruteId: "LUAR_RUTE",
+          ruteNama: "🛣️ Penjualan Luar Rute",
+          wilayahNama: "Tidak terikat rute/wilayah",
+          jumlahToko: luarRows.length,
+          totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
+          totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
+          ...sp,
+          detail: luarRows,
+        });
+      }
+    }
+    return hasil;
+  }, [enrichKontrol, filterTanggal, filterWilayah, filterRute, produkAktif, analytics.penjualanLuar]);
 
   // ─── BULANAN PER WILAYAH ───
   const rekapBulanan = useMemo(() => {
@@ -5434,12 +5520,15 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         if (!byWil[key]) byWil[key] = { wilayahId:k.wilayahId, wilayahNama:k.wilayahNama, rows:[] };
         byWil[key].rows.push(k);
       });
-      return Object.values(byWil).map(g => {
+      const result = Object.values(byWil).map(g => {
         const sp = sumProduk(g.rows);
         return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
       });
+      const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(filterBulan));
+      if (luarRows.length) result.push(luarRuteRow(luarRows));
+      return result;
     }
-  }, [enrichKontrol, filterBulan, filterWilayah, produkAktif]);
+  }, [enrichKontrol, filterBulan, filterWilayah, produkAktif, analytics.penjualanLuar]);
 
   // ─── KUARTAL ───
   const KUARTAL_MONTHS = { "1":["01","02","03"], "2":["04","05","06"], "3":["07","08","09"], "4":["10","11","12"] };
@@ -5483,10 +5572,12 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           const sp = sumProduk(g.rows);
           result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp });
         });
+        const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(`${filterTahun}-${m}`));
+        if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
       });
       return result;
     }
-  }, [enrichKontrol, filterKuartal, filterTahun, filterWilayah, produkAktif]);
+  }, [enrichKontrol, filterKuartal, filterTahun, filterWilayah, produkAktif, analytics.penjualanLuar]);
 
   // ─── TAHUNAN ───
   const rekapTahunan = useMemo(() => {
@@ -5516,7 +5607,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       const result = [];
       ALL_MONTHS.forEach(m => {
         const mRows = rows.filter(k=>k.tanggal.startsWith(`${filterTahun}-${m}`));
-        if (mRows.length===0) return;
+        const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(`${filterTahun}-${m}`));
+        if (mRows.length===0 && luarRows.length===0) return;
         const byWil = {};
         mRows.forEach(k => {
           const key = k.wilayahId||"NOWIL";
@@ -5527,10 +5619,11 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           const sp = sumProduk(g.rows);
           result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp });
         });
+        if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
       });
       return result;
     }
-  }, [enrichKontrol, filterTahun, filterWilayah, produkAktif]);
+  }, [enrichKontrol, filterTahun, filterWilayah, produkAktif, analytics.penjualanLuar]);
 
   // ─── RANKING TOKO — Terlaris (jumlah produk terjual / revenue) ───
   const rankingByJumlah = useMemo(() => {
@@ -5737,18 +5830,25 @@ function TabRekap({ db, analytics, salesWilayahId }) {
                 <tbody>
                   {ruteGrp.detail.map((k,i) => {
                     const cs = k.catatanStatus ? (CATATAN_STATUS[k.catatanStatus]||CATATAN_STATUS.manual) : null;
+                    const isLuarRute = !k.tokoNama;
                     return (
                       <tr key={k.id} style={{ background:i%2===0?T.white:T.gray50, borderTop:`1px solid ${T.gray100}` }}>
-                        <td style={tdS}><b>{k.tokoNama}</b></td>
+                        <td style={tdS}>
+                          <b>{k.tokoNama || `👤 ${k.dicatatOleh || "Tidak diketahui"}`}</b>
+                          {isLuarRute && k.keterangan && (
+                            <div style={{ fontSize:10, color:T.gray400, fontWeight:400 }}>{k.keterangan}</div>
+                          )}
+                        </td>
                         {produkAktif.map(p=>(
                           <React.Fragment key={p.id}>
-                            <td style={{ ...tdS, textAlign:"center" }}>{k[`stok_${p.id}`]||0}</td>
+                            <td style={{ ...tdS, textAlign:"center" }}>{isLuarRute ? "—" : (k[`stok_${p.id}`]||0)}</td>
                             <td style={{ ...tdS, textAlign:"center", fontWeight:700, color:T.green }}>{k[`terjual_${p.id}`]||0}</td>
                           </React.Fragment>
                         ))}
                         <td style={{ ...tdS, fontWeight:700, color:T.green, whiteSpace:"nowrap" }}>{fmtRp(k.totalRev)}</td>
                         <td style={tdS}>
-                          {cs ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
+                          {isLuarRute ? <Badge color={T.purple}>🛣️ Luar Rute</Badge>
+                              : cs ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
                               : <Badge color={T.green}>✅ Terjual</Badge>}
                         </td>
                       </tr>
@@ -6981,6 +7081,31 @@ function canAccessTab(tabKey, { isAdmin, isManajer }) {
 }
 
 export default function GWGSuperApp() {
+  // Tombol refresh manual — versi PWA/browser punya gesture "tarik ke bawah
+  // untuk refresh" bawaan Chrome, tapi WebView native (APK) tidak punya ini
+  // sama sekali. Data sebenarnya sudah live-sync lewat Firebase real-time
+  // listener, tapi kalau koneksi sempat putus-nyambung (sinyal lemah) dan
+  // listener-nya tidak reconnect otomatis, tombol ini jadi jalan pintas
+  // "muat ulang total" — setara reload halaman di browser.
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return; // di web/PWA tidak perlu, sudah ada gesture bawaan
+    if (document.getElementById("gwg-native-refresh-btn")) return;
+    const btn = document.createElement("button");
+    btn.id = "gwg-native-refresh-btn";
+    btn.innerHTML = "&#8635;";
+    btn.setAttribute("aria-label", "Muat ulang");
+    Object.assign(btn.style, {
+      position: "fixed", bottom: "20px", right: "16px", zIndex: "99999",
+      width: "48px", height: "48px", borderRadius: "50%", border: "none",
+      background: "#16a34a", color: "#fff", fontSize: "22px",
+      boxShadow: "0 2px 8px rgba(0,0,0,0.3)", display: "flex",
+      alignItems: "center", justifyContent: "center",
+    });
+    btn.onclick = () => window.location.reload();
+    document.body.appendChild(btn);
+    return () => { btn.remove(); };
+  }, []);
+
   const isOnline = useOnlineStatus();
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showReset, setShowReset] = useState(false);
@@ -7512,6 +7637,19 @@ export default function GWGSuperApp() {
               <div className="gw-header-revenue" style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}>
                 💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(analytics.totalRev)}
               </div>
+
+              {/* Tombol refresh manual — pengganti "tarik ke bawah untuk
+                  refresh" ala browser, yang tidak berfungsi di WebView
+                  native (APK). Reload penuh halaman supaya semua listener
+                  Firebase tersambung ulang dari awal, berguna terutama
+                  setelah sinyal sempat putus-nyambung. */}
+              <button
+                onClick={() => window.location.reload()}
+                title="Muat ulang / sinkronkan data"
+                style={{ background:"rgba(255,255,255,.12)", border:"none", borderRadius:10,
+                  width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center",
+                  color:"#fff", cursor:"pointer", fontSize:16, flexShrink:0 }}
+              >🔄</button>
 
               {/* Panel "Pengguna Aktif" — daftar sesi/perangkat yang sedang online real-time.
                   Posisi panel dihitung dinamis via useClampedMenuPosition (position:fixed +
