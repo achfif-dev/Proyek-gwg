@@ -1,5 +1,21 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
+import { Network } from "@capacitor/network";
+import { Capacitor } from "@capacitor/core";
+// Firebase sekarang di-import langsung dari npm (bukan dynamic import dari CDN
+// gstatic seperti sebelumnya). Ini membuat kode Firebase ikut ter-bundle ke
+// dalam file APK, jadi saat app dibuka di sinyal lemah tidak perlu lagi
+// fetch file JS tambahan dari internet — hanya panggilan data yang benar-benar
+// butuh koneksi. Bekerja sama baiknya untuk versi web (Netlify) maupun APK.
+import { initializeApp } from "firebase/app";
+import {
+  getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged,
+  onChildRemoved, off, onDisconnect, serverTimestamp, remove,
+} from "firebase/database";
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect,
+  getRedirectResult, signOut, onAuthStateChanged,
+} from "firebase/auth";
 
 // ─────────────────────────────────────────────
 //  FIREBASE CONFIG - Realtime Database untuk sinkronisasi lintas perangkat
@@ -149,16 +165,17 @@ function saveLocalDB(data) {
 // data seluler mati/nyala); ini sudah cukup untuk kebanyakan kasus offline
 // di lapangan (mis. sinyal hilang saat kunjungan toko).
 function useOnlineStatus() {
-  const [isOnline, setIsOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine));
+  const [isOnline, setIsOnline] = useState(true);
   useEffect(() => {
-    const goOnline = () => setIsOnline(true);
-    const goOffline = () => setIsOnline(false);
-    window.addEventListener("online", goOnline);
-    window.addEventListener("offline", goOffline);
-    return () => {
-      window.removeEventListener("online", goOnline);
-      window.removeEventListener("offline", goOffline);
-    };
+    let handle;
+    let mounted = true;
+    // @capacitor/network otomatis pakai navigator.onLine di web/PWA, dan
+    // pakai API konektivitas native (lebih akurat) saat berjalan sebagai
+    // APK — jadi satu hook ini berlaku untuk kedua target tanpa cabang kode.
+    Network.getStatus().then(status => { if (mounted) setIsOnline(status.connected); });
+    Network.addListener("networkStatusChange", status => setIsOnline(status.connected))
+      .then(h => { handle = h; });
+    return () => { mounted = false; if (handle) handle.remove(); };
   }, []);
   return isOnline;
 }
@@ -251,12 +268,11 @@ async function initFirebase() {
   if (firebaseReady) return true;
   if (!FIREBASE_CONFIGURED) return false;
   try {
-    const { initializeApp } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js");
-    const { getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js");
-    const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } = await import("https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js");
+    // Tidak ada lagi network fetch di sini — semua modul Firebase sudah
+    // ter-bundle sejak build time (lihat import di bagian atas file).
     firebaseApp = initializeApp(FIREBASE_CONFIG);
     firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove };
-    firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
+    firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
   } catch (e) {
@@ -277,6 +293,9 @@ function useAuth() {
     initFirebase().then(ok => {
       setFbReady(ok);
       if (ok && firebaseAuth) {
+        // Menangkap hasil login setelah redirect kembali ke app (dipakai
+        // saat login lewat signInWithRedirect di WebView native/APK).
+        firebaseAuth.getRedirectResult(firebaseAuth.auth).catch(() => {});
         const unsub = firebaseAuth.onAuthStateChanged(firebaseAuth.auth, u => {
           setUser(u);
           setLoading(false);
@@ -291,7 +310,16 @@ function useAuth() {
   const loginGoogle = async () => {
     if (!firebaseAuth) return;
     const provider = new firebaseAuth.GoogleAuthProvider();
-    try { await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider); } catch (e) { alert("Login gagal: "+e.message); }
+    try {
+      // Popup Google Sign-In sering diblokir/gagal di WebView native (APK).
+      // Di app native (Capacitor) pakai redirect; di browser biasa (PWA/web)
+      // tetap pakai popup seperti semula agar pengalamannya tidak berubah.
+      if (Capacitor.isNativePlatform()) {
+        await firebaseAuth.signInWithRedirect(firebaseAuth.auth, provider);
+      } else {
+        await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
+      }
+    } catch (e) { alert("Login gagal: "+e.message); }
   };
 
   const logout = async () => {
