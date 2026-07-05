@@ -14,7 +14,7 @@ import {
   onChildRemoved, off, onDisconnect, serverTimestamp, remove,
 } from "firebase/database";
 import {
-  getAuth, GoogleAuthProvider, signInWithPopup,
+  getAuth, GoogleAuthProvider, signInWithPopup, signInWithCredential,
   signOut, onAuthStateChanged,
 } from "firebase/auth";
 
@@ -273,7 +273,7 @@ async function initFirebase() {
     // ter-bundle sejak build time (lihat import di bagian atas file).
     firebaseApp = initializeApp(FIREBASE_CONFIG);
     firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove };
-    firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged };
+    firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signInWithCredential, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
   } catch (e) {
@@ -309,22 +309,24 @@ function useAuth() {
     if (!firebaseAuth) return;
     try {
       if (Capacitor.isNativePlatform()) {
-        // Redirect/popup berbasis web TIDAK bisa dipakai di WebView native
-        // (APK) — Google akan coba redirect balik ke "localhost" yang tidak
-        // ada servernya, jadi gagal "connection refused". Solusinya pakai
-        // plugin Google Sign-In native; plugin ini otomatis menyinkronkan
-        // hasil login ke instance Firebase Auth JS di atas juga, jadi
-        // onAuthStateChanged tetap terpicu seperti biasa.
-        // Timeout 20 detik ditambahkan supaya kalau proses macet (misalnya
-        // provider Google belum diaktifkan di Firebase Console, atau
-        // koneksi bermasalah), tombol tidak "membeku" selamanya — pesan
-        // error akan muncul dan tombol bisa dicoba lagi.
-        await Promise.race([
+        // Plugin native Google Sign-In login ke Firebase Auth versi native
+        // Android, TAPI itu instance yang terpisah dari Firebase Auth versi
+        // JS/web yang dipakai tampilan app ini (getAuth() di atas). Supaya
+        // tampilan app benar-benar "sadar" sudah login (onAuthStateChanged
+        // terpicu), token hasil login native harus disambungkan manual ke
+        // sisi JS lewat signInWithCredential — tanpa ini, login di
+        // Firebase Console tercatat sukses tapi layar app tetap di halaman
+        // login karena kedua sistem auth itu tidak otomatis nyambung.
+        const result = await Promise.race([
           FirebaseAuthentication.signInWithGoogle(),
           new Promise((_, reject) => setTimeout(() => reject(new Error(
-            "Login timeout (20 detik). Cek: (1) provider Google sudah Enabled di Firebase Console → Authentication → Sign-in method, (2) koneksi internet stabil."
-          )), 20000)),
+            "Login timeout (30 detik). Cek koneksi internet — proses tukar token butuh sinyal yang stabil."
+          )), 30000)),
         ]);
+        const idToken = result?.credential?.idToken;
+        if (!idToken) throw new Error("Login native tidak mengembalikan token. Coba lagi.");
+        const credential = firebaseAuth.GoogleAuthProvider.credential(idToken);
+        await firebaseAuth.signInWithCredential(firebaseAuth.auth, credential);
       } else {
         const provider = new firebaseAuth.GoogleAuthProvider();
         await firebaseAuth.signInWithPopup(firebaseAuth.auth, provider);
