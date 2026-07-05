@@ -86,36 +86,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gwg-superapp-debug-apk
-          path: android/app/build/outputs/apk/debug/app-debug.apk      - name: Build web app (Vite)
-        run: npm run build
-
-      - name: Tambahkan platform Android (Capacitor)
-        run: |
-          if [ ! -d "android" ]; then
-            npx cap add android
-          else
-            npx cap sync android
-          fi
-
-      - name: Sinkronkan aset web ke Android
-        run: npx cap sync android
-
-      - name: Simpan folder android/ ke repo (hanya jika baru dibuat/berubah)
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add android
-          git diff --cached --quiet || git commit -m "chore: sync android/ platform files [skip ci]"
-          git push || true
-
-      - name: Build APK debug
-        working-directory: android
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
-
-      - name: Upload APK sebagai artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: gwg-superapp-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
