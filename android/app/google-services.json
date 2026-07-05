@@ -1,0 +1,40 @@
+{
+  "project_info": {
+    "project_number": "481668966064",
+    "firebase_url": "https://proyek-gwg-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "proyek-gwg",
+    "storage_bucket": "proyek-gwg.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:481668966064:android:aa78be53f6ca3f87bb3d75",
+        "android_client_info": {
+          "package_name": "com.gwg.superapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "481668966064-10m67omu34m6c2et8n405j1u99bec6pq.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyACQ7uBPPgPCG1Z7KJvBYmi30hdERqLg5A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "481668966064-10m67omu34m6c2et8n405j1u99bec6pq.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
