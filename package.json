@@ -17,6 +17,8 @@
     "firebase": "^10.12.0",
     "@capacitor/core": "^6.1.0",
     "@capacitor/network": "^6.0.1",
+    "@capacitor/filesystem": "^6.0.1",
+    "@capacitor/share": "^6.0.2",
     "@capacitor-firebase/authentication": "^6.3.0"
   },
   "devDependencies": {
