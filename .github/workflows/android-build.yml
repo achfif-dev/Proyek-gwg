@@ -48,6 +48,9 @@ jobs:
       - name: Sinkronkan aset web ke Android
         run: npx cap sync android
 
+      - name: Generate ikon aplikasi dari logo GWG
+        run: npx @capacitor/assets generate --android
+
       - name: Simpan folder android/ ke repo (hanya jika baru dibuat/berubah)
         run: |
           git config user.name "github-actions"
