@@ -3306,6 +3306,13 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   const ruteOptsFiltered = useMemo(() =>
     formWilayahId ? ruteOpts.filter(r => r.wilayahId === formWilayahId) : ruteOpts
   , [ruteOpts, formWilayahId]);
+  // Rute yang difilter sesuai wilayah yang dipilih di FILTER PANEL (beda
+  // dengan ruteOptsFiltered di atas yang khusus untuk form Tambah/Edit
+  // Toko) — supaya dropdown Rute di filter cuma menampilkan rute dari
+  // wilayah yang sedang difilter, bukan semua rute dari seluruh wilayah.
+  const ruteOptsForFilter = useMemo(() =>
+    filter.wilayahId ? ruteOpts.filter(r => r.wilayahId === filter.wilayahId) : ruteOpts
+  , [ruteOpts, filter.wilayahId]);
   const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
 
   // Import Toko dari Excel
@@ -3407,9 +3414,15 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
       <FilterBar filters={[
         { key:"q",        label:"Cari Nama Toko / Kode", value:filter.q, placeholder:"Ketik untuk mencari..." },
         { key:"wilayahId",label:"Wilayah",          value:filter.wilayahId, options:wilayahOpts },
-        { key:"ruteId",   label:"Rute",             value:filter.ruteId,    options:ruteOpts },
+        { key:"ruteId",   label:"Rute",             value:filter.ruteId,    options:ruteOptsForFilter },
         { key:"status",   label:"Status",           value:filter.status,    options:[{value:"Aktif",label:"Aktif"},{value:"Baru",label:"Baru"},{value:"Non-Aktif",label:"Non-Aktif"}] },
-      ]} onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:"",ruteId:"",wilayahId:"",status:""})} />
+      ]} onChange={(k,v)=>setFilter(p=>{
+        const next = {...p,[k]:v};
+        // Reset rute yang dipilih kalau wilayah diganti, supaya tidak
+        // "nyangkut" filter rute dari wilayah sebelumnya.
+        if (k==="wilayahId") next.ruteId = "";
+        return next;
+      })} onReset={()=>setFilter({q:"",ruteId:"",wilayahId:"",status:""})} />
       <BulkActionBar
         selectedIds={selectedIds} total={data.length}
         onSelectAll={()=>toggleSelectAll(data, false)}
@@ -5466,7 +5479,9 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     const rutes = filterWilayah
       ? (db.rute||[]).filter(r=>r.wilayahId===filterWilayah)
       : (db.rute||[]);
-    return rutes.map(r=>({ value:r.id, label:r.nama }));
+    // Urutkan alami (BKLU1, BKLU2, ..., BKLU14 — bukan urutan input asli
+    // atau abjad teks biasa yang salah taruh BKLU10 sebelum BKLU2).
+    return [...rutes].sort((a,b)=>naturalCompare(a.nama, b.nama)).map(r=>({ value:r.id, label:r.nama }));
   }, [db.rute, filterWilayah]);
 
   const tahunList = useMemo(() => {
@@ -5509,21 +5524,9 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filterSiklusWilayah]);
 
-  // Urutan alami nama rute (BKLU1, BKLU2, ..., BKLU14 terurut benar sesuai
-  // angkanya, bukan terurut sebagai teks biasa yang akan taruh BKLU14
-  // sebelum BKLU2).
-  function naturalRouteSort(a, b) {
-    const parse = (s) => {
-      const m = String(s||"").match(/^(.*?)(\d+)?$/);
-      return { prefix: (m?.[1]||"").toLowerCase(), num: m?.[2]!=null ? parseInt(m[2],10) : null };
-    };
-    const pa = parse(a), pb = parse(b);
-    if (pa.prefix !== pb.prefix) return pa.prefix.localeCompare(pb.prefix);
-    if (pa.num==null && pb.num==null) return 0;
-    if (pa.num==null) return -1;
-    if (pb.num==null) return 1;
-    return pa.num - pb.num;
-  }
+  // (Urutan alami rute BKLU1..BKLU14 dsb sekarang pakai naturalCompare()
+  // yang sudah tersedia secara global — konsisten dengan urutan di Master
+  // Toko, Master Rute, dan dropdown filter rute lainnya.)
 
   // ─── HELPER: agregasi produk per entri kontrol ───
   function sumProduk(rows) {
@@ -5577,6 +5580,9 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         detail: g.rows,
       };
     });
+    // Urutkan alami (BKLU1, BKLU2, ..., BKLU14) supaya rapi seperti mode
+    // rekap lain — sebelumnya urutannya ikut urutan input data mentah.
+    hasil.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
 
     // ✅ Ikutkan Penjualan Luar Rute pada tanggal yang sama sebagai kelompok
     // tersendiri, supaya produk yang terjual di luar rute kontrol tetap
@@ -5631,7 +5637,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         detail: g.rows,
       };
     });
-    hasil.sort((a,b)=>naturalRouteSort(a.ruteNama, b.ruteNama));
+    hasil.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
 
     // ✅ Ikutkan Penjualan Luar Rute milik wilayah yang sama & jatuh di
     // rentang tanggal siklus ini — sales tetap bertanggung jawab atas semua
@@ -5665,6 +5671,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         const sp = sumProduk(g.rows);
         return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
       });
+      result.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
       // ✅ Ikutkan Penjualan Luar Rute milik wilayah yang sama di bulan ini —
       // sales tetap bertanggung jawab atas semua penjualan wilayahnya.
       const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId===filterWilayah && pl.tanggal?.startsWith(filterBulan));
@@ -5709,10 +5716,12 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, bulan:`${filterTahun}-${m}`, rows:[] };
           byRute[key].rows.push(k);
         });
-        Object.values(byRute).forEach(g => {
+        const bulanRows = Object.values(byRute).map(g => {
           const sp = sumProduk(g.rows);
-          result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp });
+          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
         });
+        bulanRows.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
+        result.push(...bulanRows);
         // ✅ Luar rute milik wilayah terpilih, bulan ini
         const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId===filterWilayah && pl.tanggal?.startsWith(`${filterTahun}-${m}`));
         if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
@@ -5759,10 +5768,12 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, bulan:`${filterTahun}-${m}`, rows:[] };
           byRute[key].rows.push(k);
         });
-        Object.values(byRute).forEach(g => {
+        const bulanRows = Object.values(byRute).map(g => {
           const sp = sumProduk(g.rows);
-          result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp });
+          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
         });
+        bulanRows.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
+        result.push(...bulanRows);
         // ✅ Luar rute milik wilayah terpilih, bulan ini
         if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
       });
