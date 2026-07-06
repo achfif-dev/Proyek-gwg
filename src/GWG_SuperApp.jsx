@@ -2074,16 +2074,22 @@ function exportJPG(data, columns, title, filename) {
 
     // Coba gambar logo GWG dulu (lingkaran kecil di header); kalau gagal
     // dimuat karena alasan apapun, lanjut ekspor tanpa logo.
-    // Pakai img.decode() (bukan event onload/onerror) karena di sebagian
-    // WebView Android (terutama versi lebih lama), gambar yang dimuat lewat
-    // new Image() di luar DOM bisa gagal memicu onload sama sekali —
-    // decode() adalah API berbasis Promise yang jauh lebih konsisten untuk
-    // kasus ini di semua platform (web maupun APK native).
+    // PENTING: sebelumnya kode ini membuat elemen Image() baru dari base64
+    // dan menunggu decode()-nya — ternyata di sebagian WebView Android
+    // (terutama versi lama/bawaan MIUI), pemuatan gambar baru seperti ini
+    // bisa gagal total tanpa pesan error yang jelas. Solusi paling aman:
+    // pakai LANGSUNG elemen <img> logo yang sudah terbukti berhasil
+    // tampil di header aplikasi (sudah di-render browser, tidak perlu
+    // dimuat ulang sama sekali), baru fallback ke cara lama kalau elemen
+    // itu entah kenapa tidak ditemukan di halaman.
     (async () => {
       try {
-        const logo = new Image();
-        logo.src = GWG_LOGO_B64;
-        await logo.decode();
+        let logo = document.querySelector("img.gw-header-logo");
+        if (!logo || !logo.complete || logo.naturalWidth === 0) {
+          logo = new Image();
+          logo.src = GWG_LOGO_B64;
+          await logo.decode();
+        }
         ctx.save();
         ctx.beginPath();
         ctx.arc(MARGIN + 22, 39, 19, 0, Math.PI * 2);
