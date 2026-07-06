@@ -1993,10 +1993,11 @@ async function exportJPG(data, columns, title, filename) {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, height);
 
-    function drawTableAndDownload() {
+    function drawTableAndDownload(logoImg) {
       let y;
       ctx.fillStyle = "#0F4C35";
       ctx.fillRect(0, 0, width, HEADER_H);
+      drawLogoBadge(logoImg);
       ctx.fillStyle = "#ffffff";
       ctx.font = "bold 17px 'Segoe UI', Arial, sans-serif";
       ctx.fillText("Generasi Wangi Group", MARGIN + 52, 34);
@@ -2124,8 +2125,7 @@ async function exportJPG(data, columns, title, filename) {
     }
 
     const logoImg = await loadLogoImage();
-    drawLogoBadge(logoImg);
-    drawTableAndDownload();
+    drawTableAndDownload(logoImg);
   } catch (e) {
     alert("Gagal ekspor JPG: " + e.message);
   }
