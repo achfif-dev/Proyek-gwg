@@ -2072,38 +2072,33 @@ function exportJPG(data, columns, title, filename) {
       }, "image/jpeg", 0.92);
     }
 
-    // Coba gambar logo GWG dulu (lingkaran kecil di header); kalau gagal
-    // dimuat karena alasan apapun, lanjut ekspor tanpa logo.
-    // PENTING: sebelumnya kode ini membuat elemen Image() baru dari base64
-    // dan menunggu decode()-nya — ternyata di sebagian WebView Android
-    // (terutama versi lama/bawaan MIUI), pemuatan gambar baru seperti ini
-    // bisa gagal total tanpa pesan error yang jelas. Solusi paling aman:
-    // pakai LANGSUNG elemen <img> logo yang sudah terbukti berhasil
-    // tampil di header aplikasi (sudah di-render browser, tidak perlu
-    // dimuat ulang sama sekali), baru fallback ke cara lama kalau elemen
-    // itu entah kenapa tidak ditemukan di halaman.
-    (async () => {
-      try {
-        let logo = document.querySelector("img.gw-header-logo");
-        if (!logo || !logo.complete || logo.naturalWidth === 0) {
-          logo = new Image();
-          logo.src = GWG_LOGO_B64;
-          await logo.decode();
-        }
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(MARGIN + 22, 39, 19, 0, Math.PI * 2);
-        ctx.closePath();
-        ctx.clip();
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(MARGIN + 3, 20, 38, 38);
-        ctx.drawImage(logo, MARGIN + 3, 20, 38, 38);
-        ctx.restore();
-      } catch (e) {
-        console.warn("Logo gagal dimuat untuk export JPG, lanjut tanpa logo:", e);
-      }
-      drawTableAndDownload();
-    })();
+    // Logo digambar langsung pakai bentuk vektor (lingkaran + teks "GW"),
+    // BUKAN gambar raster (PNG) — setelah 2 pendekatan berbeda untuk memuat
+    // gambar sama-sama gagal khusus di sebagian WebView Android (kemungkinan
+    // keterbatasan decoding gambar ke canvas di WebView versi tertentu),
+    // cara paling andal adalah menghindari pemuatan gambar sama sekali.
+    // Vektor selalu berhasil digambar di semua platform tanpa kecuali.
+    function drawLogoBadge() {
+      const cx = MARGIN + 22, cy = 39, r = 19;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#ffffff";
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "#0F4C35";
+      ctx.stroke();
+      ctx.fillStyle = "#0F4C35";
+      ctx.font = "bold 15px 'Segoe UI', Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText("GW", cx, cy + 1);
+      ctx.restore();
+      ctx.textAlign = "left";
+      ctx.textBaseline = "alphabetic";
+    }
+    drawLogoBadge();
+    drawTableAndDownload();
   } catch (e) {
     alert("Gagal ekspor JPG: " + e.message);
   }
