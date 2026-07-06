@@ -26,7 +26,8 @@
     "vite": "^5.0.0",
     "vite-plugin-pwa": "^0.20.5",
     "@capacitor/cli": "^6.1.0",
-    "@capacitor/android": "^6.1.0"
+    "@capacitor/android": "^6.1.0",
+    "@capacitor/assets": "^3.0.5"
   },
   "engines": {
     "node": ">=18.0.0"
