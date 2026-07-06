@@ -2074,9 +2074,16 @@ function exportJPG(data, columns, title, filename) {
 
     // Coba gambar logo GWG dulu (lingkaran kecil di header); kalau gagal
     // dimuat karena alasan apapun, lanjut ekspor tanpa logo.
-    const logo = new Image();
-    logo.onload = () => {
+    // Pakai img.decode() (bukan event onload/onerror) karena di sebagian
+    // WebView Android (terutama versi lebih lama), gambar yang dimuat lewat
+    // new Image() di luar DOM bisa gagal memicu onload sama sekali —
+    // decode() adalah API berbasis Promise yang jauh lebih konsisten untuk
+    // kasus ini di semua platform (web maupun APK native).
+    (async () => {
       try {
+        const logo = new Image();
+        logo.src = GWG_LOGO_B64;
+        await logo.decode();
         ctx.save();
         ctx.beginPath();
         ctx.arc(MARGIN + 22, 39, 19, 0, Math.PI * 2);
@@ -2086,11 +2093,11 @@ function exportJPG(data, columns, title, filename) {
         ctx.fillRect(MARGIN + 3, 20, 38, 38);
         ctx.drawImage(logo, MARGIN + 3, 20, 38, 38);
         ctx.restore();
-      } catch {}
+      } catch (e) {
+        console.warn("Logo gagal dimuat untuk export JPG, lanjut tanpa logo:", e);
+      }
       drawTableAndDownload();
-    };
-    logo.onerror = () => drawTableAndDownload();
-    logo.src = GWG_LOGO_B64;
+    })();
   } catch (e) {
     alert("Gagal ekspor JPG: " + e.message);
   }
