@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import { Network } from "@capacitor/network";
 import { Capacitor } from "@capacitor/core";
 import { Filesystem, Directory } from "@capacitor/filesystem";
@@ -1850,8 +1852,60 @@ async function exportExcel(data, columns, title, filename) {
 }
 
 // Export PDF landscape profesional menggunakan browser print dengan layout khusus
-function exportPDF(data, columns, title, filename) {
+async function exportPDF(data, columns, title, filename) {
   const now = new Date().toLocaleString("id-ID");
+
+  // ── APK NATIVE: window.open()+window.print() yang dipakai jalur web di
+  //    bawah TIDAK berfungsi di WebView (tidak ada jendela baru, dan dialog
+  //    print sistem tidak ter-hubung) — makanya sebelumnya cuma menampilkan
+  //    halaman HTML polos tanpa opsi apa pun. Di native, bikin file PDF
+  //    SUNGGUHAN pakai jsPDF, lalu simpan/bagikan lewat Filesystem+Share
+  //    (mekanisme yang sama seperti export Excel/CSV yang sudah terbukti).
+  if (Capacitor.isNativePlatform()) {
+    try {
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "a4" });
+      const pageW = doc.internal.pageSize.getWidth();
+
+      // Header hijau + logo + judul
+      doc.setFillColor(15, 76, 53);
+      doc.rect(0, 0, pageW, 50, "F");
+      try { doc.addImage(GWG_EXPORT_LOGO_B64, "PNG", 24, 8, 34, 34); } catch {}
+      doc.setTextColor(255,255,255);
+      doc.setFont("helvetica","bold"); doc.setFontSize(13);
+      doc.text("Generasi Wangi Group", 68, 22);
+      doc.setFont("helvetica","normal"); doc.setFontSize(8);
+      doc.text("SUPER APP · SISTEM MANAJEMEN KONSINYASI", 68, 33);
+      doc.setFontSize(10);
+      doc.text(title, pageW-24, 20, { align:"right" });
+      doc.setFontSize(8);
+      doc.text(`Diekspor: ${now}  ·  Total: ${data.length} data`, pageW-24, 32, { align:"right" });
+
+      const rows = data.map(row => columns.map(c => {
+        const val = row[c.key] ?? "—";
+        return typeof val === "boolean" ? (val?"Ya":"Tidak") : String(val);
+      }));
+
+      autoTable(doc, {
+        head: [columns.map(c=>c.label)],
+        body: rows,
+        startY: 62,
+        theme: "striped",
+        headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: 8 },
+        bodyStyles: { fontSize: 8 },
+        alternateRowStyles: { fillColor: [248,250,248] },
+        margin: { left: 24, right: 24 },
+      });
+
+      const blob = doc.output("blob");
+      await saveOrShareBlob(blob, filename + ".pdf");
+    } catch (e) {
+      alert("Gagal membuat PDF: " + e.message);
+    }
+    return;
+  }
+
+  // ── WEB: cara lama (buka jendela print) — terbukti bekerja baik di
+  //    browser desktop maupun mobile, jadi tidak diubah.
   const rows = data.map(row =>
     columns.map(c => {
       const val = row[c.key] ?? "—";
