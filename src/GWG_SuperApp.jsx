@@ -1883,9 +1883,24 @@ async function exportPDF(data, columns, title, filename) {
       // Latar putih eksplisit dulu di belakang logo (bulat) — beberapa versi
       // jsPDF tidak mengompositkan transparansi PNG dengan benar, jadi tanpa
       // ini logo bisa tampil dengan kotak/pinggiran tidak rapi.
+      const logoCx = 24 + 17, logoCy = 8 + 17, logoR = 17;
       doc.setFillColor(255,255,255);
-      doc.circle(24+17, 8+17, 18, "F");
-      try { doc.addImage(GWG_EXPORT_LOGO_B64, "PNG", 24, 8, 34, 34); } catch {}
+      doc.circle(logoCx, logoCy, 18, "F");
+      // Sama seperti versi JPG: logo di-clip jadi bulat SEBELUM digambar,
+      // supaya foto logo (persegi) tidak "mentok"/terlihat kotak di dalam
+      // badge bulat. Tanpa clip ini, hasil PDF terlihat beda dari JPG.
+      try {
+        doc.saveGraphicsState();
+        doc.ellipse(logoCx, logoCy, logoR, logoR, null);
+        doc.clip();
+        doc.discardPath();
+        doc.addImage(GWG_EXPORT_LOGO_B64, "PNG", 24, 8, 34, 34);
+        doc.restoreGraphicsState();
+      } catch {}
+      // Border hijau tipis di sekeliling badge logo, menyamai tampilan JPG.
+      doc.setDrawColor(15, 76, 53);
+      doc.setLineWidth(1.2);
+      doc.circle(logoCx, logoCy, logoR, "S");
       doc.setTextColor(255,255,255);
       doc.setFont("helvetica","bold"); doc.setFontSize(13);
       doc.text(pdfSafe("Generasi Wangi Group"), 68, 22);
