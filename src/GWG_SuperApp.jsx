@@ -3720,7 +3720,8 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         <Modal title={`📦 Update Stok Awal — ${stokForm.tokoNama}`} onClose={()=>setStokModal(false)}>
           <div style={{ fontSize:13, color:T.gray600, marginBottom:16 }}>
             Stok ini otomatis ter-update setiap kali ada entri <b>Kontrol Bulanan</b> baru untuk toko ini
-            (Stok Akhir = Stok Awal − Terjual + Bonus). Gunakan form ini hanya untuk <b>koreksi manual</b>
+            — nilai "Stok Awal" pada kontrol terakhir dibawa apa adanya (sudah termasuk hasil
+            restock etalase saat kunjungan itu). Gunakan form ini hanya untuk <b>koreksi manual</b>
             (misal: stok opname, retur, atau setup awal sebelum ada kontrol).
           </div>
           {produkAktif.map(p => (
@@ -3945,11 +3946,19 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   }
 
   // ✅ SINKRONISASI STOK: Master Toko ↔ Kontrol Bulanan ↔ Penyesuaian Stok
-  // Stok di Master Toko sekarang dihitung dari GABUNGAN dua sumber:
-  //  1) Entri Kontrol Bulanan TERAKHIR → Stok Akhir = Stok Awal − Terjual + Bonus
+  // PENTING: "Stok Awal" yang diinput sales saat kontrol itu adalah stok
+  // SETELAH etalase diisi ulang saat kunjungan itu juga (kapasitas etalase,
+  // misal 24 pcs) — BUKAN sisa sebelum diisi ulang. Karena sales langsung
+  // mengisi ulang etalase yang kosong tiap kontrol, stok bulan depan akan
+  // KEMBALI ke kapasitas yang sama, jadi cukup dibawa apa adanya (bukan
+  // dikurangi Terjual/Bonus lagi — itu cuma dipakai untuk hitung Revenue &
+  // pemakaian bonus, bukan untuk menentukan sisa fisik di etalase).
+  // Stok di Master Toko dihitung dari GABUNGAN dua sumber:
+  //  1) "Stok Awal" pada entri Kontrol Bulanan TERAKHIR (dibawa apa adanya)
   //  2) Semua Penyesuaian Stok (Tambah/Kurang/Tarik Sebagian) yang tanggalnya
-  //     SAMA ATAU SETELAH kontrol terakhir tsb (kejadian lapangan di luar
-  //     siklus kontrol rutin, dicatat admin dari laporan sales).
+  //     SAMA ATAU SETELAH kontrol terakhir tsb — dipakai kalau kapasitas
+  //     etalase berubah (mis. 24→12) atau toko ditarik semua di luar siklus
+  //     kontrol rutin.
   // extraKontrolList / extraPenyesuaianList: dipakai saat dipanggil tepat
   // setelah addRecord, karena db di closure ini belum memuat data terbaru.
   function recalcTokoStok(tokoId, extraKontrolList, extraPenyesuaianList) {
@@ -3960,17 +3969,12 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
     const terakhir = entriesToko[entriesToko.length-1];
 
-    // Baseline dari kontrol terakhir (kalau belum pernah ada kontrol, baseline = 0)
+    // Baseline = "Stok Awal" kontrol terakhir apa adanya (sudah termasuk
+    // hasil restock saat kunjungan itu). Kalau belum pernah ada kontrol,
+    // baseline = 0.
     const baseline = {};
     produkAktif.forEach(p => {
-      if (terakhir) {
-        const stokAwal = Number(terakhir[`stok_${p.id}`]||0);
-        const terjual = Number(terakhir[`terjual_${p.id}`]||0);
-        const bonus = terakhir[`bonusInput_${p.id}`] !== undefined ? Number(terakhir[`bonusInput_${p.id}`]) : (p.bonus||0);
-        baseline[p.id] = stokAwal - terjual + bonus;
-      } else {
-        baseline[p.id] = 0;
-      }
+      baseline[p.id] = terakhir ? Number(terakhir[`stok_${p.id}`]||0) : 0;
     });
 
     // Tambahkan Penyesuaian Stok yang terjadi pada/sesudah tanggal kontrol terakhir
@@ -3991,6 +3995,20 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const updates = {};
     produkAktif.forEach(p => { updates[`stok_${p.id}`] = Math.max(0, baseline[p.id]||0); });
     updateRecord("toko", tokoId, updates);
+  }
+
+  // ✅ HITUNG ULANG SEMUA STOK — dipakai setelah rumus baseline diperbaiki
+  // (Stok Awal dibawa apa adanya, bukan dikurangi Terjual/Bonus lagi), supaya
+  // Master Toko yang sudah kadung dihitung pakai rumus lama langsung
+  // terkoreksi semua sekaligus, tanpa perlu menunggu kontrol berikutnya
+  // satu-satu per toko. Penyesuaian Stok lapangan tetap diperhitungkan
+  // seperti biasa (logika di recalcTokoStok tidak berubah untuk bagian itu).
+  function recalcAllTokoStok() {
+    const tokoIds = [...new Set((db.kontrol||[]).map(k=>k.tokoId))];
+    if (!tokoIds.length) { alert("Belum ada data kontrol untuk dihitung."); return; }
+    if (!confirm(`Hitung ulang stok untuk ${tokoIds.length} toko yang pernah dikontrol? Ini akan menimpa nilai Stok di Master Toko sesuai data kontrol & penyesuaian yang sudah ada.`)) return;
+    tokoIds.forEach(tokoId => recalcTokoStok(tokoId));
+    alert(`✅ Selesai — stok ${tokoIds.length} toko sudah dihitung ulang.`);
   }
 
   function openPenyesuaian(tokoId) {
@@ -4328,10 +4346,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         if (!terakhir) return t;
         const updated = { ...t };
         produkAktif.forEach(p => {
-          const stokAwal = Number(terakhir[`stok_${p.id}`]||0);
-          const terjual = Number(terakhir[`terjual_${p.id}`]||0);
-          const bonus = terakhir[`bonusInput_${p.id}`] !== undefined ? Number(terakhir[`bonusInput_${p.id}`]) : (p.bonus||0);
-          updated[`stok_${p.id}`] = Math.max(0, stokAwal - terjual + bonus);
+          // "Stok Awal" dibawa apa adanya (lihat catatan di recalcTokoStok) —
+          // sudah mencerminkan hasil restock etalase saat kunjungan itu.
+          updated[`stok_${p.id}`] = Number(terakhir[`stok_${p.id}`]||0);
         });
         return updated;
       });
@@ -4558,6 +4575,10 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ImportMenu label="Import Kontrol" onTemplate={()=>downloadKontrolTemplate(db)} onParseRows={importKontrolFromRows} />
+          <Btn variant="secondary" icon="🔄" onClick={recalcAllTokoStok}
+            title="Hitung ulang stok Master Toko untuk semua toko yang pernah dikontrol, pakai data kontrol & penyesuaian yang sudah ada">
+            Hitung Ulang Semua Stok
+          </Btn>
           {(() => {
             // ── Kolom ekspor kontrol (tanpa React render, gunakan nilai plain) ──
             const kontrolExportCols = [
