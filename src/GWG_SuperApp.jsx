@@ -1855,6 +1855,17 @@ async function exportExcel(data, columns, title, filename) {
 async function exportPDF(data, columns, title, filename) {
   const now = new Date().toLocaleString("id-ID");
 
+  // jsPDF pakai font standar (Helvetica) yang TIDAK punya karakter
+  // emoji/simbol Unicode (🛣️, ═══, 📊, dst) — kalau dibiarkan, karakter itu
+  // berubah jadi teks sampah di PDF. Dibersihkan dulu, teks biasa (huruf/
+  // angka Indonesia) tidak terpengaruh sama sekali.
+  const pdfSafe = (s) => String(s ?? "")
+    .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
+    .replace(/[\u2190-\u2BFF]/g, "")
+    .replace(/[\uFE00-\uFE0F]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
   // ── APK NATIVE: window.open()+window.print() yang dipakai jalur web di
   //    bawah TIDAK berfungsi di WebView (tidak ada jendela baru, dan dialog
   //    print sistem tidak ter-hubung) — makanya sebelumnya cuma menampilkan
@@ -1869,31 +1880,44 @@ async function exportPDF(data, columns, title, filename) {
       // Header hijau + logo + judul
       doc.setFillColor(15, 76, 53);
       doc.rect(0, 0, pageW, 50, "F");
+      // Latar putih eksplisit dulu di belakang logo (bulat) — beberapa versi
+      // jsPDF tidak mengompositkan transparansi PNG dengan benar, jadi tanpa
+      // ini logo bisa tampil dengan kotak/pinggiran tidak rapi.
+      doc.setFillColor(255,255,255);
+      doc.circle(24+17, 8+17, 18, "F");
       try { doc.addImage(GWG_EXPORT_LOGO_B64, "PNG", 24, 8, 34, 34); } catch {}
       doc.setTextColor(255,255,255);
       doc.setFont("helvetica","bold"); doc.setFontSize(13);
-      doc.text("Generasi Wangi Group", 68, 22);
+      doc.text(pdfSafe("Generasi Wangi Group"), 68, 22);
       doc.setFont("helvetica","normal"); doc.setFontSize(8);
-      doc.text("SUPER APP · SISTEM MANAJEMEN KONSINYASI", 68, 33);
+      doc.text(pdfSafe("SUPER APP · SISTEM MANAJEMEN KONSINYASI"), 68, 33);
       doc.setFontSize(10);
-      doc.text(title, pageW-24, 20, { align:"right" });
+      doc.text(pdfSafe(title), pageW-24, 20, { align:"right" });
       doc.setFontSize(8);
-      doc.text(`Diekspor: ${now}  ·  Total: ${data.length} data`, pageW-24, 32, { align:"right" });
+      doc.text(pdfSafe(`Diekspor: ${now}  ·  Total: ${data.length} data`), pageW-24, 32, { align:"right" });
 
       const rows = data.map(row => columns.map(c => {
         const val = row[c.key] ?? "—";
-        return typeof val === "boolean" ? (val?"Ya":"Tidak") : String(val);
+        const str = typeof val === "boolean" ? (val?"Ya":"Tidak") : String(val);
+        return pdfSafe(str) || "—";
       }));
 
       autoTable(doc, {
-        head: [columns.map(c=>c.label)],
+        head: [columns.map(c=>pdfSafe(c.label))],
         body: rows,
         startY: 62,
         theme: "striped",
+        // Kolom sering banyak (produk × stok/jual/bonus, dst), tidak selalu
+        // muat di 1 halaman — horizontalPageBreak melanjutkan kolom yang
+        // tidak muat ke halaman berikutnya (tetap utuh terbaca), bukan
+        // diam-diam terpotong hilang seperti sebelumnya.
+        horizontalPageBreak: true,
+        horizontalPageBreakRepeat: 0,
+        styles: { overflow: "linebreak" },
         headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: 8 },
         bodyStyles: { fontSize: 8 },
         alternateRowStyles: { fillColor: [248,250,248] },
-        margin: { left: 24, right: 24 },
+        margin: { left: 24, right: 24, top: 62 },
       });
 
       const blob = doc.output("blob");
@@ -2047,6 +2071,20 @@ async function exportJPG(data, columns, title, filename) {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, height);
 
+    // Canvas fillText di sebagian WebView Android (HP kamu) ternyata tidak
+    // punya font emoji sama sekali — bukannya kosong/kotak seperti biasanya,
+    // malah muncul karakter acak/rusak. Bersihkan emoji khusus untuk teks
+    // yang digambar ke canvas (tidak menyentuh data aslinya, jadi tampilan
+    // di layar & PDF tetap normal seperti biasa).
+    function canvasSafe(s) {
+      return String(s ?? "")
+        .replace(/[\u{1F000}-\u{1FFFF}]/gu, "")
+        .replace(/[\u2190-\u2BFF]/g, "")
+        .replace(/[\uFE00-\uFE0F]/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+    }
+
     function drawTableAndDownload(logoImg) {
       let y;
       ctx.fillStyle = "#0F4C35";
@@ -2062,7 +2100,7 @@ async function exportJPG(data, columns, title, filename) {
       ctx.textAlign = "right";
       ctx.fillStyle = "#ffffff";
       ctx.font = "bold 14px 'Segoe UI', Arial, sans-serif";
-      ctx.fillText(truncate(title, width - MARGIN * 2 - 250, "bold 14px 'Segoe UI', Arial, sans-serif"), width - MARGIN, 32);
+      ctx.fillText(truncate(canvasSafe(title), width - MARGIN * 2 - 250, "bold 14px 'Segoe UI', Arial, sans-serif"), width - MARGIN, 32);
       ctx.font = "11px 'Segoe UI', Arial, sans-serif";
       ctx.fillStyle = "#D9F0E6";
       ctx.fillText(`Diekspor: ${now}`, width - MARGIN, 50);
@@ -2093,7 +2131,7 @@ async function exportJPG(data, columns, title, filename) {
       let x = MARGIN;
       columns.forEach((c, ci) => {
         ctx.font = headerFont;
-        ctx.fillText(truncate(c.label.toUpperCase(), colWidths[ci] - PAD_X * 2, headerFont), x + PAD_X, y + HEAD_ROW_H / 2 + 4);
+        ctx.fillText(truncate(canvasSafe(c.label).toUpperCase(), colWidths[ci] - PAD_X * 2, headerFont), x + PAD_X, y + HEAD_ROW_H / 2 + 4);
         x += colWidths[ci];
       });
       y += HEAD_ROW_H;
@@ -2110,7 +2148,7 @@ async function exportJPG(data, columns, title, filename) {
         let cx = MARGIN;
         r.forEach((cell, ci) => {
           ctx.font = cellFont;
-          ctx.fillText(truncate(cell, colWidths[ci] - PAD_X * 2, cellFont), cx + PAD_X, y + ROW_H / 2 + 4);
+          ctx.fillText(truncate(canvasSafe(cell), colWidths[ci] - PAD_X * 2, cellFont), cx + PAD_X, y + ROW_H / 2 + 4);
           cx += colWidths[ci];
         });
         y += ROW_H;
