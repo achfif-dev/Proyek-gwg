@@ -732,7 +732,7 @@ function useDB(user) {
   // Di level UI, db.kontrol TETAP berupa array datar gabungan dari semua
   // tahun yang sudah dimuat — jadi seluruh tab/komponen yang sudah ada
   // TIDAK PERLU diubah sama sekali.
-  const KONTROL_LIVE_YEARS = 2; // jumlah tahun terbaru yang otomatis live-sync
+  const KONTROL_LIVE_YEARS = 1; // jumlah tahun terbaru yang otomatis live-sync — diturunkan dari 2 supaya hemat kuota unduhan Firebase menjelang pemakaian oleh sales lapangan (tahun lain tetap bisa dimuat manual dari menu Backup)
   const kontrolByYearRef = useRef({}); // { "2026": { id1:{...}, id2:{...} }, "2025": {...} }
   const kontrolYearUnsubsRef = useRef({}); // { "2026": () => {...} }
   const [loadedKontrolYears, setLoadedKontrolYears] = useState([]); // tahun yang sudah live-sync / dimuat
@@ -3287,7 +3287,7 @@ function autoUpgradeBaruToAktif(db, updateRecord) {
   });
 }
 
-function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
+function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isSalesRestricted }) {
   const [modal, setModal] = useState(null);
   const [stokModal, setStokModal] = useState(null);
   const [form, setForm] = useState({ nama:"", ruteId:"", status:"Aktif", produkIds:[], catatan:"" });
@@ -3324,11 +3324,12 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
   const sorted = useMemo(() => sortByNama(enriched), [enriched]);
 
   const data = useMemo(() => sorted.filter(t =>
+    (!isSalesRestricted || t.wilayahId===salesWilayahId) && // Sales cuma boleh lihat/edit toko wilayahnya sendiri
     (!filter.q || t.nama.toLowerCase().includes(filter.q.toLowerCase()) || t.kode?.toLowerCase().includes(filter.q.toLowerCase())) &&
     (!filter.ruteId || t.ruteId===filter.ruteId) &&
     (!filter.wilayahId || t.wilayahId===filter.wilayahId) &&
     (!filter.status || t.status===filter.status)
-  ), [sorted, filter]);
+  ), [sorted, filter, isSalesRestricted, salesWilayahId]);
 
   const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
 
@@ -3513,11 +3514,18 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.toko||[]).length} toko · {(db.toko||[]).filter(t=>t.status==="Aktif").length} aktif · terurut abjad</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-          <ImportMenu label="Import Toko" onTemplate={()=>downloadTokoTemplate(db)} onParseRows={importTokoFromRows} />
+          {!isSalesRestricted && <ImportMenu label="Import Toko" onTemplate={()=>downloadTokoTemplate(db)} onParseRows={importTokoFromRows} />}
           <ExportMenu data={data} columns={cols} title="Data Toko" filename="toko" />
-          <Btn onClick={openAdd} icon="＋">Tambah Toko</Btn>
+          {!isSalesRestricted && <Btn onClick={openAdd} icon="＋">Tambah Toko</Btn>}
         </div>
       </div>
+      {isSalesRestricted && (
+        <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
+          padding:"8px 14px", fontSize:12, color:T.green, marginBottom:12 }}>
+          🔒 Menampilkan toko di wilayah kamu saja. Kamu bisa memperbaiki Nama Toko & Rute; perubahan
+          status/produk/stok perlu Admin atau Manajer.
+        </div>
+      )}
       <FilterBar filters={[
         { key:"q",        label:"Cari Nama Toko / Kode", value:filter.q, placeholder:"Ketik untuk mencari..." },
         { key:"wilayahId",label:"Wilayah",          value:filter.wilayahId, options:wilayahOpts },
@@ -3537,7 +3545,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
         onDeleteSelected={deleteSelected} label="toko" />
       <Card padding={0}>
         <Table columns={cols} data={data} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus toko ini?")) deleteRecord("toko",id); }}
+          onDelete={isSalesRestricted ? undefined : (id=>{ if(confirm("Hapus toko ini?")) deleteRecord("toko",id); })}
           selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
       {/* Panel Daftar Stok Produk per Toko dengan Filter */}
@@ -3659,7 +3667,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
                             );
                           })}
                           <td style={{ padding:"8px 12px", textAlign:"right" }}>
-                            <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>openStok(t)}>Update</Btn>
+                            {!isSalesRestricted && <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>openStok(t)}>Update</Btn>}
                           </td>
                         </tr>
                       ))}
@@ -3677,38 +3685,49 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save }) {
 
       {modal && (
         <Modal title={modal==="add"?"Tambah Toko":"Edit Toko"} onClose={()=>setModal(null)}>
+          {isSalesRestricted && (
+            <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
+              padding:"8px 12px", fontSize:12, color:T.green, marginBottom:12 }}>
+              🔒 Sebagai Sales, kamu cuma bisa memperbaiki <b>Nama Toko</b> dan <b>Rute</b>. Perubahan
+              lain (status, produk, stok) perlu dilakukan Admin/Manajer.
+            </div>
+          )}
           <Input label="Nama Toko" value={form.nama} onChange={v=>f("nama",v)} required placeholder="cth: Toko Barokah" />
           <SearchableSelect label="Filter Wilayah (opsional)" value={formWilayahId}
             onChange={v=>{ setFormWilayahId(v); f("ruteId",""); }}
             options={wilayahOpts} placeholder="Pilih wilayah untuk filter rute..." />
           <SearchableSelect label="Rute" value={form.ruteId} onChange={v=>f("ruteId",v)} options={ruteOptsFiltered} required placeholder={formWilayahId ? "Pilih rute..." : "Cari rute / wilayah..."} />
-          <Input label="Status" value={form.status} onChange={v=>f("status",v)}
-            options={[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"},{value:"Baru",label:"Baru (trial)"}]} />
-          {form.status === "Baru" && (
-            <Input label="Tanggal Masuk (Baru)" value={form.tanggalMasuk||new Date().toISOString().slice(0,10)}
-              onChange={v=>f("tanggalMasuk",v)} type="date"
-              hint="Dipakai untuk auto-upgrade ke Aktif setelah 30 hari" />
+          {!isSalesRestricted && (
+            <>
+              <Input label="Status" value={form.status} onChange={v=>f("status",v)}
+                options={[{value:"Aktif",label:"Aktif"},{value:"Non-Aktif",label:"Non-Aktif"},{value:"Baru",label:"Baru (trial)"}]} />
+              {form.status === "Baru" && (
+                <Input label="Tanggal Masuk (Baru)" value={form.tanggalMasuk||new Date().toISOString().slice(0,10)}
+                  onChange={v=>f("tanggalMasuk",v)} type="date"
+                  hint="Dipakai untuk auto-upgrade ke Aktif setelah 30 hari" />
+              )}
+              <div style={{ marginBottom:14 }}>
+                <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>Produk yang Dijual:</div>
+                <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+                  {produkAktif.map(p => (
+                    <label key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                      border:`1.5px solid ${(form.produkIds||[]).includes(p.id)?T.green:T.gray200}`,
+                      borderRadius:8, cursor:"pointer", background:(form.produkIds||[]).includes(p.id)?T.greenLt:T.white }}>
+                      <input type="checkbox" checked={(form.produkIds||[]).includes(p.id)}
+                        onChange={e => {
+                          const ids = form.produkIds||[];
+                          f("produkIds", e.target.checked ? [...ids,p.id] : ids.filter(x=>x!==p.id));
+                        }}
+                        style={{ accentColor:T.green }} />
+                      <span style={{ fontSize:13, fontWeight:600 }}>{p.nama}</span>
+                      <span style={{ fontSize:11, color:T.gray400 }}>{fmtRp(p.harga)}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <Input label="Catatan" value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea" />
+            </>
           )}
-          <div style={{ marginBottom:14 }}>
-            <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>Produk yang Dijual:</div>
-            <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-              {produkAktif.map(p => (
-                <label key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
-                  border:`1.5px solid ${(form.produkIds||[]).includes(p.id)?T.green:T.gray200}`,
-                  borderRadius:8, cursor:"pointer", background:(form.produkIds||[]).includes(p.id)?T.greenLt:T.white }}>
-                  <input type="checkbox" checked={(form.produkIds||[]).includes(p.id)}
-                    onChange={e => {
-                      const ids = form.produkIds||[];
-                      f("produkIds", e.target.checked ? [...ids,p.id] : ids.filter(x=>x!==p.id));
-                    }}
-                    style={{ accentColor:T.green }} />
-                  <span style={{ fontSize:13, fontWeight:600 }}>{p.nama}</span>
-                  <span style={{ fontSize:11, color:T.gray400 }}>{fmtRp(p.harga)}</span>
-                </label>
-              ))}
-            </div>
-          </div>
-          <Input label="Catatan" value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea" />
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
             <Btn onClick={submit}>{modal==="add"?"Simpan":"Update"}</Btn>
@@ -3824,6 +3843,25 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     // padahal toko lain di rute yang sama sudah.
     cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni: false });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
+
+  // ✅ AUTO-APPROVE: pengajuan Penyesuaian Stok dari Sales yang sudah lewat
+  // 24 jam (autoApproveAt) dan belum ditolak, otomatis disetujui sendiri.
+  // Dicek sekali tiap kali tab ini dibuka/data penyesuaian berubah — cukup
+  // untuk pemakaian normal (app dibuka rutin tiap hari oleh Admin/Manajer).
+  useEffect(() => {
+    const now = Date.now();
+    const expired = (db.penyesuaian||[]).filter(pz =>
+      pz.status === "menunggu" && pz.autoApproveAt && pz.autoApproveAt <= now
+    );
+    if (expired.length === 0) return;
+    expired.forEach(pz => {
+      updateRecord("penyesuaian", pz.id, { status: "disetujui", disetujuiOleh: "Otomatis (24 jam)" });
+    });
+    // Hitung ulang stok toko yang terdampak, sesudah data ter-update.
+    const tokoIds = [...new Set(expired.map(pz=>pz.tokoId))];
+    setTimeout(() => tokoIds.forEach(tid => recalcTokoStok(tid)), 300);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db.penyesuaian]);
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
   const [selectedIds, setSelectedIds] = useState([]);
 
@@ -3980,7 +4018,8 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     // Tambahkan Penyesuaian Stok yang terjadi pada/sesudah tanggal kontrol terakhir
     const batasTanggal = terakhir?.tanggal || "0000-00-00";
     const penyesuaianRelevan = semuaPenyesuaian
-      .filter(pz => pz.tokoId === tokoId && (pz.tanggal||"") >= batasTanggal)
+      .filter(pz => pz.tokoId === tokoId && (pz.tanggal||"") >= batasTanggal
+        && pz.status !== "menunggu" && pz.status !== "ditolak") // hanya yang disetujui (atau data lama tanpa status)
       .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
     penyesuaianRelevan.forEach(pz => {
       const arah = pz.jenis === "Kurang" || pz.jenis === "Tarik" ? -1 : 1;
@@ -4027,7 +4066,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const payload = { ...pforn };
     produkAktif.forEach(p => { payload[`jumlah_${p.id}`] = Number(pforn[`jumlah_${p.id}`]||0); });
     const newId = genId("PZ", db.penyesuaian);
-    const newEntry = { ...payload, id:newId };
+    // ✅ WORKFLOW PERSETUJUAN: pengajuan dari Sales masuk status "menunggu"
+    // dulu (tidak langsung mengubah stok), dan otomatis "disetujui" sendiri
+    // kalau dalam 24 jam tidak ada penolakan dari Admin/Manajer. Pengajuan
+    // dari Admin/Manajer langsung disetujui (tidak perlu approval sendiri).
+    const newEntry = {
+      ...payload, id:newId,
+      status: isSalesRestricted ? "menunggu" : "disetujui",
+      autoApproveAt: isSalesRestricted ? (Date.now() + 24*60*60*1000) : null,
+    };
     addRecord("penyesuaian", newEntry);
 
     // ✅ Produk baru yang dititipkan: kalau jenis "Tambah" dan ada produk dengan
@@ -4428,6 +4475,22 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
   return (
     <div>
+      {/* Ringkasan Penyesuaian Stok yang menunggu persetujuan (Admin/Manajer
+          saja) — supaya tidak perlu buka toko satu-satu untuk ketahuan ada
+          pengajuan dari Sales yang butuh ditinjau. Auto-approve 24 jam sudah
+          jalan sendiri, ini cuma buat yang mau ditinjau/ditolak lebih awal. */}
+      {!isSalesRestricted && (() => {
+        const pending = (db.penyesuaian||[]).filter(pz=>pz.status==="menunggu");
+        if (pending.length === 0) return null;
+        return (
+          <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10,
+            padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E" }}>
+            ⏳ Ada <b>{pending.length} pengajuan Penyesuaian Stok</b> dari Sales yang menunggu persetujuan
+            (otomatis disetujui dalam 24 jam kalau tidak ditinjau). Buka detail toko terkait di bawah untuk
+            menyetujui/menolak lebih awal.
+          </div>
+        );
+      })()}
       {/* Fix: ConfirmDelete global untuk view monthly & tabel */}
       {deleteTarget && (
         <ConfirmDelete
@@ -5048,12 +5111,14 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                             <tbody>
                               {pzList.map(pz => (
-                                <tr key={pz.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
+                                <tr key={pz.id} style={{ borderTop:`1px solid ${T.gray100}`, background: pz.status==="menunggu" ? "#FFFBEB" : "transparent" }}>
                                   <td style={{ padding:"6px 10px", fontWeight:600, whiteSpace:"nowrap" }}>{pz.tanggal}</td>
                                   <td style={{ padding:"6px 10px" }}>
                                     <Badge color={pz.jenis==="Tambah"?T.green:T.red} bg={pz.jenis==="Tambah"?T.greenLt:T.redLt}>
                                       {pz.jenis==="Tambah"?"➕ Tambah":pz.jenis==="Kurang"?"➖ Kurang":"🔻 Tarik Sebagian"}
                                     </Badge>
+                                    {pz.status==="menunggu" && <span style={{marginLeft:4}}><Badge color={T.gold} bg="#FFFBEB">⏳ Menunggu</Badge></span>}
+                                    {pz.status==="ditolak" && <span style={{marginLeft:4}}><Badge color={T.red} bg={T.redLt}>❌ Ditolak</Badge></span>}
                                   </td>
                                   <td style={{ padding:"6px 10px" }}>
                                     {produkAktif.filter(p=>Number(pz[`jumlah_${p.id}`]||0)>0)
@@ -5063,7 +5128,21 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                                     {pz.dicatatOleh && <span>👤 {pz.dicatatOleh}</span>}
                                     {pz.catatan && <span style={{ marginLeft:6 }}>📝 {pz.catatan}</span>}
                                   </td>
-                                  <td style={{ padding:"6px 10px", textAlign:"right" }}>
+                                  <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
+                                    {pz.status==="menunggu" && !isSalesRestricted && (
+                                      <>
+                                        <Btn variant="primary" size="sm" icon="✅" onClick={()=>{
+                                          updateRecord("penyesuaian", pz.id, { status:"disetujui", disetujuiOleh:"Manual" });
+                                          setTimeout(()=>recalcTokoStok(toko.id), 300);
+                                        }}>Setujui</Btn>
+                                        {" "}
+                                        <Btn variant="danger" size="sm" icon="❌" onClick={()=>{
+                                          if (!confirm("Tolak pengajuan penyesuaian stok ini?")) return;
+                                          updateRecord("penyesuaian", pz.id, { status:"ditolak", disetujuiOleh:"Manual" });
+                                        }}>Tolak</Btn>
+                                        {" "}
+                                      </>
+                                    )}
                                     <Btn variant="danger" size="sm" icon="🗑" onClick={()=>{
                                       if (!confirm("Hapus penyesuaian stok ini?")) return;
                                       deleteRecord("penyesuaian", pz.id);
@@ -7442,7 +7521,7 @@ function LoginPage({ onLoginGoogle, fbReady, error }) {
 
 // Tab yang boleh diakses oleh role Sales (terbatas: hanya operasional harian).
 // Admin & Manajer otomatis bisa mengakses SEMUA tab (lihat fungsi canAccessTab).
-const SALES_ALLOWED_TABS = ["dashboard", "kontrol", "rekap"];
+const SALES_ALLOWED_TABS = ["dashboard", "kontrol", "rekap", "toko"];
 
 const TABS = [
   { key:"dashboard",  label:"📈 Dashboard" },
@@ -8150,7 +8229,7 @@ export default function GWGSuperApp() {
         {activeTab==="dashboard" && <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="wilayah"   && canAccessTab("wilayah",  { isAdmin, isManajer }) && <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
         {activeTab==="rute"      && canAccessTab("rute",     { isAdmin, isManajer }) && <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="toko"      && canAccessTab("toko",     { isAdmin, isManajer }) && <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} />}
+        {activeTab==="toko"      && canAccessTab("toko",     { isAdmin, isManajer }) && <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} isSalesRestricted={!isManajer} />}
         {activeTab==="produk"    && canAccessTab("produk",   { isAdmin, isManajer }) && <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
         {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
         {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
