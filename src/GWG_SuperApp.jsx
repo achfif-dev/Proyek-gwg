@@ -4214,11 +4214,40 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const { toko } = tokoStatusModal;
     // Update status toko → Non-Aktif di master toko, sekaligus update stok saat penarikan
     const tokoUpdates = { status: "Non-Aktif" };
+
+    // ✅ Catat selisih stok (sebelum vs sesudah penarikan) sebagai Penyesuaian
+    // Stok otomatis — sebelumnya perubahan stok di sini langsung menimpa
+    // Master Toko tanpa jejak audit sama sekali, beda dengan cara lain
+    // (kontrol, penyesuaian manual) yang selalu punya riwayat. Kalau produk
+    // campuran (sebagian naik, sebagian turun), dipisah jadi 2 catatan biar
+    // arah (Tambah/Kurang) tetap benar per kelompok produk.
+    const today = new Date().toISOString().slice(0,10);
+    const naik = {}, turun = {};
+    let adaNaik = false, adaTurun = false;
     produkAktif.forEach(p => {
-      // Stok dikembalikan ke nilai yang diisikan di form (bisa 0 atau sisa stok)
-      tokoUpdates[`stok_${p.id}`] = Number(stokPenarikan[p.id] || 0);
+      const sebelum = Number(toko[`stok_${p.id}`]||0);
+      const sesudah = Number(stokPenarikan[p.id]||0);
+      const delta = sesudah - sebelum;
+      tokoUpdates[`stok_${p.id}`] = sesudah;
+      if (delta > 0) { naik[`jumlah_${p.id}`] = delta; adaNaik = true; }
+      else if (delta < 0) { turun[`jumlah_${p.id}`] = -delta; adaTurun = true; }
     });
     updateRecord("toko", toko.id, tokoUpdates);
+
+    const catatanOtomatis = `Otomatis tercatat dari penarikan stok saat toko "${toko.nama}" dinonaktifkan.`;
+    if (adaTurun) {
+      addRecord("penyesuaian", {
+        id: genUniqueId("PZ"), tokoId: toko.id, tanggal: today, jenis: "Tarik",
+        catatan: catatanOtomatis, dicatatOleh: "Sistem (Nonaktifkan Toko)", ...turun,
+      });
+    }
+    if (adaNaik) {
+      addRecord("penyesuaian", {
+        id: genUniqueId("PZ"), tokoId: toko.id, tanggal: today, jenis: "Tambah",
+        catatan: catatanOtomatis, dicatatOleh: "Sistem (Nonaktifkan Toko)", ...naik,
+      });
+    }
+
     setTokoStatusModal(null);
     setStokPenarikan({});
   }
@@ -6599,8 +6628,14 @@ function TabBagiHasil({ db, analytics, save }) {
     const totalBiaya = biayaOps + biayaBonus + biayaLogistik + biayaLain;
     const labaKotor = pendapatan - totalBiaya;
     const marginPct = Number(config.marginLaba)||70;
-    const labaBersihFinal = pendapatan * (marginPct/100);
-    const labaBersihSetelahBiaya = Math.max(labaKotor * (marginPct/100), 0);
+    // ✅ Laba Bersih sekarang dihitung dari Laba Kotor (Pendapatan − semua
+    // Biaya) dikali Margin%, BUKAN langsung dari Pendapatan. Sebelumnya,
+    // biaya yang diisi (Operasional/Bonus/Logistik/Lainnya) cuma tampil di
+    // baris "Laba Kotor" tapi tidak ikut mengurangi Laba Bersih yang benar-
+    // benar dibagi ke semua pihak — jadi mengisi biaya tidak berpengaruh
+    // sama sekali ke hasil bagi hasil. Sekarang biaya benar-benar mengurangi
+    // apa yang dibagi.
+    const labaBersihFinal = Math.max(labaKotor * (marginPct/100), 0);
 
     const pihakList = (config.pihak||[]).map(p => {
       const basis = p.basis === "laba" ? labaBersihFinal : pendapatan;
@@ -6611,7 +6646,7 @@ function TabBagiHasil({ db, analytics, save }) {
 
     return {
       pendapatan, biayaOps, biayaBonus, biayaLogistik, biayaLain, totalBiaya,
-      labaKotor, labaBersihFinal, labaBersihSetelahBiaya,
+      labaKotor, labaBersihFinal,
       pihakList, totalDibagi,
       marginPct,
     };
@@ -6675,7 +6710,7 @@ function TabBagiHasil({ db, analytics, save }) {
       { keterangan:"Laba Kotor", nilai: fmtRp(akuntansi.labaKotor) },
       { keterangan:"", nilai:"" },
       { keterangan:"=== LABA BERSIH ===", nilai:"" },
-      { keterangan:`Laba Bersih (${akuntansi.marginPct}% dari revenue)`, nilai: fmtRp(akuntansi.labaBersihFinal) },
+      { keterangan:`Laba Bersih (${akuntansi.marginPct}% dari Laba Kotor)`, nilai: fmtRp(akuntansi.labaBersihFinal) },
       { keterangan:"", nilai:"" },
       { keterangan:"=== DISTRIBUSI BAGI HASIL ===", nilai:"" },
       ...akuntansi.pihakList.map(p=>({
@@ -6771,7 +6806,7 @@ function TabBagiHasil({ db, analytics, save }) {
       {/* Ringkasan Kinerja Periode */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:10, marginBottom:16 }}>
         <StatCard label="Total Revenue" value={fmtRp(akuntansi.pendapatan)} icon="💵" color={T.green} sub={PERIODE_LABELS[periodeMode]} />
-        <StatCard label="Laba Bersih" value={fmtRp(akuntansi.labaBersihFinal)} icon="📈" color={T.teal} sub={`${akuntansi.marginPct}% dari revenue`} />
+        <StatCard label="Laba Bersih" value={fmtRp(akuntansi.labaBersihFinal)} icon="📈" color={T.teal} sub={`${akuntansi.marginPct}% dari Laba Kotor`} />
         <StatCard label="Total Biaya" value={fmtRp(akuntansi.totalBiaya)} icon="📉" color={T.red} sub="semua kategori" />
         <StatCard label="Produk Terjual" value={fmt(revPeriode.terjualTotal)+" pcs"} icon="🧴" color={T.purple} sub={`${revPeriode.kunjunganTotal} kunjungan`} />
         <StatCard label="Toko Dikunjungi" value={revPeriode.tokoUnik} icon="🏪" color={T.blue} sub="toko unik" />
