@@ -2990,6 +2990,37 @@ function sortByNama(arr, key="nama") {
   return [...(arr||[])].sort((a,b) => naturalCompare(a[key], b[key]));
 }
 
+// Hitung jumlah toko yang menjual masing-masing produk (toko.produkIds
+// mengandung kode produk tsb), dari sekumpulan toko tertentu — bisa toko
+// dalam 1 rute, dalam 1 wilayah, atau seluruh toko (total semua wilayah).
+// Hanya produk aktif yang dihitung.
+function hitungTokoPerProduk(tokoList, produkAktif) {
+  return (produkAktif||[]).map(p => ({
+    id: p.id,
+    nama: p.nama,
+    jumlah: (tokoList||[]).filter(t => (t.produkIds||[]).includes(p.id)).length,
+  }));
+}
+
+// Menampilkan ringkasan "Nama Produk (Kode): N toko" sebagai badge-badge
+// kecil — dipakai di Master Rute & Master Wilayah untuk menunjukkan sebaran
+// toko per produk tanpa perlu buka halaman lain. Produk dengan 0 toko
+// disembunyikan supaya ringkas.
+function ProdukBreakdownBadges({ breakdown }) {
+  const shown = (breakdown||[]).filter(b => b.jumlah > 0);
+  if (shown.length === 0) return <span style={{ color:T.gray400, fontSize:12 }}>—</span>;
+  return (
+    <div style={{ display:"flex", flexWrap:"wrap", gap:4 }}>
+      {shown.map(b => (
+        <span key={b.id} style={{ display:"inline-block", padding:"2px 8px", borderRadius:20,
+          background:T.blue+"14", color:T.blue, fontSize:11, fontWeight:600, whiteSpace:"nowrap" }}>
+          {b.nama} ({b.id}): {b.jumlah} toko
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────
 //  TAB WILAYAH
 // ─────────────────────────────────────────────
@@ -3060,15 +3091,32 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
     !filter.q || w.nama.toLowerCase().includes(filter.q.toLowerCase())
   ), [sorted, filter]);
 
-  const enriched = data.map(w => ({
-    ...w,
-    jumlahRute: (db.rute||[]).filter(r=>r.wilayahId===w.id).length,
-    jumlahToko: (db.toko||[]).filter(t=>{
+  // Produk aktif dipakai untuk menghitung sebaran "jumlah toko yang menjual
+  // masing-masing produk" per wilayah (mis. Roll On 70 toko, B35 20 toko).
+  const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
+
+  const enriched = data.map(w => {
+    const tokoWilayah = (db.toko||[]).filter(t=>{
       const rute=(db.rute||[]).find(r=>r.id===t.ruteId);
       return rute?.wilayahId===w.id;
-    }).length,
-    isDuplikat: dupGroups.some(g => g.some(x=>x.id===w.id)),
-  }));
+    });
+    return {
+      ...w,
+      jumlahRute: (db.rute||[]).filter(r=>r.wilayahId===w.id).length,
+      jumlahToko: tokoWilayah.length,
+      produkBreakdown: hitungTokoPerProduk(tokoWilayah, produkAktif),
+      isDuplikat: dupGroups.some(g => g.some(x=>x.id===w.id)),
+    };
+  });
+
+  // ✅ Total SEMUA WILAYAH: sebaran toko per produk dihitung dari SELURUH
+  // toko (bukan hanya yang lolos filter pencarian), supaya jadi rekap total
+  // yang stabil dan tidak berubah-ubah saat wilayah sedang difilter/dicari.
+  const totalSemuaWilayahBreakdown = useMemo(
+    () => hitungTokoPerProduk(db.toko||[], produkAktif),
+    [db.toko, produkAktif]
+  );
+  const totalTokoSemuaWilayah = (db.toko||[]).length;
 
   function openAdd() { setForm({ nama:"", deskripsi:"" }); setModal("add"); }
   function openEdit(row) { setForm({ ...row }); setModal("edit"); }
@@ -3098,6 +3146,7 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
     { key:"deskripsi", label:"Deskripsi" },
     { key:"jumlahRute",label:"Rute",       render: v=><Badge color={T.teal}>{v} rute</Badge> },
     { key:"jumlahToko",label:"Toko",       render: v=><Badge color={T.green}>{v} toko</Badge> },
+    { key:"produkBreakdown", label:"Toko per Produk", render: v=><ProdukBreakdownBadges breakdown={v} /> },
   ];
 
   return (
@@ -3125,6 +3174,12 @@ function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
           merapikannya secara otomatis — rute yang terhubung akan dipindah ke satu wilayah utama.
         </div>
       )}
+      <Card style={{ marginBottom:14 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.gray800, marginBottom:8 }}>
+          🧴 Total Toko per Produk — Semua Wilayah ({totalTokoSemuaWilayah} toko)
+        </div>
+        <ProdukBreakdownBadges breakdown={totalSemuaWilayahBreakdown} />
+      </Card>
       <FilterBar filters={[{ key:"q", label:"Cari Wilayah", value:filter.q }]}
         onChange={(k,v)=>setFilter(p=>({...p,[k]:v}))} onReset={()=>setFilter({q:""})} />
       <BulkActionBar
@@ -3174,11 +3229,19 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
     setSelectedIds([]);
   }
 
-  const enriched = useMemo(() => (db.rute||[]).map(r => ({
-    ...r,
-    wilayahNama: (db.wilayah||[]).find(w=>w.id===r.wilayahId)?.nama||"—",
-    jumlahToko: (db.toko||[]).filter(t=>t.ruteId===r.id).length,
-  })), [db]);
+  // Produk aktif dipakai untuk menghitung sebaran "jumlah toko yang menjual
+  // masing-masing produk" per rute (mis. Rute Bklu1: Roll On 70 toko, B35 20 toko).
+  const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
+
+  const enriched = useMemo(() => (db.rute||[]).map(r => {
+    const tokoRute = (db.toko||[]).filter(t=>t.ruteId===r.id);
+    return {
+      ...r,
+      wilayahNama: (db.wilayah||[]).find(w=>w.id===r.wilayahId)?.nama||"—",
+      jumlahToko: tokoRute.length,
+      produkBreakdown: hitungTokoPerProduk(tokoRute, produkAktif),
+    };
+  }), [db, produkAktif]);
 
   // Urutkan Master Rute berdasarkan Wilayah dahulu (abjad), lalu Nama Rute
   // (natural sort: angka di akhir nama diurutkan sebagai angka, jadi
@@ -3215,11 +3278,28 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
 
   const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
 
+  // ✅ Total per wilayah (mengikuti filter Wilayah yang aktif) dan total
+  // SEMUA WILAYAH — selalu dihitung dari SELURUH toko (bukan hanya rute yang
+  // lolos filter pencarian nama), supaya jadi rekap total yang stabil.
+  const wilayahTerpilihNama = filter.wilayahId ? (db.wilayah||[]).find(w=>w.id===filter.wilayahId)?.nama : null;
+  const totalWilayahBreakdown = useMemo(() => {
+    if (!filter.wilayahId) return null;
+    const ruteIdsWilayah = (db.rute||[]).filter(r=>r.wilayahId===filter.wilayahId).map(r=>r.id);
+    const tokoWilayah = (db.toko||[]).filter(t=>ruteIdsWilayah.includes(t.ruteId));
+    return { breakdown: hitungTokoPerProduk(tokoWilayah, produkAktif), totalToko: tokoWilayah.length };
+  }, [db.rute, db.toko, filter.wilayahId, produkAktif]);
+  const totalSemuaWilayahBreakdown = useMemo(
+    () => hitungTokoPerProduk(db.toko||[], produkAktif),
+    [db.toko, produkAktif]
+  );
+  const totalTokoSemuaWilayah = (db.toko||[]).length;
+
   const cols = [
     { key:"id",          label:"ID",         render:v=><Badge color={T.teal}>{v}</Badge> },
     { key:"nama",        label:"Nama Rute",  render:v=><b>{v}</b> },
     { key:"wilayahNama", label:"Wilayah",    render:v=><Badge color={T.green}>{v}</Badge> },
     { key:"jumlahToko",  label:"Toko",       render:v=><span style={{ fontWeight:700, color:T.blue }}>{v}</span> },
+    { key:"produkBreakdown", label:"Toko per Produk", render:v=><ProdukBreakdownBadges breakdown={v} /> },
     { key:"keterangan",  label:"Keterangan" },
   ];
 
@@ -3235,6 +3315,20 @@ function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
           <Btn onClick={openAdd} icon="＋">Tambah Rute</Btn>
         </div>
       </div>
+      <Card style={{ marginBottom:14 }}>
+        <div style={{ fontSize:13, fontWeight:700, color:T.gray800, marginBottom:8 }}>
+          🧴 Total Toko per Produk — Semua Wilayah ({totalTokoSemuaWilayah} toko)
+        </div>
+        <ProdukBreakdownBadges breakdown={totalSemuaWilayahBreakdown} />
+        {totalWilayahBreakdown && (
+          <>
+            <div style={{ fontSize:13, fontWeight:700, color:T.gray800, margin:"14px 0 8px" }}>
+              📍 Total Toko per Produk — Wilayah {wilayahTerpilihNama} ({totalWilayahBreakdown.totalToko} toko)
+            </div>
+            <ProdukBreakdownBadges breakdown={totalWilayahBreakdown.breakdown} />
+          </>
+        )}
+      </Card>
       <FilterBar filters={[
         { key:"q", label:"Cari Rute", value:filter.q },
         { key:"wilayahId", label:"Filter Wilayah", value:filter.wilayahId, options:wilayahOpts },
@@ -3389,7 +3483,25 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
     newDB.toko = db.toko.map(t => {
       if (t.id !== stokForm.tokoId) return t;
       const updates = {};
-      produkAktif.forEach(p => { updates[`stok_${p.id}`] = Number(stokForm.stok[p.id]||0); });
+      // ✅ Sinkron ceklis "Produk yang Dijual" (produkIds) dengan perubahan
+      // stok lewat "Update Stok Awal" ini — sebelumnya cuma stok yang berubah,
+      // ceklisnya dibiarkan apa adanya. Sekarang: produk yang diisi stok > 0
+      // otomatis dicentang (kalau belum), dan produk yang diisi 0 otomatis
+      // dihilangkan ceklisnya (kalau sebelumnya sudah tercentang) — sama
+      // seperti sinkronisasi di Kontrol Bulanan & Penyesuaian Stok.
+      const existingIds = t.produkIds || [];
+      const toAdd = [];
+      const toRemove = [];
+      produkAktif.forEach(p => {
+        const stokBaru = Number(stokForm.stok[p.id]||0);
+        updates[`stok_${p.id}`] = stokBaru;
+        const sudahAda = existingIds.includes(p.id);
+        if (stokBaru > 0 && !sudahAda) toAdd.push(p.id);
+        else if (stokBaru === 0 && sudahAda) toRemove.push(p.id);
+      });
+      if (toAdd.length > 0 || toRemove.length > 0) {
+        updates.produkIds = existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd);
+      }
       return { ...t, ...updates };
     });
     save(newDB);
