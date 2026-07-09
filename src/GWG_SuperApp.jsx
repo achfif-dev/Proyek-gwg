@@ -5309,8 +5309,18 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
       {/* Daftar Penjualan Luar Rute (tidak terikat toko/rute) */}
       {(() => {
+        // ✅ Ikut semua filter di toolbar atas, konsisten dengan tabel Kontrol
+        // Bulanan di atasnya (sebelumnya cuma ikut filter Bulan, jadi kalau
+        // Wilayah/Rute/Cari Toko diisi, daftar ini tetap menampilkan semua
+        // data tanpa terpengaruh).
         const luarList = (db.penjualanLuar||[])
-          .filter(pl => (!isSalesRestricted || pl.wilayahId===salesWilayahId) && (!filter.bulan || pl.tanggal?.startsWith(filter.bulan)))
+          .filter(pl =>
+            (!isSalesRestricted || pl.wilayahId===salesWilayahId) &&
+            (!filter.bulan || pl.tanggal?.startsWith(filter.bulan)) &&
+            (!filter.wilayahId || pl.wilayahId===filter.wilayahId) &&
+            (!filter.ruteId) && // penjualan luar rute tidak terikat rute manapun, jadi disembunyikan saat filter Rute spesifik dipilih
+            (!filter.q || pl.keterangan?.toLowerCase().includes(filter.q.toLowerCase()) || pl.dicatatOleh?.toLowerCase().includes(filter.q.toLowerCase()))
+          )
           .sort((a,b)=>(b.tanggal||"").localeCompare(a.tanggal||""));
         if (luarList.length===0) return null;
         const totalRevLuar = luarList.reduce((s,pl) => {
