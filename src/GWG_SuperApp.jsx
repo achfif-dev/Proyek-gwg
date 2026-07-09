@@ -4036,6 +4036,35 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     updateRecord("toko", tokoId, updates);
   }
 
+  // ✅ SINKRONISASI CEKLIS "Produk yang Dijual" ↔ Stok Kontrol Bulanan
+  // Sebelumnya ceklis produk di Master Toko cuma disinkron otomatis lewat
+  // fitur "Penyesuaian Stok" (Tambah), TIDAK lewat kontrol bulanan biasa.
+  // Sekarang disamakan:
+  //  - Stok Awal diisi > 0 untuk produk yang belum ada ceklisnya → otomatis
+  //    dicentang (produk baru dititip saat kunjungan).
+  //  - Produk ditandai eksplisit "🔻 Ditarik" di form kontrol (bukan sekadar
+  //    Stok Awal = 0, karena stok 0 juga bisa berarti "sementara habis, tetap
+  //    mau dijual bulan depan") → otomatis DIHILANGKAN ceklisnya.
+  // payload = data stok_${produkId}/ditarik_${produkId} dari entri kontrol
+  // yang baru saja disubmit (add atau edit).
+  function syncProdukIdsDariStokKontrol(tokoId, payload) {
+    const toko = (db.toko||[]).find(t => t.id === tokoId);
+    if (!toko) return;
+    const existingIds = toko.produkIds || [];
+    const toAdd = [];
+    const toRemove = [];
+    produkAktif.forEach(p => {
+      const stokBaru = Number(payload[`stok_${p.id}`] || 0);
+      const ditarik = !!payload[`ditarik_${p.id}`];
+      const sudahAda = existingIds.includes(p.id);
+      if (stokBaru > 0 && !sudahAda) toAdd.push(p.id);
+      else if (ditarik && sudahAda) toRemove.push(p.id);
+    });
+    if (toAdd.length === 0 && toRemove.length === 0) return;
+    const newIds = existingIds.filter(id => !toRemove.includes(id)).concat(toAdd);
+    updateRecord("toko", tokoId, { produkIds: newIds });
+  }
+
   // ✅ HITUNG ULANG SEMUA STOK — dipakai setelah rumus baseline diperbaiki
   // (Stok Awal dibawa apa adanya, bukan dikurangi Terjual/Bonus lagi), supaya
   // Master Toko yang sudah kadung dihitung pakai rumus lama langsung
@@ -4099,6 +4128,22 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           updateRecord("toko", toko.id, { produkIds: [...existingIds, ...produkBaruIds] });
         }
       }
+    } else if (pforn.jenis === "Tarik") {
+      // ✅ "Tarik Sebagian Produk" = aksi eksplisit menandai produk ditarik dari
+      // toko ini, jadi otomatis hilangkan ceklis "Produk yang Dijual".
+      // Sengaja TIDAK berlaku untuk jenis "Kurang", karena "Kurang" dipakai
+      // untuk penyesuaian kapasitas etalase biasa (mis. 24→12), produk tsb
+      // tetap mau dijual di toko itu meski jumlahnya berkurang.
+      const toko = (db.toko||[]).find(t=>t.id===pforn.tokoId);
+      if (toko) {
+        const existingIds = toko.produkIds||[];
+        const produkDitarikIds = produkAktif
+          .filter(p => Number(pforn[`jumlah_${p.id}`]||0) > 0 && existingIds.includes(p.id))
+          .map(p=>p.id);
+        if (produkDitarikIds.length > 0) {
+          updateRecord("toko", toko.id, { produkIds: existingIds.filter(id=>!produkDitarikIds.includes(id)) });
+        }
+      }
     }
 
     recalcTokoStok(pforn.tokoId, undefined, [...(db.penyesuaian||[]), newEntry]);
@@ -4155,6 +4200,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       initial[`stok_${p.id}`] = 0;
       initial[`terjual_${p.id}`] = 0;
       initial[`bonusInput_${p.id}`] = p.bonus||0;
+      initial[`ditarik_${p.id}`] = false;
     });
     setForm(initial);
     setModalFilter({ wilayahId: filter.wilayahId||"", ruteId: filter.ruteId||"" });
@@ -4166,6 +4212,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     // Pastikan bonusInput tersedia
     produkAktif.forEach(p => {
       if (initial[`bonusInput_${p.id}`] === undefined) initial[`bonusInput_${p.id}`] = p.bonus||0;
+      if (initial[`ditarik_${p.id}`] === undefined) initial[`ditarik_${p.id}`] = false;
     });
     setForm(initial);
     setModalFilter({ wilayahId: row.wilayahId||"", ruteId: row.ruteId||"" });
@@ -4198,9 +4245,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     // catatanStatus tetap disimpan apa adanya (boleh ada catatan meski ada penjualan)
     // Jika user tidak pilih status apapun → biarkan kosong (= Terjual normal)
     produkAktif.forEach(p => {
-      payload[`stok_${p.id}`] = Number(form[`stok_${p.id}`]||0);
+      const ditarik = !!form[`ditarik_${p.id}`];
+      // ✅ Kalau ditandai "Ditarik", paksa Stok Awal ke 0 apapun yang keisi di input
+      // (mencegah sales lupa mengosongkan angka stok saat menandai produk ditarik)
+      payload[`stok_${p.id}`] = ditarik ? 0 : Number(form[`stok_${p.id}`]||0);
       payload[`terjual_${p.id}`] = Number(form[`terjual_${p.id}`]||0);
       payload[`bonusInput_${p.id}`] = Number(form[`bonusInput_${p.id}`]||0);
+      payload[`ditarik_${p.id}`] = ditarik;
     });
     if (modal==="add") {
       // ⚠️ FIX BUG: ID kontrol dulu dihitung dari nomor urut bulan ini
@@ -4219,11 +4270,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       addRecord("kontrol", newEntry);
       // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update)
       recalcTokoStok(form.tokoId, [...(db.kontrol||[]), newEntry]);
+      // ✅ Sinkron ceklis "Produk yang Dijual": produk baru dititip saat kunjungan
+      // otomatis dicentang, produk yang stoknya diisi 0 (ditarik) otomatis dihilangkan.
+      syncProdukIdsDariStokKontrol(form.tokoId, payload);
     } else {
       updateRecord("kontrol", form.id, payload);
       // Sinkron stok master Toko: ganti entri lama dengan payload terbaru sebelum dihitung ulang
       const updatedList = (db.kontrol||[]).map(k => k.id===form.id ? { ...k, ...payload } : k);
       recalcTokoStok(form.tokoId, updatedList);
+      syncProdukIdsDariStokKontrol(form.tokoId, payload);
     }
     setModal(null);
   }
@@ -5357,19 +5412,32 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
               }).map(p => {
                 const terjual = Number(form[`terjual_${p.id}`]||0);
                 const bonusPcs = Number(form[`bonusInput_${p.id}`]||0);
+                const ditarik = !!form[`ditarik_${p.id}`];
                 return (
-                  <div key={p.id} style={{ background:terjual>0?T.greenLt:T.gray50, borderRadius:10,
-                    padding:"12px", border:`1.5px solid ${terjual>0?T.green+"44":T.gray200}`, transition:"all .2s" }}>
+                  <div key={p.id} style={{ background:ditarik?T.redLt:(terjual>0?T.greenLt:T.gray50), borderRadius:10,
+                    padding:"12px", border:`1.5px solid ${ditarik?T.red:(terjual>0?T.green+"44":T.gray200)}`, transition:"all .2s" }}>
                     <div style={{ fontSize:12, fontWeight:800, color:T.gray800, marginBottom:10 }}>
                       {p.nama}
-                      {terjual>0 && <span style={{ marginLeft:6, fontSize:10, background:T.green, color:"#fff", borderRadius:99, padding:"1px 6px" }}>✓ Laku</span>}
+                      {terjual>0 && !ditarik && <span style={{ marginLeft:6, fontSize:10, background:T.green, color:"#fff", borderRadius:99, padding:"1px 6px" }}>✓ Laku</span>}
+                      {ditarik && <span style={{ marginLeft:6, fontSize:10, background:T.red, color:"#fff", borderRadius:99, padding:"1px 6px" }}>🔻 Ditarik</span>}
                     </div>
+                    <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", marginBottom:10,
+                      padding:"6px 8px", borderRadius:7, background:ditarik?T.red+"22":T.gray100 }}>
+                      <input type="checkbox" checked={ditarik}
+                        onChange={e=>{
+                          const val = e.target.checked;
+                          f(`ditarik_${p.id}`, val);
+                          if (val) f(`stok_${p.id}`, 0); // Ditarik → Stok Awal otomatis 0
+                        }} />
+                      <span style={{ fontSize:11, fontWeight:700, color:ditarik?T.red:T.gray600 }}>🔻 Produk ditarik dari toko ini</span>
+                    </label>
                     <div style={{ marginBottom:8 }}>
                       <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Stok Awal</div>
-                      <input type="number" value={form[`stok_${p.id}`]||0}
+                      <input type="number" value={form[`stok_${p.id}`]||0} disabled={ditarik}
                         onChange={e=>f(`stok_${p.id}`,e.target.value)} min={0}
                         style={{ width:"100%", padding:"6px 10px", border:`1.5px solid ${T.gray200}`,
-                          borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                          borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box",
+                          background:ditarik?T.gray100:T.white, opacity:ditarik?0.6:1 }} />
                     </div>
                     <div style={{ marginBottom:8 }}>
                       <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Terjual</div>
@@ -5747,7 +5815,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   // berikutnya (tidak pas batas kalender), supaya progres 1 wilayah tetap
   // bisa dipantau utuh dari rute pertama sampai rute terakhir dalam 1
   // putaran, bukan terpotong batas bulan.
-  const [filterSiklusWilayah, setFilterSiklusWilayah] = useState(salesWilayahId||"");
+  const [filterSiklusWilayahs, setFilterSiklusWilayahs] = useState(salesWilayahId?[salesWilayahId]:[]);
   const [filterSiklusStart, setFilterSiklusStart] = useState("");
   const [filterSiklusEnd, setFilterSiklusEnd] = useState("");
 
@@ -5779,8 +5847,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   // yang sama). Kalau jeda lebih dari itu, dianggap sudah siklus baru.
   const SIKLUS_GAP_DAYS = 10;
   const siklusAutoRange = useMemo(() => {
-    if (!filterSiklusWilayah) return null;
-    const dates = [...new Set(enrichKontrol.filter(k=>k.wilayahId===filterSiklusWilayah).map(k=>k.tanggal))].sort();
+    if (!filterSiklusWilayahs.length) return null;
+    const dates = [...new Set(enrichKontrol.filter(k=>filterSiklusWilayahs.includes(k.wilayahId)).map(k=>k.tanggal))].sort();
     if (!dates.length) return null;
     let end = dates[dates.length-1];
     let start = end;
@@ -5790,7 +5858,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       start = dates[i];
     }
     return { start, end };
-  }, [enrichKontrol, filterSiklusWilayah]);
+  }, [enrichKontrol, filterSiklusWilayahs]);
 
   // Auto-isi tanggal mulai/selesai begitu wilayah dipilih/diganti — tetap
   // bisa digeser manual sesudahnya lewat input tanggal di filter panel.
@@ -5800,7 +5868,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       setFilterSiklusEnd(siklusAutoRange.end);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterSiklusWilayah]);
+  }, [filterSiklusWilayahs.join(",")]);
 
   // (Urutan alami rute BKLU1..BKLU14 dsb sekarang pakai naturalCompare()
   // yang sudah tersedia secara global — konsisten dengan urutan di Master
@@ -5817,6 +5885,17 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     return res;
   }
 
+  // ✅ HELPER: hitung jumlah toko "Toko Tutup" & "Tidak Terjual" dari status
+  // kunjungan (catatanStatus) — dipakai di semua mode rekap supaya setiap
+  // hasil ekspor (Excel/PDF/JPG) ikut menampilkan keterangan ini, bukan cuma
+  // angka Revenue/Terjual saja.
+  function hitungStatusKunjungan(rows) {
+    return {
+      jumlahTutup: rows.filter(k => k.catatanStatus === "tutup").length,
+      jumlahTidakTerjual: rows.filter(k => k.catatanStatus === "terjual").length,
+    };
+  }
+
   // ─── HELPER: bikin baris "Penjualan Luar Rute" (dipakai di semua mode
   //     rekap — harian/bulanan/kuartal/tahunan — supaya penjualan yang
   //     tidak terikat rute/wilayah tetap kelihatan rinciannya, bukan cuma
@@ -5829,6 +5908,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       jumlahKunjungan: luarRows.length, jumlahToko: luarRows.length,
       totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
       totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
+      jumlahTutup: 0, jumlahTidakTerjual: 0, // penjualan luar rute tidak punya status kunjungan
       ...sp, detail: luarRows, ...extra,
     };
   }
@@ -5855,6 +5935,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
         ...sp,
+        ...hitungStatusKunjungan(g.rows),
         detail: g.rows,
       };
     });
@@ -5883,6 +5964,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           jumlahToko: luarRows.length,
           totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
           totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
+          jumlahTutup: 0, jumlahTidakTerjual: 0,
           ...sp,
           detail: luarRows,
         });
@@ -5892,10 +5974,15 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   }, [enrichKontrol, filterTanggal, filterWilayah, filterRute, produkAktif, analytics.penjualanLuar]);
 
   // ─── SIKLUS PER WILAYAH (rentang bebas, dari rute pertama s/d terakhir) ───
+  // ✅ Sekarang bisa MENGGABUNGKAN siklus dari beberapa wilayah sekaligus
+  // (filterSiklusWilayahs = array id wilayah, bukan cuma 1). Dikelompokkan
+  // tetap per rute seperti biasa — karena tiap baris hasil sudah punya
+  // kolom Wilayah sendiri, rute dari wilayah berbeda otomatis kebedakan
+  // tanpa perlu grouping tambahan per wilayah.
   const rekapSiklus = useMemo(() => {
-    if (!filterSiklusWilayah || !filterSiklusStart || !filterSiklusEnd) return [];
+    if (!filterSiklusWilayahs.length || !filterSiklusStart || !filterSiklusEnd) return [];
     const rows = enrichKontrol.filter(k =>
-      k.wilayahId === filterSiklusWilayah &&
+      filterSiklusWilayahs.includes(k.wilayahId) &&
       k.tanggal >= filterSiklusStart && k.tanggal <= filterSiklusEnd
     );
     const byRute = {};
@@ -5912,24 +5999,40 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
         ...sp,
+        ...hitungStatusKunjungan(g.rows),
         detail: g.rows,
       };
     });
-    hasil.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
+    // Urutkan per wilayah dulu (kalau gabungan >1 wilayah), baru per rute,
+    // supaya rute-rute 1 wilayah tetap mengelompok rapi, bukan tercampur.
+    hasil.sort((a,b)=>naturalCompare(a.wilayahNama, b.wilayahNama) || naturalCompare(a.ruteNama, b.ruteNama));
 
-    // ✅ Ikutkan Penjualan Luar Rute milik wilayah yang sama & jatuh di
-    // rentang tanggal siklus ini — sales tetap bertanggung jawab atas semua
+    // ✅ Ikutkan Penjualan Luar Rute milik wilayah-wilayah yang dipilih & jatuh
+    // di rentang tanggal siklus ini — sales tetap bertanggung jawab atas semua
     // penjualan (sesuai rute maupun di luar rute) begitu siklus wilayahnya
     // selesai, jadi rekap siklus harus menampung keduanya, bukan cuma yang
-    // sesuai rute.
+    // sesuai rute. Kalau lebih dari 1 wilayah digabung, dipisah per wilayah
+    // supaya rinciannya tetap jelas asalnya dari wilayah mana.
     const luarRows = (analytics.penjualanLuar||[]).filter(pl =>
-      pl.wilayahId === filterSiklusWilayah &&
+      filterSiklusWilayahs.includes(pl.wilayahId) &&
       pl.tanggal >= filterSiklusStart && pl.tanggal <= filterSiklusEnd
     );
-    if (luarRows.length) hasil.push(luarRuteRow(luarRows));
+    if (luarRows.length) {
+      if (filterSiklusWilayahs.length > 1) {
+        const byWilLuar = {};
+        luarRows.forEach(pl => {
+          const key = pl.wilayahId || "NOWIL";
+          if (!byWilLuar[key]) byWilLuar[key] = [];
+          byWilLuar[key].push(pl);
+        });
+        Object.values(byWilLuar).forEach(rowsW => hasil.push(luarRuteRow(rowsW)));
+      } else {
+        hasil.push(luarRuteRow(luarRows));
+      }
+    }
 
     return hasil;
-  }, [enrichKontrol, filterSiklusWilayah, filterSiklusStart, filterSiklusEnd, produkAktif, analytics.penjualanLuar]);
+  }, [enrichKontrol, filterSiklusWilayahs, filterSiklusStart, filterSiklusEnd, produkAktif, analytics.penjualanLuar]);
 
   // ─── BULANAN PER WILAYAH ───
   const rekapBulanan = useMemo(() => {
@@ -5947,7 +6050,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       });
       const result = Object.values(byRute).map(g => {
         const sp = sumProduk(g.rows);
-        return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
+        return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
       });
       result.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
       // ✅ Ikutkan Penjualan Luar Rute milik wilayah yang sama di bulan ini —
@@ -5965,7 +6068,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       });
       const result = Object.values(byWil).map(g => {
         const sp = sumProduk(g.rows);
-        return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
+        return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
       });
       const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(filterBulan));
       if (luarRows.length) result.push(luarRuteRow(luarRows));
@@ -5996,7 +6099,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         });
         const bulanRows = Object.values(byRute).map(g => {
           const sp = sumProduk(g.rows);
-          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
+          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
         });
         bulanRows.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
         result.push(...bulanRows);
@@ -6018,7 +6121,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         });
         Object.values(byWil).forEach(g => {
           const sp = sumProduk(g.rows);
-          result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp });
+          result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) });
         });
         const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(`${filterTahun}-${m}`));
         if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
@@ -6048,7 +6151,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         });
         const bulanRows = Object.values(byRute).map(g => {
           const sp = sumProduk(g.rows);
-          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp };
+          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
         });
         bulanRows.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
         result.push(...bulanRows);
@@ -6070,7 +6173,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         });
         Object.values(byWil).forEach(g => {
           const sp = sumProduk(g.rows);
-          result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp });
+          result.push({ ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) });
         });
         if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
       });
@@ -6151,6 +6254,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"ruteNama",       label:"Rute",         render:v=><b>{v}</b> },
     { key:"wilayahNama",    label:"Wilayah",      render:v=><Badge color={T.green}>{v}</Badge> },
     { key:"jumlahToko",     label:"Jml Toko",     render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
+    { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -6158,6 +6263,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   const colsBulananWil = [
     { key:"wilayahNama",    label:"Wilayah",      render:v=><b>{v||"—"}</b> },
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
+    { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -6166,6 +6273,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"ruteNama",       label:"Rute",         render:v=><b>{v}</b> },
     { key:"wilayahNama",    label:"Wilayah",      render:v=><Badge color={T.green}>{v}</Badge> },
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
+    { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -6174,6 +6283,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"bulan",          label:"Bulan",        render:v=><Badge color={T.blue}>{v}</Badge> },
     { key:"wilayahNama",    label:"Wilayah",      render:v=><b>{v||"—"}</b> },
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.teal }}>{v}</span> },
+    { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -6183,6 +6294,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"ruteNama",       label:"Rute",         render:v=><b>{v}</b> },
     { key:"wilayahNama",    label:"Wilayah",      render:v=><Badge color={T.green}>{v}</Badge> },
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.teal }}>{v}</span> },
+    { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -6224,11 +6337,12 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   } else if (mode==="siklus") {
     activeData = rekapSiklus;
     activeCols = colsHarian;
-    const wilNama = (db.wilayah||[]).find(w=>w.id===filterSiklusWilayah)?.nama || "";
-    activeTitle = filterSiklusWilayah
-      ? `Siklus Kontrol ${wilNama} (${filterSiklusStart||"?"} s/d ${filterSiklusEnd||"?"})`
+    const wilNamaList = filterSiklusWilayahs.map(id => (db.wilayah||[]).find(w=>w.id===id)?.nama || id);
+    const wilNamaGabungan = wilNamaList.join(", ");
+    activeTitle = filterSiklusWilayahs.length
+      ? `Siklus Kontrol ${filterSiklusWilayahs.length>1 ? "Gabungan: "+wilNamaGabungan : wilNamaGabungan} (${filterSiklusStart||"?"} s/d ${filterSiklusEnd||"?"})`
       : "Siklus Kontrol — pilih wilayah dulu";
-    activeFilename = `siklus_${filterSiklusWilayah||"wilayah"}_${filterSiklusStart||""}_${filterSiklusEnd||""}`;
+    activeFilename = `siklus_${filterSiklusWilayahs.join("-")||"wilayah"}_${filterSiklusStart||""}_${filterSiklusEnd||""}`;
   } else {
     activeData = rekapTahunan;
     activeCols = filterWilayah ? colsKuartalRute : colsKuartalWil;
@@ -6240,6 +6354,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   const totalRevAll = activeData.reduce((s,r)=>s+r.totalRev,0);
   const totalKunjungan = activeData.reduce((s,r)=>s+(r.jumlahToko||r.jumlahKunjungan||0),0);
   const totalBonusAll = activeData.reduce((s,r)=>s+(r.totalBonus||0),0);
+  const totalTutupAll = activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
+  const totalTidakTerjualAll = activeData.reduce((s,r)=>s+(r.jumlahTidakTerjual||0),0);
 
   // ─── RENDER HARIAN DETAIL (per toko dalam rute) ───
   function HarianDetail() {
@@ -6343,6 +6459,13 @@ function TabRekap({ db, analytics, salesWilayahId }) {
               <div style={{ textAlign:"right" }}>
                 <div style={{ fontSize:20, fontWeight:800, color:T.green }}>{fmtRp(totalRevAll)}</div>
                 <div style={{ fontSize:13, color:T.gold }}>Bonus: {fmt(totalBonusAll)} pcs · {totalKunjungan} toko</div>
+                {(totalTutupAll>0 || totalTidakTerjualAll>0) && (
+                  <div style={{ fontSize:12, color:T.gray500, marginTop:2 }}>
+                    {totalTutupAll>0 && <span>🔵 {totalTutupAll} toko tutup</span>}
+                    {totalTutupAll>0 && totalTidakTerjualAll>0 && <span> · </span>}
+                    {totalTidakTerjualAll>0 && <span>🟡 {totalTidakTerjualAll} tidak terjual</span>}
+                  </div>
+                )}
               </div>
             </div>
           </Card>
@@ -6393,6 +6516,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
               bulan: "",
               jumlahToko: totalKunjungan,
               jumlahKunjungan: totalKunjungan,
+              jumlahTutup: totalTutupAll,
+              jumlahTidakTerjual: totalTidakTerjualAll,
               totalRevFmt: fmtRp(totalRevAll),
               totalBonus: totalBonusAll,
               ...produkAktif.reduce((acc, p) => {
@@ -6409,6 +6534,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
             { wilayahNama:"Total Revenue",             ruteNama:fmtRp(totalRevAll),         totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Total Bonus (pcs)",         ruteNama:String(totalBonusAll),      totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Jumlah Kunjungan/Toko",    ruteNama:String(totalKunjungan),     totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Toko Tutup",                ruteNama:String(totalTutupAll),       totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Toko Tidak Terjual",        ruteNama:String(totalTidakTerjualAll),totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Jumlah Baris Data",         ruteNama:String(activeData.length),  totalRevFmt:"", totalBonus:"" },
           ];
           return (
@@ -6457,7 +6584,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           </div>
         )}
 
-        {/* Filter Siklus per Wilayah: pilih wilayah + rentang tanggal bebas
+        {/* Filter Siklus per Wilayah: bisa pilih LEBIH DARI 1 wilayah untuk
+            digabung jadi satu rekap siklus + rentang tanggal bebas
             (auto-terdeteksi dari siklus terakhir, tapi bisa digeser manual) */}
         {mode==="siklus" && (
           <>
@@ -6467,13 +6595,25 @@ function TabRekap({ db, analytics, salesWilayahId }) {
                 🔒 Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
               </div>
             ) : (
-              <div style={{ minWidth:160, flex:1 }}>
-                <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Wilayah</div>
-                <select value={filterSiklusWilayah} onChange={e=>setFilterSiklusWilayah(e.target.value)}
-                  style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
-                  <option value="">— Pilih Wilayah —</option>
-                  {wilayahOpts.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
+              <div style={{ minWidth:220, flex:2 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>
+                  Wilayah {filterSiklusWilayahs.length>1 && <span style={{ color:T.teal }}>({filterSiklusWilayahs.length} digabung)</span>}
+                </div>
+                <div style={{ display:"flex", flexWrap:"wrap", gap:6 }}>
+                  {wilayahOpts.map(o => {
+                    const active = filterSiklusWilayahs.includes(o.value);
+                    return (
+                      <button key={o.value} type="button"
+                        onClick={() => setFilterSiklusWilayahs(prev =>
+                          active ? prev.filter(id=>id!==o.value) : [...prev, o.value])}
+                        style={{ padding:"6px 12px", borderRadius:99, border:`1.5px solid ${active?T.teal:T.gray200}`,
+                          background:active?T.tealLt:T.white, color:active?T.teal:T.gray600,
+                          fontSize:12, fontWeight:700, cursor:"pointer" }}>
+                        {active?"✓ ":""}{o.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             )}
             <div style={{ minWidth:150 }}>
@@ -6486,13 +6626,14 @@ function TabRekap({ db, analytics, salesWilayahId }) {
               <input type="date" value={filterSiklusEnd} onChange={e=>setFilterSiklusEnd(e.target.value)}
                 style={{ padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }} />
             </div>
-            {filterSiklusWilayah && (
+            {filterSiklusWilayahs.length>0 && (
               <Btn variant="secondary" size="sm" onClick={() => {
                 if (siklusAutoRange) { setFilterSiklusStart(siklusAutoRange.start); setFilterSiklusEnd(siklusAutoRange.end); }
               }}>🔄 Deteksi Ulang Otomatis</Btn>
             )}
           </>
         )}
+
 
         {/* Filter tanggal (harian) */}
         {mode==="harian" && (
