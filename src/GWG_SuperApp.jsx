@@ -4061,6 +4061,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   function submitPenyesuaian() {
     const pforn = penyesuaianForm;
     if (!pforn?.tokoId || !pforn?.tanggal) return alert("Toko & Tanggal wajib diisi");
+    if (isSalesRestricted) {
+      const tokoObj = (db.toko||[]).find(t=>t.id===pforn.tokoId);
+      const ruteObj = tokoObj ? (db.rute||[]).find(r=>r.id===tokoObj.ruteId) : null;
+      if (ruteObj?.wilayahId !== salesWilayahId) {
+        return alert("Sebagai Sales, kamu hanya boleh mengajukan penyesuaian stok untuk toko di wilayahmu sendiri.");
+      }
+    }
     const adaJumlah = produkAktif.some(p => Number(pforn[`jumlah_${p.id}`]||0) > 0);
     if (!adaJumlah) return alert("Isi minimal 1 jumlah produk yang disesuaikan");
     const payload = { ...pforn };
@@ -4116,6 +4123,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const lforn = luarRuteForm;
     if (!lforn?.tanggal) return alert("Tanggal wajib diisi");
     if (!lforn?.wilayahId) return alert("Wilayah wajib diisi — penjualan luar rute tetap menjadi tanggung jawab sales di wilayah tugasnya");
+    if (isSalesRestricted && lforn.wilayahId !== salesWilayahId) {
+      return alert("Sebagai Sales, kamu hanya boleh mencatat penjualan luar rute untuk wilayahmu sendiri.");
+    }
     const adaTerjualLuar = produkAktif.some(p => Number(lforn[`terjual_${p.id}`]||0) > 0);
     if (!adaTerjualLuar) return alert("Isi minimal 1 jumlah produk yang terjual");
     const payload = { ...lforn };
@@ -4230,11 +4240,14 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   function submitTambahToko() {
     const { nama, ruteId, status, catatan } = tambahTokoForm;
     if (!nama || !ruteId) return alert("Nama & Rute wajib diisi");
+    const ruteObj = (db.rute||[]).find(r=>r.id===ruteId);
+    if (isSalesRestricted && ruteObj?.wilayahId !== salesWilayahId) {
+      return alert("Sebagai Sales, kamu hanya boleh menambahkan toko di wilayahmu sendiri.");
+    }
     const isDup = (db.toko||[]).some(t =>
       t.nama.toLowerCase().trim() === nama.toLowerCase().trim() && t.ruteId === ruteId
     );
     if (isDup) return alert(`Toko "${nama}" sudah terdaftar di rute ini.`);
-    const ruteObj = (db.rute||[]).find(r=>r.id===ruteId);
     const prefix = ruteObj ? "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-" : "GW-XXX-";
     const newId = genId("T", db.toko);
     const counter = newId.replace("T","");
@@ -4355,10 +4368,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
   // Daftar toko untuk dropdown Penyesuaian Stok (tidak terikat filter wilayah/rute modal kontrol)
   const allTokoOpts = useMemo(() => {
-    return (db.toko||[]).filter(t => t.status === "Aktif" || t.status === "Baru").map(t => ({
-      value:t.id, label: `${t.nama}${t.kode?` (${t.kode})`:""}`
-    }));
-  }, [db.toko]);
+    return (db.toko||[])
+      .filter(t => t.status === "Aktif" || t.status === "Baru")
+      .filter(t => {
+        if (!isSalesRestricted) return true;
+        const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+        return rute?.wilayahId === salesWilayahId; // Sales cuma boleh pilih toko wilayahnya sendiri
+      })
+      .map(t => ({ value:t.id, label: `${t.nama}${t.kode?` (${t.kode})`:""}` }));
+  }, [db.toko, db.rute, isSalesRestricted, salesWilayahId]);
 
   // Import Kontrol Bulanan dari Excel
   function importKontrolFromRows(rows) {
@@ -4739,7 +4757,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
       {/* Modal Tambah Toko Cepat */}
       {tambahTokoModal && (() => {
-        const ruteOptsForToko = [...(db.rute||[])].sort((a,b) => {
+        const ruteOptsForToko = [...(db.rute||[])]
+          .filter(r => !isSalesRestricted || r.wilayahId===salesWilayahId) // Sales cuma boleh pilih rute wilayahnya sendiri
+          .sort((a,b) => {
           const wA = (db.wilayah||[]).find(w=>w.id===a.wilayahId)?.nama||"";
           const wB = (db.wilayah||[]).find(w=>w.id===b.wilayahId)?.nama||"";
           const wCompare = wA.localeCompare(wB, "id", { sensitivity:"base" });
@@ -4846,8 +4866,8 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           </div>
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
             <Input label="Wilayah" value={luarRuteForm.wilayahId||""} onChange={v=>lf("wilayahId",v)}
-              options={wilayahOpts} required placeholder="Pilih wilayah..."
-              hint="Wilayah tugas sales — penjualan ini akan ikut masuk ke Rekap Siklus wilayah ini" />
+              options={wilayahOpts} required placeholder="Pilih wilayah..." disabled={isSalesRestricted}
+              hint={isSalesRestricted ? "Terkunci ke wilayah tugasmu" : "Wilayah tugas sales — penjualan ini akan ikut masuk ke Rekap Siklus wilayah ini"} />
             <Input label="Tanggal" value={luarRuteForm.tanggal} onChange={v=>lf("tanggal",v)} type="date" required />
           </div>
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
@@ -5187,7 +5207,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       {/* Daftar Penjualan Luar Rute (tidak terikat toko/rute) */}
       {(() => {
         const luarList = (db.penjualanLuar||[])
-          .filter(pl => !filter.bulan || pl.tanggal?.startsWith(filter.bulan))
+          .filter(pl => (!isSalesRestricted || pl.wilayahId===salesWilayahId) && (!filter.bulan || pl.tanggal?.startsWith(filter.bulan)))
           .sort((a,b)=>(b.tanggal||"").localeCompare(a.tanggal||""));
         if (luarList.length===0) return null;
         const totalRevLuar = luarList.reduce((s,pl) => {
@@ -5499,6 +5519,19 @@ function Dashboard({ db, analytics, salesWilayahId }) {
         return rute?.wilayahId === salesWilayahId;
       }).length
     : analytics.tokoAktif;
+  // ✅ Total toko & jumlah rute juga di-scope ke wilayah Sales — sebelumnya
+  // masih menampilkan angka GLOBAL (semua wilayah) meski pembilangnya
+  // (toko aktif) sudah benar di-scope, sehingga rasio yang tampil (mis.
+  // "1 dari 3815") jadi tidak konsisten/membingungkan untuk Sales.
+  const tokoTotalScoped = isSalesRestricted
+    ? (db.toko||[]).filter(t => {
+        const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+        return rute?.wilayahId === salesWilayahId;
+      }).length
+    : (db.toko||[]).length;
+  const ruteTotalScoped = isSalesRestricted
+    ? (db.rute||[]).filter(r=>r.wilayahId===salesWilayahId).length
+    : (db.rute||[]).length;
   const maxRev = Math.max(...perWilayah.map(w=>w.rev),1);
 
   // ✅ Ekspor Dashboard — tiga kolom (Kategori, Metrik, Nilai) agar lebih rapi & terkelompok
@@ -5509,9 +5542,9 @@ function Dashboard({ db, analytics, salesWilayahId }) {
     { kategori:"",                  metrik:"Laba Bersih Est. (70%)", nilai:fmtRp(labaBersih) },
     { kategori:"",                  metrik:"",                       nilai:"" },
     // ── Master Data ──
-    { kategori:"🏪 MASTER DATA",   metrik:"Toko Aktif",             nilai:`${tokoAktif} dari ${(db.toko||[]).length}` },
-    { kategori:"",                  metrik:"Total Wilayah",          nilai:(db.wilayah||[]).length },
-    { kategori:"",                  metrik:"Total Rute",             nilai:(db.rute||[]).length },
+    { kategori:"🏪 MASTER DATA",   metrik:"Toko Aktif",             nilai:`${tokoAktif} dari ${tokoTotalScoped}` },
+    { kategori:"",                  metrik:"Total Wilayah",          nilai:isSalesRestricted ? 1 : (db.wilayah||[]).length },
+    { kategori:"",                  metrik:"Total Rute",             nilai:ruteTotalScoped },
     { kategori:"",                  metrik:"Total Produk Aktif",     nilai:(db.produk||[]).filter(p=>p.aktif!==false).length },
     { kategori:"",                  metrik:"Pengguna Terdaftar",     nilai:(db.pengguna||[]).length },
     { kategori:"",                  metrik:"",                       nilai:"" },
@@ -5546,8 +5579,8 @@ function Dashboard({ db, analytics, salesWilayahId }) {
       <div style={{ fontSize:12, color:T.gray400, marginBottom:20 }}>Data real-time dari semua master data & kontrol bulanan</div>
 
       <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
-        <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${(db.toko||[]).length} total`} icon="🏪" color={T.green} />
-        <StatCard label="Total Wilayah"   value={(db.wilayah||[]).length} sub={`${(db.rute||[]).length} rute`}   icon="📍" color={T.teal} />
+        <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon="🏪" color={T.green} />
+        <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon="📍" color={T.teal} />
         <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub="bulan ini"                           icon="💰" color={T.gold} />
         <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub="70% margin"                          icon="📊" color={T.green} />
         <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon="🧴" color={T.purple} />
@@ -5628,30 +5661,38 @@ function Dashboard({ db, analytics, salesWilayahId }) {
           </table>
         </Card>
 
-        <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:4 }}>💰 Simulasi Bagi Hasil</div>
-          <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>Asumsi margin laba bersih 70% dari pendapatan</div>
-          {bagiHasil.map((b,i)=>(
-            <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
-              padding:"10px 12px", borderRadius:8, marginBottom:8, background:i===0?T.greenLt:T.gray50 }}>
-              <div>
-                <div style={{ fontSize:13, fontWeight:600, color:T.gray800 }}>{b.nama}</div>
-                <div style={{ fontSize:11, color:T.gray400 }}>{b.tipe==="Laba"?"Dari laba bersih":"Dari pendapatan"} · {(b.pct*100).toFixed(0)}%</div>
+        {!isSalesRestricted && (
+          <Card>
+            <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:4 }}>💰 Simulasi Bagi Hasil</div>
+            <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>Asumsi margin laba bersih 70% dari pendapatan</div>
+            {bagiHasil.map((b,i)=>(
+              <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                padding:"10px 12px", borderRadius:8, marginBottom:8, background:i===0?T.greenLt:T.gray50 }}>
+                <div>
+                  <div style={{ fontSize:13, fontWeight:600, color:T.gray800 }}>{b.nama}</div>
+                  <div style={{ fontSize:11, color:T.gray400 }}>{b.tipe==="Laba"?"Dari laba bersih":"Dari pendapatan"} · {(b.pct*100).toFixed(0)}%</div>
+                </div>
+                <div style={{ fontSize:15, fontWeight:800, color:i===0?T.green:T.gray800 }}>{fmtRp(b.nominal)}</div>
               </div>
-              <div style={{ fontSize:15, fontWeight:800, color:i===0?T.green:T.gray800 }}>{fmtRp(b.nominal)}</div>
+            ))}
+            <div style={{ borderTop:`1px solid ${T.gray200}`, paddingTop:10, marginTop:4, display:"flex", justifyContent:"space-between" }}>
+              <span style={{ fontSize:12, color:T.gray600, fontWeight:600 }}>Laba Bersih Estimasi</span>
+              <span style={{ fontSize:14, fontWeight:800, color:T.gold }}>{fmtRp(labaBersih)}</span>
             </div>
-          ))}
-          <div style={{ borderTop:`1px solid ${T.gray200}`, paddingTop:10, marginTop:4, display:"flex", justifyContent:"space-between" }}>
-            <span style={{ fontSize:12, color:T.gray600, fontWeight:600 }}>Laba Bersih Estimasi</span>
-            <span style={{ fontSize:14, fontWeight:800, color:T.gold }}>{fmtRp(labaBersih)}</span>
-          </div>
-        </Card>
+          </Card>
+        )}
       </div>
 
       {/* Kontrol Terbaru */}
       <Card>
         <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>📋 Data Kontrol Terbaru</div>
-        {analytics.kontrol.length===0 ? (
+        {(() => {
+          // ✅ Di-scope ke wilayah Sales — sebelumnya menampilkan kontrol
+          // terbaru dari SEMUA wilayah, bukan cuma wilayah Sales sendiri.
+          const kontrolScoped = isSalesRestricted
+            ? analytics.kontrol.filter(k=>k.wilayahId===salesWilayahId)
+            : analytics.kontrol;
+          return kontrolScoped.length===0 ? (
           <div style={{ textAlign:"center", color:T.gray400, padding:20 }}>Belum ada data kontrol</div>
         ) : (
           <div style={{ overflowX:"auto" }}>
@@ -5664,7 +5705,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
                 </tr>
               </thead>
               <tbody>
-                {analytics.kontrol.slice().reverse().slice(0,8).map((k,i)=>{
+                {kontrolScoped.slice().reverse().slice(0,8).map((k,i)=>{
                   const cs = CATATAN_STATUS[k.catatanStatus]||CATATAN_STATUS.manual;
                   return (
                     <tr key={k.id} style={{ borderBottom:`1px solid ${T.gray100}`, background:i%2===0?T.white:T.gray50 }}>
@@ -5679,7 +5720,8 @@ function Dashboard({ db, analytics, salesWilayahId }) {
               </tbody>
             </table>
           </div>
-        )}
+        );
+        })()}
       </Card>
     </div>
   );
@@ -8100,7 +8142,11 @@ export default function GWGSuperApp() {
             </div>
             <div className="gw-header-actions" style={{ display:"flex", alignItems:"center", gap:10 }}>
               <div className="gw-header-revenue" style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}>
-                💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(analytics.totalRev)}
+                💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(
+                  (!isManajer && currentUserRecord?.wilayahId)
+                    ? analytics.perWilayah.filter(w=>w.id===currentUserRecord.wilayahId).reduce((s,w)=>s+w.rev,0)
+                    : analytics.totalRev
+                )}
               </div>
 
               {/* Tombol refresh manual — pengganti "tarik ke bawah untuk
