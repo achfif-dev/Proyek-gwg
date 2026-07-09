@@ -4062,6 +4062,19 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     updateRecord("toko", tokoId, updates);
   }
 
+  // ✅ Helper: dari daftar produkIds baru, hasilkan juga flag produk_<id>
+  // (boolean per produk) yang dipakai Master Toko (kolom tabel & form ceklis
+  // "Produk yang Dijual" di TabToko). Dua representasi ini (produkIds array
+  // vs produk_<id> flags) HARUS selalu diupdate bersamaan supaya ceklis di
+  // Master Toko konsisten dengan perubahan yang terjadi lewat Kontrol
+  // Bulanan maupun Penyesuaian Stok — sebelumnya cuma produkIds yang
+  // terupdate, jadi ceklis di tabel Master Toko tidak ikut berubah.
+  function buildProdukFlagUpdates(newIds) {
+    const flags = {};
+    produkAktif.forEach(p => { flags[`produk_${p.id}`] = newIds.includes(p.id); });
+    return flags;
+  }
+
   // ✅ SINKRONISASI CEKLIS "Produk yang Dijual" ↔ Stok Kontrol Bulanan
   // Sebelumnya ceklis produk di Master Toko cuma disinkron otomatis lewat
   // fitur "Penyesuaian Stok" (Tambah), TIDAK lewat kontrol bulanan biasa.
@@ -4076,7 +4089,10 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   function syncProdukIdsDariStokKontrol(tokoId, payload) {
     const toko = (db.toko||[]).find(t => t.id === tokoId);
     if (!toko) return;
-    const existingIds = toko.produkIds || [];
+    // Ambil dari flag produk_<id> (bukan array produkIds) sebagai sumber
+    // kebenaran, karena itu yang benar-benar dipakai di kolom & form Master
+    // Toko — sekaligus otomatis memperbaiki kalau produkIds sempat basi.
+    const existingIds = produkAktif.filter(p=>toko[`produk_${p.id}`]).map(p=>p.id);
     const toAdd = [];
     const toRemove = [];
     produkAktif.forEach(p => {
@@ -4088,7 +4104,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     });
     if (toAdd.length === 0 && toRemove.length === 0) return;
     const newIds = existingIds.filter(id => !toRemove.includes(id)).concat(toAdd);
-    updateRecord("toko", tokoId, { produkIds: newIds });
+    updateRecord("toko", tokoId, { produkIds: newIds, ...buildProdukFlagUpdates(newIds) });
   }
 
   // ✅ HITUNG ULANG SEMUA STOK — dipakai setelah rumus baseline diperbaiki
@@ -4146,12 +4162,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     if (pforn.jenis === "Tambah") {
       const toko = (db.toko||[]).find(t=>t.id===pforn.tokoId);
       if (toko) {
-        const existingIds = toko.produkIds||[];
+        // Sumber kebenaran: flag produk_<id>, bukan array produkIds (lihat
+        // catatan di buildProdukFlagUpdates).
+        const existingIds = produkAktif.filter(p=>toko[`produk_${p.id}`]).map(p=>p.id);
         const produkBaruIds = produkAktif
           .filter(p => Number(pforn[`jumlah_${p.id}`]||0) > 0 && !existingIds.includes(p.id))
           .map(p=>p.id);
         if (produkBaruIds.length > 0) {
-          updateRecord("toko", toko.id, { produkIds: [...existingIds, ...produkBaruIds] });
+          const newIds = [...existingIds, ...produkBaruIds];
+          updateRecord("toko", toko.id, { produkIds: newIds, ...buildProdukFlagUpdates(newIds) });
         }
       }
     } else if (pforn.jenis === "Tarik") {
@@ -4162,12 +4181,15 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       // tetap mau dijual di toko itu meski jumlahnya berkurang.
       const toko = (db.toko||[]).find(t=>t.id===pforn.tokoId);
       if (toko) {
-        const existingIds = toko.produkIds||[];
+        // Sumber kebenaran: flag produk_<id>, bukan array produkIds (lihat
+        // catatan di buildProdukFlagUpdates).
+        const existingIds = produkAktif.filter(p=>toko[`produk_${p.id}`]).map(p=>p.id);
         const produkDitarikIds = produkAktif
           .filter(p => Number(pforn[`jumlah_${p.id}`]||0) > 0 && existingIds.includes(p.id))
           .map(p=>p.id);
         if (produkDitarikIds.length > 0) {
-          updateRecord("toko", toko.id, { produkIds: existingIds.filter(id=>!produkDitarikIds.includes(id)) });
+          const newIds = existingIds.filter(id=>!produkDitarikIds.includes(id));
+          updateRecord("toko", toko.id, { produkIds: newIds, ...buildProdukFlagUpdates(newIds) });
         }
       }
     }
