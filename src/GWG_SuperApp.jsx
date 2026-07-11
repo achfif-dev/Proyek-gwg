@@ -3990,6 +3990,33 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q)))
   ), [enriched, filter]);
 
+  // ✅ Penjualan Luar Rute yang cocok dengan filter Wilayah/Rute/Bulan yang
+  // sedang aktif di tab ini — dipakai supaya ringkasan Revenue, ringkasan
+  // per Produk, dan hasil Ekspor Kontrol Bulanan ikut ter-update sesuai
+  // kontribusi luar rute, bukan cuma menghitung entri kontrol saja.
+  // Kalau filter Rute spesifik dipilih, hanya luar rute yang ruteId-nya
+  // sudah cocok dengan rute tsb yang ikut dihitung (konsisten dengan
+  // logika Rekap & daftar Penjualan Luar Rute di bawah).
+  const luarRuteData = useMemo(() => {
+    return (db.penjualanLuar||[])
+      .filter(pl =>
+        (!isSalesRestricted || pl.wilayahId===salesWilayahId) &&
+        (!filter.wilayahId || pl.wilayahId === filter.wilayahId) &&
+        (!filter.ruteId    || pl.ruteId    === filter.ruteId) &&
+        (!filter.bulan     || pl.tanggal?.startsWith(filter.bulan))
+      )
+      .map(pl => {
+        let totalRev = 0, totalBonus = 0;
+        produkAktif.forEach(p => {
+          totalRev += Number(pl[`terjual_${p.id}`]||0) * (p.harga||0);
+          totalBonus += Number(pl[`bonusInput_${p.id}`]||0);
+        });
+        const wilayahNama = (db.wilayah||[]).find(w=>w.id===pl.wilayahId)?.nama || "";
+        const ruteNama = (db.rute||[]).find(r=>r.id===pl.ruteId)?.nama || "";
+        return { ...pl, totalRev, totalBonus, wilayahNama, ruteNama };
+      });
+  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, isSalesRestricted, salesWilayahId]);
+
   // Monthly view: tampilkan SEMUA toko di rute terpilih, bukan hanya yang ada entri kontrol
   const tokoPerRute = useMemo(() => {
     // Jika filter wilayah/rute aktif, filter sesuai; jika tidak, tampilkan semua rute
@@ -4582,8 +4609,12 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   }
 
   const selToko = (db.toko||[]).find(t=>t.id===form.tokoId);
-  const totalRevData = data.reduce((s,k)=>s+k.totalRev,0);
-  const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0);
+  // ✅ Total Revenue & Bonus di header kini ikut menjumlahkan Penjualan Luar
+  // Rute yang cocok dengan filter aktif — sebelumnya hanya menghitung entri
+  // Kontrol Bulanan, jadi tidak konsisten dengan Rekap yang sudah menyertakan
+  // kontribusi luar rute per rute.
+  const totalRevData = data.reduce((s,k)=>s+k.totalRev,0) + luarRuteData.reduce((s,k)=>s+k.totalRev,0);
+  const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteData.reduce((s,k)=>s+k.totalBonus,0);
   const catatanSt = form.catatanStatus||"";
 
   const cols = [
@@ -4809,7 +4840,9 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
           <div style={{ fontSize:12, color:T.gray400 }}>
-            {data.length} entri · Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
+            {data.length} entri
+            {luarRuteData.length>0 && <span> · 🛣️ +{luarRuteData.length} luar rute</span>}
+            {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
             {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
           </div>
         </div>
@@ -4845,6 +4878,20 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                   ? (CATATAN_STATUS[row.catatanStatus]?.label || row.catatanStatus)
                   : "Terjual",
               })),
+              // ✅ Baris Penjualan Luar Rute yang cocok filter — sebelumnya
+              // export ini cuma berisi entri Kontrol Bulanan, jadi kontribusi
+              // luar rute (revenue & pcs) tidak pernah muncul di sini sama
+              // sekali, hanya di Rekap.
+              ...luarRuteData.map(pl => ({
+                ...pl,
+                id: pl.id,
+                tokoNama: `🛣️ Penjualan Luar Rute${pl.ruteNama ? " — "+pl.ruteNama : ""}`,
+                wilayahNama: pl.wilayahNama || "-",
+                ruteNama: pl.ruteNama || "-",
+                totalRevFmt: fmtRp(pl.totalRev||0),
+                statusLabel: "Luar Rute",
+                catatan: pl.keterangan || "",
+              })),
               // Baris kosong pemisah
               { id:"", tokoNama:"", wilayahNama:"", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
               // Baris total
@@ -4852,12 +4899,13 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                 wilayahNama:"", ruteNama:"", tanggal:"",
                 totalRevFmt: fmtRp(totalRevData),
                 totalBonus: totalBonusData,
-                statusLabel:`${data.length} entri`, catatan:"" },
+                statusLabel:`${data.length} entri${luarRuteData.length ? ` + ${luarRuteData.length} luar rute` : ""}`, catatan:"" },
               // Baris kosong
               { id:"", tokoNama:"", wilayahNama:"", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
               // Ringkasan
               { id:"", tokoNama:"📊 RINGKASAN",        wilayahNama:"",                          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Entri Kontrol",  wilayahNama:String(data.length),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Total Entri Luar Rute", wilayahNama:String(luarRuteData.length), ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Revenue",         wilayahNama:fmtRp(totalRevData),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Bonus (pcs)",     wilayahNama:String(totalBonusData),       ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Revenue Rata-rata",     wilayahNama:data.length ? fmtRp(Math.round(totalRevData/data.length)) : "Rp 0", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
@@ -5071,11 +5119,16 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false})} />
 
       {/* Summary per Produk */}
-      {produkAktif.length > 0 && data.length > 0 && (
+      {produkAktif.length > 0 && (data.length > 0 || luarRuteData.length > 0) && (
         <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:14 }}>
           {produkAktif.map(p => {
-            const totalTerjual = data.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
-            const bonusTotal = data.reduce((s,k)=>s+(k[`bonusInput_${p.id}`]!==undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0)),0);
+            // ✅ Pcs terjual & bonus kini ikut menjumlahkan Penjualan Luar
+            // Rute yang cocok filter — sebelumnya cuma dari entri Kontrol
+            // Bulanan, jadi angkanya beda dengan yang tampil di Rekap.
+            const totalTerjual = data.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0)
+              + luarRuteData.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
+            const bonusTotal = data.reduce((s,k)=>s+(k[`bonusInput_${p.id}`]!==undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0)),0)
+              + luarRuteData.reduce((s,k)=>s+Number(k[`bonusInput_${p.id}`]||0),0);
             return (
               <div key={p.id} style={{ background:T.goldLt, border:`1px solid ${T.gold}33`,
                 borderRadius:10, padding:"10px 16px", flex:1, minWidth:130 }}>
