@@ -1728,8 +1728,12 @@ function useAnalytics(db) {
       });
       // ✅ wilayahNama: supaya penjualan luar rute bisa dikaitkan & ditampilkan
       // per wilayah (mis. di Rekap Siklus), bukan cuma catatan yang mengambang.
+      // ✅ ruteNama: opsional — jika sales mengisi rute saat mencatat penjualan
+      // luar rute, penjualan ini juga bisa dikaitkan & ditampilkan per rute
+      // (Revenue per Rute), bukan cuma ikut total wilayah saja.
       const wilayah = (db.wilayah||[]).find(w => w.id === pl.wilayahId);
-      return { ...pl, totalRev, totalTerjual, totalBonus, wilayahNama: wilayah?.nama||"" };
+      const rute = (db.rute||[]).find(r => r.id === pl.ruteId);
+      return { ...pl, totalRev, totalTerjual, totalBonus, wilayahNama: wilayah?.nama||"", ruteNama: rute?.nama||"" };
     });
     const totalRevLuarRute = enrichLuarRute.reduce((s,k) => s + k.totalRev, 0);
 
@@ -1739,10 +1743,14 @@ function useAnalytics(db) {
 
     const perWilayah = (db.wilayah||[]).map(w => {
       const rows = enrichKontrol.filter(k => k.wilayah?.id === w.id);
+      // ✅ Penjualan luar rute yang wilayahnya cocok ikut dijumlahkan, supaya
+      // total per wilayah konsisten dengan totalRev keseluruhan (yang sudah
+      // memasukkan totalRevLuarRute).
+      const luarRows = enrichLuarRute.filter(pl => pl.wilayahId === w.id);
       return {
         ...w,
-        rev: rows.reduce((s,k) => s + k.totalRev, 0),
-        terjual: rows.reduce((s,k) => s + k.totalTerjual, 0),
+        rev: rows.reduce((s,k) => s + k.totalRev, 0) + luarRows.reduce((s,k) => s + k.totalRev, 0),
+        terjual: rows.reduce((s,k) => s + k.totalTerjual, 0) + luarRows.reduce((s,k) => s + k.totalTerjual, 0),
         tokoCount: (db.toko||[]).filter(t => {
           const rute = (db.rute||[]).find(r => r.id === t.ruteId);
           return rute?.wilayahId === w.id;
@@ -1753,9 +1761,16 @@ function useAnalytics(db) {
     const perRute = (db.rute||[]).map(r => {
       const wil = (db.wilayah||[]).find(w => w.id === r.wilayahId);
       const rows = enrichKontrol.filter(k => k.rute?.id === r.id);
+      // ✅ Penjualan luar rute yang sudah dikaitkan ke rute ini (ruteId diisi
+      // sales saat mencatat) ikut masuk ke revenue & pcs terjual rute
+      // tersebut — sebelumnya penjualan luar rute tidak pernah tampil di
+      // breakdown per rute sama sekali, hanya nyangkut di level wilayah.
+      const luarRows = enrichLuarRute.filter(pl => pl.ruteId === r.id);
       return {
         ...r, wilayahNama: wil?.nama||"-",
-        rev: rows.reduce((s,k) => s + k.totalRev, 0),
+        rev: rows.reduce((s,k) => s + k.totalRev, 0) + luarRows.reduce((s,k) => s + k.totalRev, 0),
+        terjual: rows.reduce((s,k) => s + k.totalTerjual, 0) + luarRows.reduce((s,k) => s + k.totalTerjual, 0),
+        luarRuteCount: luarRows.length,
         tokoCount: (db.toko||[]).filter(t => t.ruteId === r.id).length,
       };
     })
@@ -4207,7 +4222,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   // wilayah seperti sebelumnya.
   function openLuarRute() {
     const today = new Date().toISOString().slice(0,10);
-    const initial = { tanggal:today, keterangan:"", dicatatOleh:"", wilayahId: filter.wilayahId||"" };
+    const initial = { tanggal:today, keterangan:"", dicatatOleh:"", wilayahId: filter.wilayahId||"", ruteId: filter.ruteId||"" };
     produkAktif.forEach(p => { initial[`terjual_${p.id}`] = 0; initial[`bonusInput_${p.id}`] = 0; });
     setLuarRuteForm(initial);
     setLuarRuteModal(true);
@@ -4438,6 +4453,18 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
   const ruteOpts = ruteFiltered.map(r=>({ value:r.id, label:r.nama }));
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
+
+  // ✅ Opsi Rute khusus modal Penjualan Luar Rute — ikut cascade dari Wilayah
+  // yang dipilih di form itu (sama seperti pola cascade Wilayah → Rute di
+  // form lain), supaya sales bisa (opsional) menandai rute mana yang
+  // sebenarnya jadi sumber penjualan luar rute tsb.
+  const luarRuteRuteOpts = useMemo(() => {
+    const wid = luarRuteForm?.wilayahId;
+    const list = wid ? (db.rute||[]).filter(r=>r.wilayahId===wid) : (db.rute||[]);
+    return [...list]
+      .sort((a,b)=>naturalCompare(a.nama||"", b.nama||""))
+      .map(r=>({ value:r.id, label:r.nama }));
+  }, [db.rute, luarRuteForm?.wilayahId]);
 
   // Opsi Rute & Toko di dalam modal Tambah/Edit Kontrol — mengikuti cascade Wilayah → Rute → Toko
   const modalRuteOpts = useMemo(() => {
@@ -4968,12 +4995,16 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             Jika sales <b>tahu nama toko & rutenya</b>, gunakan tombol <b>＋ Tambah Kontrol</b> seperti biasa.
           </div>
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
-            <Input label="Wilayah" value={luarRuteForm.wilayahId||""} onChange={v=>lf("wilayahId",v)}
+            <Input label="Wilayah" value={luarRuteForm.wilayahId||""}
+              onChange={v=>setLuarRuteForm(p=>({ ...p, wilayahId:v, ruteId:"" }))}
               options={wilayahOpts} required placeholder="Pilih wilayah..." disabled={isSalesRestricted}
               hint={isSalesRestricted ? "Terkunci ke wilayah tugasmu" : "Wilayah tugas sales — penjualan ini akan ikut masuk ke Rekap Siklus wilayah ini"} />
             <Input label="Tanggal" value={luarRuteForm.tanggal} onChange={v=>lf("tanggal",v)} type="date" required />
           </div>
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
+            <Input label="Rute (opsional)" value={luarRuteForm.ruteId||""} onChange={v=>lf("ruteId",v)}
+              options={luarRuteRuteOpts} placeholder="Pilih rute jika diketahui..."
+              hint="Isi jika tahu rute sumbernya, supaya penjualan ini ikut masuk ke Revenue per Rute (bukan cuma per Wilayah)" />
             <Input label="Dicatat Oleh (sales)" value={luarRuteForm.dicatatOleh||""} onChange={v=>lf("dicatatOleh",v)} placeholder="Nama sales" />
           </div>
           <Input label="Keterangan (opsional)" value={luarRuteForm.keterangan||""} onChange={v=>lf("keterangan",v)}
@@ -5318,7 +5349,11 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             (!isSalesRestricted || pl.wilayahId===salesWilayahId) &&
             (!filter.bulan || pl.tanggal?.startsWith(filter.bulan)) &&
             (!filter.wilayahId || pl.wilayahId===filter.wilayahId) &&
-            (!filter.ruteId) && // penjualan luar rute tidak terikat rute manapun, jadi disembunyikan saat filter Rute spesifik dipilih
+            // ✅ Kalau ruteId sudah diisi sales, penjualan luar rute ini ikut
+            // muncul saat filter Rute tsb dipilih. Kalau ruteId kosong (rute
+            // memang tidak diketahui), tetap disembunyikan saat filter Rute
+            // spesifik aktif — karena tidak bisa dipastikan cocok/tidak.
+            (!filter.ruteId || pl.ruteId===filter.ruteId) &&
             (!filter.q || pl.keterangan?.toLowerCase().includes(filter.q.toLowerCase()) || pl.dicatatOleh?.toLowerCase().includes(filter.q.toLowerCase()))
           )
           .sort((a,b)=>(b.tanggal||"").localeCompare(a.tanggal||""));
@@ -5352,6 +5387,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                   <tr style={{ background:T.gray50 }}>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Tanggal</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Wilayah</th>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Rute</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Produk Terjual</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>🎁 Bonus</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Keterangan</th>
@@ -5372,10 +5408,12 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                       .map(p => `${p.nama}: ${pl[`bonusInput_${p.id}`]}`)
                       .join(" · ");
                     const wilayahNama = (db.wilayah||[]).find(w=>w.id===pl.wilayahId)?.nama;
+                    const ruteNama = (db.rute||[]).find(r=>r.id===pl.ruteId)?.nama;
                     return (
                       <tr key={pl.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
                         <td style={{ padding:"6px 10px", fontWeight:600, whiteSpace:"nowrap" }}>{pl.tanggal}</td>
                         <td style={{ padding:"6px 10px", fontWeight:600 }}>{wilayahNama || <span style={{ color:T.gray400 }}>—</span>}</td>
+                        <td style={{ padding:"6px 10px" }}>{ruteNama || <span style={{ color:T.gray400 }}>—</span>}</td>
                         <td style={{ padding:"6px 10px" }}>{produkTerjual || "—"}</td>
                         <td style={{ padding:"6px 10px", color:T.gold }}>{bonusTerjual || <span style={{ color:T.gray400 }}>—</span>}</td>
                         <td style={{ padding:"6px 10px", color:T.gray500, maxWidth:220 }}>{pl.keterangan || <span style={{ color:T.gray400 }}>—</span>}</td>
@@ -5767,19 +5805,26 @@ function Dashboard({ db, analytics, salesWilayahId }) {
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
               <tr style={{ borderBottom:`2px solid ${T.gray200}` }}>
-                {["Rute","Wilayah","Toko","Revenue"].map(h=>(
+                {["Rute","Wilayah","Toko","Pcs Terjual","Revenue"].map(h=>(
                   <th key={h} style={{ padding:"6px 8px", textAlign:"left", color:T.gray600, fontWeight:700, fontSize:11 }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {perRute.length===0 ? (
-                <tr><td colSpan={4} style={{ padding:16, textAlign:"center", color:T.gray400 }}>Belum ada rute</td></tr>
+                <tr><td colSpan={5} style={{ padding:16, textAlign:"center", color:T.gray400 }}>Belum ada rute</td></tr>
               ) : perRute.map((r,i)=>(
                 <tr key={r.id} style={{ borderBottom:`1px solid ${T.gray100}`, background:i%2===0?T.white:T.gray50 }}>
-                  <td style={{ padding:"7px 8px", fontWeight:600 }}>{r.nama}</td>
+                  <td style={{ padding:"7px 8px", fontWeight:600 }}>
+                    {r.nama}
+                    {r.luarRuteCount>0 && (
+                      <span title={`${r.luarRuteCount} penjualan luar rute ikut dihitung di rute ini`}
+                        style={{ marginLeft:5, fontSize:10, color:T.purple }}>🛣️×{r.luarRuteCount}</span>
+                    )}
+                  </td>
                   <td style={{ padding:"7px 8px" }}><Badge color={T.teal}>{r.wilayahNama}</Badge></td>
                   <td style={{ padding:"7px 8px", textAlign:"center" }}>{r.tokoCount}</td>
+                  <td style={{ padding:"7px 8px", textAlign:"center" }}>{fmt(r.terjual)}</td>
                   <td style={{ padding:"7px 8px", fontWeight:700, color:T.green }}>{fmtRp(r.rev)}</td>
                 </tr>
               ))}
@@ -5954,6 +5999,31 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     };
   }
 
+  // ─── HELPER: gabungkan Penjualan Luar Rute yang sudah dikaitkan ke rute
+  //     (ruteId terisi sales saat mencatat) ke dalam grup per-rute (byRute)
+  //     yang sedang dibangun — supaya revenue & pcs-nya ikut masuk ke rute
+  //     yang sebenarnya, bukan cuma nyangkut di baris generik "🛣️ Penjualan
+  //     Luar Rute". Entri tanpa ruteId (rute memang tidak diketahui sales)
+  //     dikembalikan sebagai "sisa" supaya tetap dibuatkan baris generik
+  //     seperti sebelumnya — jadi tidak ada penjualan yang hilang. ───
+  function mergeLuarRuteToByRute(byRute, luarRows, ruteFilterId) {
+    const sisa = [];
+    luarRows.forEach(pl => {
+      if (pl.ruteId) {
+        if (ruteFilterId && pl.ruteId !== ruteFilterId) return; // di luar cakupan filter rute yang dipilih
+        const key = pl.ruteId;
+        if (!byRute[key]) {
+          const ruteObj = (db.rute||[]).find(r=>r.id===pl.ruteId);
+          byRute[key] = { ruteId: pl.ruteId, ruteNama: ruteObj?.nama || pl.ruteNama || "?", wilayahNama: pl.wilayahNama || "-", rows: [] };
+        }
+        byRute[key].rows.push(pl);
+      } else {
+        sisa.push(pl);
+      }
+    });
+    return sisa;
+  }
+
   // ─── HELPER: bikin baris "Penjualan Luar Rute" (dipakai di semua mode
   //     rekap — harian/bulanan/kuartal/tahunan — supaya penjualan yang
   //     tidak terikat rute/wilayah tetap kelihatan rinciannya, bukan cuma
@@ -5985,11 +6055,22 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, rows:[] };
       byRute[key].rows.push(k);
     });
+    // ✅ Gabungkan Penjualan Luar Rute yang sudah dikaitkan ke rute (ruteId
+    // terisi) ke grup rute yang sesuai. Sisa (ruteId kosong) ditampung untuk
+    // jadi baris generik "🛣️ Penjualan Luar Rute" di bawah.
+    const luarRowsAll = (analytics.penjualanLuar||[]).filter(pl =>
+      pl.tanggal === filterTanggal && (!filterWilayah || pl.wilayahId === filterWilayah)
+    );
+    const luarSisa = mergeLuarRuteToByRute(byRute, luarRowsAll, filterRute);
     const hasil = Object.values(byRute).map(g => {
       const sp = sumProduk(g.rows);
+      // ✅ Tandai berapa banyak entri Penjualan Luar Rute yang ikut tergabung
+      // ke rute ini (jika ada) — luar rute dikenali karena tidak punya tokoId.
+      const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
       return {
         ...g,
-        jumlahToko: g.rows.length,
+        ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+        jumlahToko: g.rows.filter(r=>r.tokoId).length,
         totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
         ...sp,
@@ -6007,26 +6088,26 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     // menambah ke Total Revenue tanpa rincian produk apa yang terjual.
     // Sekarang penjualan luar rute sudah punya wilayahId, jadi ditampilkan
     // kalau cocok dengan filter wilayah (atau kalau tidak sedang memfilter
-    // wilayah sama sekali). Filter rute tidak berlaku karena luar rute
-    // memang tidak terikat ke rute manapun.
-    if (!filterRute) {
-      const luarRows = (analytics.penjualanLuar||[]).filter(pl =>
-        pl.tanggal === filterTanggal && (!filterWilayah || pl.wilayahId === filterWilayah)
-      );
-      if (luarRows.length) {
-        const sp = sumProduk(luarRows);
-        hasil.push({
-          ruteId: "LUAR_RUTE",
-          ruteNama: "🛣️ Penjualan Luar Rute",
-          wilayahNama: luarRows[0].wilayahNama ? `🛣️ ${luarRows[0].wilayahNama}` : "Tidak terikat rute/wilayah",
-          jumlahToko: luarRows.length,
-          totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
-          totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
-          jumlahTutup: 0, jumlahTidakTerjual: 0,
-          ...sp,
-          detail: luarRows,
-        });
-      }
+    // wilayah sama sekali). Yang sudah punya ruteId sendiri sudah digabung
+    // ke grup rute masing-masing di atas (lihat mergeLuarRuteToByRute) —
+    // di sini cuma sisa yang ruteId-nya kosong.
+    // ✅ Sisa Penjualan Luar Rute yang ruteId-nya kosong (rute memang tidak
+    // diketahui sales) tetap ditampilkan sebagai kelompok tersendiri, supaya
+    // produk yang terjual di luar rute kontrol tetap terlihat rinciannya di
+    // rekap harian — bukan cuma menambah ke Total Revenue diam-diam.
+    if (!filterRute && luarSisa.length) {
+      const sp = sumProduk(luarSisa);
+      hasil.push({
+        ruteId: "LUAR_RUTE",
+        ruteNama: "🛣️ Penjualan Luar Rute",
+        wilayahNama: luarSisa[0].wilayahNama ? `🛣️ ${luarSisa[0].wilayahNama}` : "Tidak terikat rute/wilayah",
+        jumlahToko: luarSisa.length,
+        totalRev: luarSisa.reduce((s,k)=>s+k.totalRev,0),
+        totalBonus: luarSisa.reduce((s,k)=>s+(k.totalBonus||0),0),
+        jumlahTutup: 0, jumlahTidakTerjual: 0,
+        ...sp,
+        detail: luarSisa,
+      });
     }
     return hasil;
   }, [enrichKontrol, filterTanggal, filterWilayah, filterRute, produkAktif, analytics.penjualanLuar]);
@@ -6049,11 +6130,22 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, rows:[] };
       byRute[key].rows.push(k);
     });
+    // ✅ Ambil semua Penjualan Luar Rute wilayah-wilayah terpilih dalam rentang
+    // siklus ini lebih awal, lalu gabungkan yang sudah punya ruteId ke grup
+    // rute yang bersangkutan — supaya revenue & pcs-nya ikut masuk ke rute
+    // yang sebenarnya, bukan cuma jadi baris generik per wilayah di bawah.
+    const luarRowsAll = (analytics.penjualanLuar||[]).filter(pl =>
+      filterSiklusWilayahs.includes(pl.wilayahId) &&
+      pl.tanggal >= filterSiklusStart && pl.tanggal <= filterSiklusEnd
+    );
+    const luarSisa = mergeLuarRuteToByRute(byRute, luarRowsAll);
     const hasil = Object.values(byRute).map(g => {
       const sp = sumProduk(g.rows);
+      const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
       return {
         ...g,
-        jumlahToko: g.rows.length,
+        ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+        jumlahToko: g.rows.filter(r=>r.tokoId).length,
         totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
         ...sp,
@@ -6065,27 +6157,23 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     // supaya rute-rute 1 wilayah tetap mengelompok rapi, bukan tercampur.
     hasil.sort((a,b)=>naturalCompare(a.wilayahNama, b.wilayahNama) || naturalCompare(a.ruteNama, b.ruteNama));
 
-    // ✅ Ikutkan Penjualan Luar Rute milik wilayah-wilayah yang dipilih & jatuh
-    // di rentang tanggal siklus ini — sales tetap bertanggung jawab atas semua
-    // penjualan (sesuai rute maupun di luar rute) begitu siklus wilayahnya
-    // selesai, jadi rekap siklus harus menampung keduanya, bukan cuma yang
-    // sesuai rute. Kalau lebih dari 1 wilayah digabung, dipisah per wilayah
-    // supaya rinciannya tetap jelas asalnya dari wilayah mana.
-    const luarRows = (analytics.penjualanLuar||[]).filter(pl =>
-      filterSiklusWilayahs.includes(pl.wilayahId) &&
-      pl.tanggal >= filterSiklusStart && pl.tanggal <= filterSiklusEnd
-    );
-    if (luarRows.length) {
+    // ✅ Sisa Penjualan Luar Rute yang ruteId-nya kosong (rute tidak
+    // diketahui sales) tetap ditampilkan sebagai baris generik per wilayah —
+    // sales tetap bertanggung jawab atas semua penjualan (sesuai rute maupun
+    // di luar rute) begitu siklus wilayahnya selesai. Kalau lebih dari 1
+    // wilayah digabung, dipisah per wilayah supaya rinciannya tetap jelas
+    // asalnya dari wilayah mana.
+    if (luarSisa.length) {
       if (filterSiklusWilayahs.length > 1) {
         const byWilLuar = {};
-        luarRows.forEach(pl => {
+        luarSisa.forEach(pl => {
           const key = pl.wilayahId || "NOWIL";
           if (!byWilLuar[key]) byWilLuar[key] = [];
           byWilLuar[key].push(pl);
         });
         Object.values(byWilLuar).forEach(rowsW => hasil.push(luarRuteRow(rowsW)));
       } else {
-        hasil.push(luarRuteRow(luarRows));
+        hasil.push(luarRuteRow(luarSisa));
       }
     }
 
@@ -6106,15 +6194,24 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, rows:[] };
         byRute[key].rows.push(k);
       });
+      // ✅ Gabungkan Penjualan Luar Rute wilayah ini di bulan ini yang sudah
+      // punya ruteId ke grup rute yang bersangkutan; sisanya (ruteId kosong)
+      // tetap jadi baris generik seperti sebelumnya.
+      const luarRowsAll = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId===filterWilayah && pl.tanggal?.startsWith(filterBulan));
+      const luarSisa = mergeLuarRuteToByRute(byRute, luarRowsAll);
       const result = Object.values(byRute).map(g => {
         const sp = sumProduk(g.rows);
-        return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
+        const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
+        return { ...g,
+          ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+          jumlahKunjungan:g.rows.filter(r=>r.tokoId).length,
+          totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
       });
       result.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
-      // ✅ Ikutkan Penjualan Luar Rute milik wilayah yang sama di bulan ini —
-      // sales tetap bertanggung jawab atas semua penjualan wilayahnya.
-      const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId===filterWilayah && pl.tanggal?.startsWith(filterBulan));
-      if (luarRows.length) result.push(luarRuteRow(luarRows));
+      // ✅ Sisa Penjualan Luar Rute yang ruteId-nya kosong tetap ditampilkan
+      // sebagai baris generik — sales tetap bertanggung jawab atas semua
+      // penjualan wilayahnya.
+      if (luarSisa.length) result.push(luarRuteRow(luarSisa));
       return result;
     } else {
       // Per wilayah
@@ -6155,15 +6252,22 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, bulan:`${filterTahun}-${m}`, rows:[] };
           byRute[key].rows.push(k);
         });
+        // ✅ Gabungkan Penjualan Luar Rute wilayah ini di bulan ini yang sudah
+        // punya ruteId ke grup rute yang bersangkutan.
+        const luarRowsAll = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId===filterWilayah && pl.tanggal?.startsWith(`${filterTahun}-${m}`));
+        const luarSisa = mergeLuarRuteToByRute(byRute, luarRowsAll);
         const bulanRows = Object.values(byRute).map(g => {
           const sp = sumProduk(g.rows);
-          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
+          const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
+          return { ...g,
+            ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+            jumlahKunjungan:g.rows.filter(r=>r.tokoId).length,
+            totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
         });
         bulanRows.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
         result.push(...bulanRows);
-        // ✅ Luar rute milik wilayah terpilih, bulan ini
-        const luarRows = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId===filterWilayah && pl.tanggal?.startsWith(`${filterTahun}-${m}`));
-        if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
+        // ✅ Sisa luar rute (ruteId kosong) milik wilayah terpilih, bulan ini
+        if (luarSisa.length) result.push(luarRuteRow(luarSisa, { bulan:`${filterTahun}-${m}` }));
       });
       return result;
     } else {
@@ -6207,14 +6311,19 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           if (!byRute[key]) byRute[key] = { ruteId:k.ruteId, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama, bulan:`${filterTahun}-${m}`, rows:[] };
           byRute[key].rows.push(k);
         });
+        const luarSisa = mergeLuarRuteToByRute(byRute, luarRows);
         const bulanRows = Object.values(byRute).map(g => {
           const sp = sumProduk(g.rows);
-          return { ...g, jumlahKunjungan:g.rows.length, totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
+          const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
+          return { ...g,
+            ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+            jumlahKunjungan:g.rows.filter(r=>r.tokoId).length,
+            totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
         });
         bulanRows.sort((a,b)=>naturalCompare(a.ruteNama, b.ruteNama));
         result.push(...bulanRows);
-        // ✅ Luar rute milik wilayah terpilih, bulan ini
-        if (luarRows.length) result.push(luarRuteRow(luarRows, { bulan:`${filterTahun}-${m}` }));
+        // ✅ Sisa luar rute (ruteId kosong) milik wilayah terpilih, bulan ini
+        if (luarSisa.length) result.push(luarRuteRow(luarSisa, { bulan:`${filterTahun}-${m}` }));
       });
       return result;
     } else {
