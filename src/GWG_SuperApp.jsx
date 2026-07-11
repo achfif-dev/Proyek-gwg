@@ -864,26 +864,41 @@ function useDB(user) {
             if (kontrolYearUnsubsRef.current[year]) return; // sudah aktif
             const yr = ref(rtdb, `gwg_data/shared/kontrol/${year}`);
             kontrolByYearRef.current[year] = kontrolByYearRef.current[year] || {};
-            let settleTimer = null, firstBatchDone = false;
+            let settleTimer = null, postSettleTimer = null, firstBatchDone = false;
             const settle = () => {
               if (settleTimer) clearTimeout(settleTimer);
+              // ✅ Diperpanjang (dari 400ms) — sama alasannya seperti tabel
+              // toko: di jaringan sangat lambat, jeda alami antar-batch data
+              // yang masih mengalir jangan sampai dikira "sudah selesai".
               settleTimer = setTimeout(() => {
                 firstBatchDone = true;
                 recomputeKontrolArr();
                 setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
                 if (countTowardBoot) markLoadedAndFlush("kontrol");
-              }, 400);
+              }, 900);
+            };
+            // ✅ Setelah batch pertama, update-update berikutnya juga
+            // di-debounce (bukan recompute per record) — supaya ribuan
+            // entri kontrol yang masih mengalir di jaringan lambat tidak
+            // memicu render+hitung-ulang satu-satu (lag).
+            const recomputeDebounced = () => {
+              if (postSettleTimer) clearTimeout(postSettleTimer);
+              postSettleTimer = setTimeout(recomputeKontrolArr, 300);
             };
             const uAdd = onChildAdded(yr, snap => {
               kontrolByYearRef.current[year][snap.key] = snap.val();
-              if (!firstBatchDone) settle(); else recomputeKontrolArr();
+              if (!firstBatchDone) settle(); else recomputeDebounced();
             }, (err) => { setSyncError(err.message); if (countTowardBoot) markLoadedAndFlush("kontrol"); });
-            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recomputeKontrolArr(); });
-            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recomputeKontrolArr(); });
+            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recomputeDebounced(); });
+            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recomputeDebounced(); });
+            // ✅ Diperpanjang (dari 3 detik) — sama alasannya seperti tabel
+            // toko: di jaringan sangat lambat, record pertama yang memang
+            // ada tapi belum sempat tiba jangan sampai dikira "tahun ini
+            // kosong".
             const emptyFallback = setTimeout(() => {
               if (!firstBatchDone) { firstBatchDone = true; recomputeKontrolArr(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); if (countTowardBoot) markLoadedAndFlush("kontrol"); }
-            }, 3000);
-            kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); clearTimeout(emptyFallback); };
+            }, 12000);
+            kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); clearTimeout(emptyFallback); };
             unsubs.push(kontrolYearUnsubsRef.current[year]);
           };
 
@@ -905,6 +920,7 @@ function useDB(user) {
           // ── Sinkronisasi INKREMENTAL untuk tabel besar (kontrol/toko) ──
           const localMap = {};
           let settleTimer = null;
+          let postSettleTimer = null; // ✅ debounce update SETELAH batch pertama juga
           let firstBatchDone = false;
 
           const flushToState = () => {
@@ -916,44 +932,64 @@ function useDB(user) {
             });
           };
 
+          // ✅ Sebelumnya, SETELAH batch pertama "settle", setiap 1 record baru
+          // yang datang (child_added/changed/removed) langsung memicu
+          // flushToState() satu-satu — untuk tabel beribu-ribu baris (toko)
+          // di jaringan lambat, ini berarti ratusan render+tulis-localStorage
+          // berturut-turut = lag parah yang dikeluhkan pengguna. Sekarang
+          // update-update ini juga digabung (debounce ~300ms) seperti batch
+          // pertama, supaya render/tulis-localStorage terjadi sekali per
+          // "gerombolan" perubahan, bukan per record.
+          const flushToStateDebounced = () => {
+            if (postSettleTimer) clearTimeout(postSettleTimer);
+            postSettleTimer = setTimeout(flushToState, 300);
+          };
+
           const scheduleSettle = () => {
             // Selama listener child_added masih "membanjir" data awal
             // (initial sync), tunda update UI sampai aliran berhenti
-            // sejenak (~400ms tanpa event baru) — supaya kita tidak
-            // re-render ribuan kali saat load pertama, dan supaya kita
-            // tahu kapan "loading awal" boleh dianggap selesai.
+            // sejenak tanpa event baru — supaya kita tidak re-render ribuan
+            // kali saat load pertama, dan supaya kita tahu kapan "loading
+            // awal" boleh dianggap selesai. Jeda diperpanjang (dari 400ms)
+            // supaya di jaringan sangat lambat (mis. <1 KB/dtk), jeda alami
+            // antar-batch data yang masih mengalir tidak salah dikira "sudah
+            // selesai" padahal masih banyak record berikutnya dalam perjalanan.
             if (settleTimer) clearTimeout(settleTimer);
             settleTimer = setTimeout(() => {
               firstBatchDone = true;
               flushToState();
               markLoadedAndFlush(key);
-            }, 400);
+            }, 900);
           };
 
           const unsubAdd = onChildAdded(r, snap => {
             localMap[snap.key] = snap.val();
             if (!firstBatchDone) scheduleSettle();
-            else flushToState();
+            else flushToStateDebounced();
           }, (err) => { setSyncError(err.message); markLoadedAndFlush(key); });
 
           const unsubChg = onChildChanged(r, snap => {
             localMap[snap.key] = snap.val();
-            if (firstBatchDone) flushToState();
+            if (firstBatchDone) flushToStateDebounced();
           });
 
           const unsubRem = onChildRemoved(r, snap => {
             delete localMap[snap.key];
-            if (firstBatchDone) flushToState();
+            if (firstBatchDone) flushToStateDebounced();
           });
 
           // Jika tabel kosong (toko baru / kontrol belum pernah diisi),
           // child_added tidak akan pernah terpanggil sama sekali — pasang
           // fallback timer supaya bootstrap tidak menunggu selamanya.
+          // Diperpanjang (dari 3 detik) supaya di jaringan sangat lambat,
+          // record PERTAMA yang memang ada tapi belum sempat tiba tidak
+          // keliru dianggap "tabel ini kosong" — itu akar masalah Dashboard
+          // sempat menampilkan "0 toko" padahal datanya ada, cuma lambat.
           const emptyFallback = setTimeout(() => {
             if (!firstBatchDone) { firstBatchDone = true; flushToState(); markLoadedAndFlush(key); }
-          }, 3000);
+          }, 12000);
 
-          unsubs.push(() => { off(r); if (settleTimer) clearTimeout(settleTimer); clearTimeout(emptyFallback); });
+          unsubs.push(() => { off(r); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); clearTimeout(emptyFallback); });
           return;
         }
 
@@ -999,7 +1035,7 @@ function useDB(user) {
     const { db: rtdb, ref, onChildAdded, onChildChanged, onChildRemoved, off } = firebaseDB;
     const yr = ref(rtdb, `gwg_data/shared/kontrol/${year}`);
     kontrolByYearRef.current[year] = kontrolByYearRef.current[year] || {};
-    let settleTimer = null, firstBatchDone = false;
+    let settleTimer = null, postSettleTimer = null, firstBatchDone = false;
     const recompute = () => {
       const merged = {};
       Object.values(kontrolByYearRef.current).forEach(m => Object.assign(merged, m));
@@ -1010,19 +1046,28 @@ function useDB(user) {
         return next;
       });
     };
+    // ✅ Update setelah batch pertama juga di-debounce (bukan per record) —
+    // supaya di jaringan lambat tidak lag; dan jeda settle/empty-fallback
+    // diperpanjang supaya tidak keliru dianggap "sudah selesai/kosong"
+    // padahal data masih dalam perjalanan (lihat penjelasan yang sama di
+    // listener tahun berjalan/toko di atas).
+    const recomputeDebounced = () => {
+      if (postSettleTimer) clearTimeout(postSettleTimer);
+      postSettleTimer = setTimeout(recompute, 300);
+    };
     const settle = () => {
       if (settleTimer) clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
         firstBatchDone = true;
         recompute();
         setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
-      }, 400);
+      }, 900);
     };
-    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (!firstBatchDone) settle(); else recompute(); });
-    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recompute(); });
-    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recompute(); });
-    setTimeout(() => { if (!firstBatchDone) { firstBatchDone = true; recompute(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); } }, 3000);
-    kontrolYearUnsubsRef.current[year] = () => off(yr);
+    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (!firstBatchDone) settle(); else recomputeDebounced(); });
+    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recomputeDebounced(); });
+    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recomputeDebounced(); });
+    setTimeout(() => { if (!firstBatchDone) { firstBatchDone = true; recompute(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); } }, 12000);
+    kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); };
   }, [user]);
 
   // ─────────────────────────────────────────────────────────────────────
@@ -8569,21 +8614,21 @@ export default function GWGSuperApp() {
                     <div style={{ fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, minWidth:0 }}>
                       <div style={{ maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.displayName?.split(" ")[0]}</div>
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
-                      <span className="gw-hide-xs">
+                      <span style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
                       {!isOnline ? (
                         <span style={{ color:"#FCD34D" }} title="Tidak ada koneksi internet — perubahan tersimpan di perangkat ini dan akan sinkron otomatis begitu online kembali">
-                          📴 Offline{pendingSync > 0 ? ` · ${pendingSync} menunggu` : " · data lokal"}
+                          📴<span className="gw-hide-xs"> Offline{pendingSync > 0 ? ` · ${pendingSync} menunggu` : " · data lokal"}</span>
                         </span>
                       ) : pendingSync > 0 ? (
-                        <span style={{ color:"#FCD34D" }} title="Sedang mengirim perubahan yang tersimpan saat offline">🔄 Mengirim {pendingSync} perubahan...</span>
+                        <span style={{ color:"#FCD34D" }} title="Sedang mengirim perubahan yang tersimpan saat offline">🔄<span className="gw-hide-xs"> Mengirim {pendingSync} perubahan...</span></span>
                       ) : syncError ? (
-                        <span style={{ color:"#FCA5A5" }}>⚠️ Gagal sync</span>
+                        <span style={{ color:"#FCA5A5" }} title={syncError}>⚠️<span className="gw-hide-xs"> Gagal sync</span></span>
                       ) : syncing ? (
-                        <span>🔄 Sinkronisasi...</span>
+                        <span title="Sedang memuat data dari cloud — di jaringan lambat ini bisa makan waktu">🔄<span className="gw-hide-xs"> Sinkronisasi...</span></span>
                       ) : lastSync ? (
-                        <span>☁️ Sinkron {lastSync.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}</span>
+                        <span>☁️<span className="gw-hide-xs"> Sinkron {lastSync.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}</span></span>
                       ) : (
-                        <span>☁️ Terhubung</span>
+                        <span>☁️<span className="gw-hide-xs"> Terhubung</span></span>
                       )}
                       {" ·"}{" "}
                       </span>
@@ -8618,6 +8663,18 @@ export default function GWGSuperApp() {
             <div style={{ background:"rgba(196,154,26,.25)", border:"1px solid rgba(196,154,26,.4)", borderRadius:8, padding:"8px 14px",
               marginBottom:12, fontSize:12, color:"#FBF3D9", display:"flex", alignItems:"center", gap:8 }}>
               ⚠️ <span><b>Mode Lokal:</b> Untuk sinkronisasi lintas perangkat, konfigurasikan Firebase di variabel <code>FIREBASE_CONFIG</code> pada file ini. Lihat instruksi di komentar atas.</span>
+            </div>
+          )}
+
+          {/* ✅ Banner "masih memuat data awal dari cloud" — supaya di jaringan
+              lambat, angka yang masih rendah/nol di Dashboard tidak disalah-
+              artikan sebagai "data hilang". Tanpa ini, pengguna hanya melihat
+              angka yang diam-diam terus bertambah tanpa penjelasan kenapa
+              belum lengkap saat aplikasi baru dibuka. */}
+          {user && firebaseDB && syncing && !cloudLoaded && (
+            <div style={{ background:"rgba(59,130,246,.2)", border:"1px solid rgba(59,130,246,.4)", borderRadius:8, padding:"8px 14px",
+              marginBottom:12, fontSize:12, color:"#DBEAFE", display:"flex", alignItems:"center", gap:8 }}>
+              🔄 <span><b>Memuat data dari cloud...</b> Angka di bawah masih bisa bertambah sebentar lagi, terutama di jaringan lambat — bukan data yang hilang.</span>
             </div>
           )}
 
