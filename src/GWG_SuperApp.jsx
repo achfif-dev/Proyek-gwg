@@ -4,6 +4,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { Network } from "@capacitor/network";
 import { Capacitor } from "@capacitor/core";
+import { App as CapApp } from "@capacitor/app";
 import { Filesystem, Directory } from "@capacitor/filesystem";
 import { Share } from "@capacitor/share";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
@@ -183,6 +184,33 @@ function useOnlineStatus() {
     return () => { mounted = false; if (handle) handle.remove(); };
   }, []);
   return isOnline;
+}
+
+// ✅ Android sering membekukan/memutus koneksi jaringan aplikasi yang
+// sedang di-BACKGROUND (pindah ke app lain / layar dikunci) demi hemat
+// baterai — walau app-nya sendiri TIDAK ditutup. Koneksi Firebase yang
+// sedang berjalan bisa putus diam-diam, dan saat app dibuka lagi, proses
+// "menyambung ulang" tidak selalu mulus/cepat, terutama di sinyal lemah.
+// Solusinya: kalau app di-background LEBIH DARI 60 detik, begitu aktif
+// lagi langsung reload penuh — supaya proses re-sync mengikuti alur "buka
+// dari awal" yang sudah diperbaiki (deteksi loading lebih sabar di sinyal
+// lemah), bukan bergantung pada reconnect otomatis yang tidak selalu andal.
+// Background SEBENTAR (<60 detik, misal cuma buka notifikasi lalu balik
+// lagi) TIDAK memicu reload, supaya tidak mengganggu pemakaian normal.
+function useAppResumeReload() {
+  useEffect(() => {
+    if (!Capacitor.isNativePlatform()) return; // cuma relevan untuk APK native
+    let pausedAt = null;
+    let listenerHandle;
+    CapApp.addListener("appStateChange", ({ isActive }) => {
+      if (!isActive) {
+        pausedAt = Date.now();
+      } else if (pausedAt && (Date.now() - pausedAt) > 60000) {
+        window.location.reload();
+      }
+    }).then(h => { listenerHandle = h; });
+    return () => { if (listenerHandle) listenerHandle.remove(); };
+  }, []);
 }
 
 // ─────────────────────────────────────────────
@@ -8020,6 +8048,7 @@ export default function GWGSuperApp() {
   }, []);
 
   const isOnline = useOnlineStatus();
+  useAppResumeReload();
   const [activeTab, setActiveTab] = useState("dashboard");
   const [showReset, setShowReset] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState("");
