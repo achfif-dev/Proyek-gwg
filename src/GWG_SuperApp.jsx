@@ -6115,6 +6115,11 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   const [filterSiklusStart, setFilterSiklusStart] = useState("");
   const [filterSiklusEnd, setFilterSiklusEnd] = useState("");
 
+  // ─── Perputaran Stok (Terjual ÷ Stok Beredar saat ini) ───
+  // Pakai ulang filterBulan/filterKuartal/filterTahun yang sama dengan mode
+  // Bulanan/Kuartal/Tahunan — tinggal pilih tipe periodenya di sini.
+  const [perputaranPeriodeType, setPerputaranPeriodeType] = useState("bulanan"); // bulanan|kuartal|tahunan
+
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
   const ruteOpts = useMemo(() => {
@@ -6372,6 +6377,77 @@ function TabRekap({ db, analytics, salesWilayahId }) {
 
     return hasil;
   }, [enrichKontrol, filterSiklusWilayahs, filterSiklusStart, filterSiklusEnd, produkAktif, analytics.penjualanLuar]);
+
+  // ─── PERPUTARAN STOK (Terjual periode ÷ Stok Beredar saat ini) ───
+  const perputaranStok = useMemo(() => {
+    // 1) Terjual per rute, sesuai tipe periode yang dipilih (bulanan/kuartal/tahunan)
+    let rowsPeriode;
+    if (perputaranPeriodeType === "bulanan") {
+      rowsPeriode = enrichKontrol.filter(k => k.tanggal?.startsWith(filterBulan));
+    } else if (perputaranPeriodeType === "kuartal") {
+      const KUARTAL_MONTHS_LOCAL = { "1":["01","02","03"], "2":["04","05","06"], "3":["07","08","09"], "4":["10","11","12"] };
+      const months = KUARTAL_MONTHS_LOCAL[filterKuartal] || [];
+      rowsPeriode = enrichKontrol.filter(k => {
+        if (!k.tanggal) return false;
+        const [y,m] = k.tanggal.split("-");
+        return y===filterTahun && months.includes(m);
+      });
+    } else {
+      rowsPeriode = enrichKontrol.filter(k => k.tanggal?.startsWith(filterTahun));
+    }
+    const terjualByRute = {};
+    rowsPeriode.forEach(k => {
+      const key = k.ruteId || "NORUTE";
+      if (!terjualByRute[key]) terjualByRute[key] = {};
+      produkAktif.forEach(p => {
+        terjualByRute[key][p.id] = (terjualByRute[key][p.id]||0) + Number(k[`terjual_${p.id}`]||0);
+      });
+    });
+
+    // 2) Stok Beredar per rute — LIVE dari Master Toko saat ini (bukan
+    //    historis per periode), karena stok memang selalu "kembali ke
+    //    kapasitas etalase" tiap kunjungan kecuali ada penyesuaian —
+    //    jadi yang relevan dibandingkan adalah kondisi SEKARANG.
+    const stokByRute = {};
+    (db.toko||[]).filter(t=>t.status==="Aktif").forEach(t => {
+      const key = t.ruteId || "NORUTE";
+      if (!stokByRute[key]) stokByRute[key] = {};
+      produkAktif.forEach(p => {
+        stokByRute[key][p.id] = (stokByRute[key][p.id]||0) + Number(t[`stok_${p.id}`]||0);
+      });
+    });
+
+    // 3) Gabungkan jadi baris per rute (dengan info wilayah)
+    const ruteRows = (db.rute||[]).map(r => {
+      const w = (db.wilayah||[]).find(x=>x.id===r.wilayahId);
+      const stok = stokByRute[r.id] || {};
+      const terjual = terjualByRute[r.id] || {};
+      return { ruteId:r.id, ruteNama:r.nama, wilayahId:r.wilayahId, wilayahNama:w?.nama||"—", stok, terjual };
+    }).filter(r => !isSalesRestricted || r.wilayahId===salesWilayahId)
+      .sort((a,b) => a.wilayahNama.localeCompare(b.wilayahNama,"id",{sensitivity:"base"}) || naturalCompare(a.ruteNama,b.ruteNama));
+
+    // 4) Agregasi per wilayah
+    const wilByMap = {};
+    ruteRows.forEach(r => {
+      if (!wilByMap[r.wilayahId]) wilByMap[r.wilayahId] = { wilayahId:r.wilayahId, wilayahNama:r.wilayahNama, stok:{}, terjual:{} };
+      produkAktif.forEach(p => {
+        wilByMap[r.wilayahId].stok[p.id] = (wilByMap[r.wilayahId].stok[p.id]||0) + (r.stok[p.id]||0);
+        wilByMap[r.wilayahId].terjual[p.id] = (wilByMap[r.wilayahId].terjual[p.id]||0) + (r.terjual[p.id]||0);
+      });
+    });
+    const wilayahRows = Object.values(wilByMap).sort((a,b)=>a.wilayahNama.localeCompare(b.wilayahNama,"id",{sensitivity:"base"}));
+
+    // 5) Keseluruhan (total perusahaan)
+    const total = { stok:{}, terjual:{} };
+    wilayahRows.forEach(w => {
+      produkAktif.forEach(p => {
+        total.stok[p.id] = (total.stok[p.id]||0) + (w.stok[p.id]||0);
+        total.terjual[p.id] = (total.terjual[p.id]||0) + (w.terjual[p.id]||0);
+      });
+    });
+
+    return { ruteRows, wilayahRows, total };
+  }, [enrichKontrol, db.toko, db.rute, db.wilayah, produkAktif, perputaranPeriodeType, filterBulan, filterKuartal, filterTahun, isSalesRestricted, salesWilayahId]);
 
   // ─── BULANAN PER WILAYAH ───
   const rekapBulanan = useMemo(() => {
@@ -6703,6 +6779,11 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       ? `Siklus Kontrol ${filterSiklusWilayahs.length>1 ? "Gabungan: "+wilNamaGabungan : wilNamaGabungan} (${filterSiklusStart||"?"} s/d ${filterSiklusEnd||"?"})`
       : "Siklus Kontrol — pilih wilayah dulu";
     activeFilename = `siklus_${filterSiklusWilayahs.join("-")||"wilayah"}_${filterSiklusStart||""}_${filterSiklusEnd||""}`;
+  } else if (mode==="perputaran") {
+    activeData = []; // bespoke render (PerputaranDetail), tidak pakai tabel generik
+    activeCols = [];
+    activeTitle = "Perputaran Stok";
+    activeFilename = `perputaran_stok_${perputaranPeriodeType}`;
   } else {
     activeData = rekapTahunan;
     activeCols = filterWilayah ? colsKuartalRute : colsKuartalWil;
@@ -6718,6 +6799,72 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   const totalTidakTerjualAll = activeData.reduce((s,r)=>s+(r.jumlahTidakTerjual||0),0);
 
   // ─── RENDER HARIAN DETAIL (per toko dalam rute) ───
+  function PerputaranDetail() {
+    const { ruteRows, wilayahRows, total } = perputaranStok;
+
+    // Format 1 sel: "terjual/stok (persentase%)" — kalau stok 0, tampilkan
+    // "—" (bukan pembagian dengan nol yang tidak berarti apa-apa).
+    function selPerputaran(terjual, stok) {
+      if (!stok) return <span style={{ color:T.gray400 }}>—</span>;
+      const pct = (terjual / stok) * 100;
+      const warna = pct >= 50 ? T.green : pct >= 20 ? T.gold : T.red;
+      return (
+        <span>
+          <b>{fmt(terjual)}</b><span style={{ color:T.gray400 }}>/{fmt(stok)}</span>
+          {" "}<span style={{ color:warna, fontWeight:700 }}>({pct.toFixed(1)}%)</span>
+        </span>
+      );
+    }
+
+    function TabelPerputaran({ title, rows, labelKey, labelNama }) {
+      return (
+        <Card style={{ marginBottom:16 }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:12 }}>{title}</div>
+          <div style={{ overflowX:"auto" }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
+              <thead>
+                <tr style={{ background:T.gray50, borderBottom:`2px solid ${T.gray200}` }}>
+                  <th style={{ padding:"8px 10px", textAlign:"left" }}>{labelNama}</th>
+                  {produkAktif.map(p=>(
+                    <th key={p.id} style={{ padding:"8px 10px", textAlign:"left" }}>{p.nama}<br/><span style={{ fontWeight:400, color:T.gray400 }}>Terjual/Beredar</span></th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r,i)=>(
+                  <tr key={r[labelKey]||i} style={{ borderTop:`1px solid ${T.gray100}`, background:i%2===0?T.white:T.gray50 }}>
+                    <td style={{ padding:"8px 10px", fontWeight:600 }}>{r[labelNama==="Rute"?"ruteNama":"wilayahNama"]}</td>
+                    {produkAktif.map(p=>(
+                      <td key={p.id} style={{ padding:"8px 10px" }}>{selPerputaran(r.terjual[p.id]||0, r.stok[p.id]||0)}</td>
+                    ))}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      );
+    }
+
+    return (
+      <div>
+        <Card style={{ marginBottom:16, background:T.greenLt }}>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:12 }}>🌍 Keseluruhan Perusahaan</div>
+          <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
+            {produkAktif.map(p=>(
+              <div key={p.id}>
+                <div style={{ fontSize:12, color:T.gray600, marginBottom:4 }}>{p.nama}</div>
+                <div style={{ fontSize:18 }}>{selPerputaran(total.terjual[p.id]||0, total.stok[p.id]||0)}</div>
+              </div>
+            ))}
+          </div>
+        </Card>
+        {!isSalesRestricted && <TabelPerputaran title="📍 Per Wilayah" rows={wilayahRows} labelKey="wilayahId" labelNama="Wilayah" />}
+        <TabelPerputaran title="🛣️ Per Rute" rows={ruteRows} labelKey="ruteId" labelNama="Rute" />
+      </div>
+    );
+  }
+
   function HarianDetail() {
     return (
       <div>
@@ -6843,6 +6990,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"kuartal",  label:"📊 Kuartal" },
     { key:"tahunan",  label:"📈 Tahunan" },
     { key:"siklus",   label:"🔁 Siklus Wilayah" },
+    { key:"perputaran", label:"🔄 Perputaran Stok" },
     { key:"ranking",  label:"🏆 Ranking Toko" },
   ];
 
@@ -7045,6 +7193,48 @@ function TabRekap({ db, analytics, salesWilayahId }) {
           </div>
         )}
 
+        {/* Filter khusus Perputaran Stok */}
+        {mode==="perputaran" && (
+          <>
+            <div style={{ minWidth:140 }}>
+              <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Tipe Periode</div>
+              <select value={perputaranPeriodeType} onChange={e=>setPerputaranPeriodeType(e.target.value)}
+                style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                <option value="bulanan">Bulanan</option>
+                <option value="kuartal">Kuartal</option>
+                <option value="tahunan">Tahunan</option>
+              </select>
+            </div>
+            {perputaranPeriodeType==="bulanan" && (
+              <div style={{ minWidth:160 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Bulan</div>
+                <input type="month" value={filterBulan} onChange={e=>setFilterBulan(e.target.value)}
+                  style={{ padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }} />
+              </div>
+            )}
+            {(perputaranPeriodeType==="kuartal" || perputaranPeriodeType==="tahunan") && (
+              <div style={{ minWidth:120 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Tahun</div>
+                <select value={filterTahun} onChange={e=>setFilterTahun(e.target.value)}
+                  style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                  {tahunList.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+            )}
+            {perputaranPeriodeType==="kuartal" && (
+              <div style={{ minWidth:140 }}>
+                <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Kuartal</div>
+                <select value={filterKuartal} onChange={e=>setFilterKuartal(e.target.value)}
+                  style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
+                  {[["1","Q1 (Jan–Mar)"],["2","Q2 (Apr–Jun)"],["3","Q3 (Jul–Sep)"],["4","Q4 (Okt–Des)"]].map(([v,l])=>(
+                    <option key={v} value={v}>{l}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </>
+        )}
+
         {/* Filter khusus Ranking Toko */}
         {mode==="ranking" && (
           <>
@@ -7096,6 +7286,8 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       {/* Content */}
       {mode==="harian" ? (
         <HarianDetail />
+      ) : mode==="perputaran" ? (
+        <PerputaranDetail />
       ) : (
         activeData.length === 0 ? (
           <Card>
