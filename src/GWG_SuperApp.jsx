@@ -3501,7 +3501,14 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
         else if (stokBaru === 0 && sudahAda) toRemove.push(p.id);
       });
       if (toAdd.length > 0 || toRemove.length > 0) {
-        updates.produkIds = existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd);
+        const finalIds = existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd);
+        updates.produkIds = finalIds;
+        // ✅ Ikut update flag produk_<id> juga — sebelumnya cuma produkIds
+        // (array) yang diupdate di sini, padahal tabel & ceklis "Produk
+        // yang Dijual" di Master Toko sebenarnya membaca flag produk_<id>,
+        // bukan array-nya. Akibatnya ceklis di layar tetap kelihatan
+        // tercentang walau produkIds sudah benar terhapus.
+        produkAktif.forEach(p => { updates[`produk_${p.id}`] = finalIds.includes(p.id); });
       }
       return { ...t, ...updates };
     });
@@ -3821,22 +3828,36 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
                   hint="Dipakai untuk auto-upgrade ke Aktif setelah 30 hari" />
               )}
               <div style={{ marginBottom:14 }}>
-                <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>Produk yang Dijual:</div>
-                <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
-                  {produkAktif.map(p => (
-                    <label key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
-                      border:`1.5px solid ${(form.produkIds||[]).includes(p.id)?T.green:T.gray200}`,
-                      borderRadius:8, cursor:"pointer", background:(form.produkIds||[]).includes(p.id)?T.greenLt:T.white }}>
-                      <input type="checkbox" checked={(form.produkIds||[]).includes(p.id)}
-                        onChange={e => {
-                          const ids = form.produkIds||[];
-                          f("produkIds", e.target.checked ? [...ids,p.id] : ids.filter(x=>x!==p.id));
-                        }}
-                        style={{ accentColor:T.green }} />
-                      <span style={{ fontSize:13, fontWeight:600 }}>{p.nama}</span>
-                      <span style={{ fontSize:11, color:T.gray400 }}>{fmtRp(p.harga)}</span>
-                    </label>
-                  ))}
+                <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>
+                  Produk yang Dijual{modal==="add" ? " & Stok Awal" : ""}:
+                </div>
+                <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns: modal==="add" ? "1fr" : "1fr 1fr", gap:6 }}>
+                  {produkAktif.map(p => {
+                    const checked = (form.produkIds||[]).includes(p.id);
+                    return (
+                    <div key={p.id} style={{ display:"flex", alignItems:"center", gap:8, padding:"8px 12px",
+                      border:`1.5px solid ${checked?T.green:T.gray200}`,
+                      borderRadius:8, background:checked?T.greenLt:T.white }}>
+                      <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", flex:1 }}>
+                        <input type="checkbox" checked={checked}
+                          onChange={e => {
+                            const ids = form.produkIds||[];
+                            f("produkIds", e.target.checked ? [...ids,p.id] : ids.filter(x=>x!==p.id));
+                            if (modal==="add" && !e.target.checked) f(`stok_${p.id}`, 0);
+                          }}
+                          style={{ accentColor:T.green }} />
+                        <span style={{ fontSize:13, fontWeight:600 }}>{p.nama}</span>
+                        <span style={{ fontSize:11, color:T.gray400 }}>{fmtRp(p.harga)}</span>
+                      </label>
+                      {modal==="add" && checked && (
+                        <input type="number" min="0" placeholder="Stok awal"
+                          value={form[`stok_${p.id}`]||""}
+                          onChange={e=>f(`stok_${p.id}`, e.target.value)}
+                          style={{ width:90, padding:"6px 8px", border:`1.5px solid ${T.gray200}`, borderRadius:6, fontSize:13, fontFamily:"inherit" }} />
+                      )}
+                    </div>
+                    );
+                  })}
                 </div>
               </div>
               <Input label="Catatan" value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea" />
@@ -4456,7 +4477,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   // 4. Stok bisa disesuaikan manual (ditambah/dikurangi) sebelum konfirmasi
   // ✅ Submit modal Tambah Toko cepat dari Kontrol — rute/wilayah otomatis dari filter aktif
   function submitTambahToko() {
-    const { nama, ruteId, status, catatan } = tambahTokoForm;
+    const { nama, ruteId, status, catatan, produkIds } = tambahTokoForm;
     if (!nama || !ruteId) return alert("Nama & Rute wajib diisi");
     const ruteObj = (db.rute||[]).find(r=>r.id===ruteId);
     if (isSalesRestricted && ruteObj?.wilayahId !== salesWilayahId) {
@@ -4471,9 +4492,19 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const counter = newId.replace("T","");
     const today = new Date().toISOString().slice(0,10);
     const tanggalMasuk = status === "Baru" ? today : null;
-    addRecord("toko", { id:newId, nama, ruteId, status, catatan, kode:prefix+counter, tanggalMasuk });
+    // ✅ Produk yang dititip + stok awalnya langsung tersimpan sejak toko
+    // dibuat — dulu harus ditambah manual belakangan lewat Penyesuaian
+    // Stok. Pakai buildProdukFlagUpdates() yang sama dengan yang dipakai
+    // Kontrol/Penyesuaian Stok, supaya representasi produkIds ↔ produk_<id>
+    // selalu konsisten di satu tempat, tidak diduplikasi manual di sini.
+    const payload = { id:newId, nama, ruteId, status, catatan, kode:prefix+counter, tanggalMasuk,
+      produkIds: produkIds||[], ...buildProdukFlagUpdates(produkIds||[]) };
+    produkAktif.forEach(p => {
+      payload[`stok_${p.id}`] = (produkIds||[]).includes(p.id) ? Number(tambahTokoForm[`stok_${p.id}`]||0) : 0;
+    });
+    addRecord("toko", payload);
     setTambahTokoModal(false);
-    setTambahTokoForm({ nama:"", ruteId:"", status:"Aktif", catatan:"" });
+    setTambahTokoForm({ nama:"", ruteId:"", status:"Aktif", catatan:"", produkIds:[] });
     alert(`✅ Toko "${nama}" berhasil ditambahkan!`);
   }
 
@@ -4997,7 +5028,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           </Btn>
           <Btn variant="secondary" onClick={()=>{
             // Pre-fill rute dari filter aktif jika ada
-            setTambahTokoForm({ nama:"", ruteId:filter.ruteId||"", status:"Aktif", catatan:"" });
+            setTambahTokoForm({ nama:"", ruteId:filter.ruteId||"", status:"Aktif", catatan:"", produkIds:[] });
             setTambahTokoModal(true);
           }} icon="🏪">Tambah Toko</Btn>
           <Btn variant="secondary" onClick={()=>openPenyesuaian("")} icon="🔧">Penyesuaian Stok</Btn>
@@ -5035,6 +5066,37 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             <Input label="Status Awal" value={tambahTokoForm.status}
               onChange={v=>ttf("status",v)}
               options={[{value:"Aktif",label:"Aktif"},{value:"Baru",label:"Baru (trial)"},{value:"Non-Aktif",label:"Non-Aktif"}]} />
+            <div style={{ marginBottom:14 }}>
+              <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:8 }}>
+                Produk yang Dititipkan (opsional — bisa diisi belakangan lewat Penyesuaian Stok):
+              </div>
+              {produkAktif.map(p => {
+                const checked = (tambahTokoForm.produkIds||[]).includes(p.id);
+                return (
+                  <div key={p.id} style={{ display:"flex", alignItems:"center", gap:10, padding:"8px 12px",
+                    border:`1.5px solid ${checked?T.green:T.gray200}`, borderRadius:8, marginBottom:6,
+                    background:checked?T.greenLt:T.white }}>
+                    <label style={{ display:"flex", alignItems:"center", gap:8, cursor:"pointer", flex:1 }}>
+                      <input type="checkbox" checked={checked}
+                        onChange={e => {
+                          const ids = tambahTokoForm.produkIds||[];
+                          ttf("produkIds", e.target.checked ? [...ids,p.id] : ids.filter(x=>x!==p.id));
+                          if (!e.target.checked) ttf(`stok_${p.id}`, 0);
+                        }}
+                        style={{ accentColor:T.green }} />
+                      <span style={{ fontSize:13, fontWeight:600 }}>{p.nama}</span>
+                      <span style={{ fontSize:11, color:T.gray400 }}>{fmtRp(p.harga)}</span>
+                    </label>
+                    {checked && (
+                      <input type="number" min="0" placeholder="Stok awal"
+                        value={tambahTokoForm[`stok_${p.id}`]||""}
+                        onChange={e=>ttf(`stok_${p.id}`, e.target.value)}
+                        style={{ width:90, padding:"6px 8px", border:`1.5px solid ${T.gray200}`, borderRadius:6, fontSize:13, fontFamily:"inherit" }} />
+                    )}
+                  </div>
+                );
+              })}
+            </div>
             <Input label="Catatan" value={tambahTokoForm.catatan||""} onChange={v=>ttf("catatan",v)}
               type="textarea" placeholder="Opsional" />
             <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
