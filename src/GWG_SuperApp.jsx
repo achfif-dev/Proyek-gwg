@@ -3490,24 +3490,29 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
       // otomatis dicentang (kalau belum), dan produk yang diisi 0 otomatis
       // dihilangkan ceklisnya (kalau sebelumnya sudah tercentang) — sama
       // seperti sinkronisasi di Kontrol Bulanan & Penyesuaian Stok.
+      // ✅ PENTING: acuan "sudah tercentang atau belum" sekarang membaca
+      // flag produk_<id> LANGSUNG (bukan array produkIds) — karena flag
+      // itu yang sebenarnya ditampilkan sebagai ceklis di tabel/layar. Untuk
+      // toko lama yang produkIds & flag-nya SUDAH TERLANJUR tidak sinkron
+      // dari sebelum perbaikan ini ada (mis. dari hasil import lama), acuan
+      // ke array produkIds gagal mendeteksi ketidaksesuaian itu — makanya
+      // ceklis yang sudah kadung salah tidak pernah ikut terkoreksi. Dengan
+      // membaca flag langsung, perbaikan ini otomatis "menyembuhkan" data
+      // lama yang sudah telanjur tidak sinkron, bukan cuma menjaga data
+      // baru tetap sinkron ke depannya.
       const existingIds = t.produkIds || [];
       const toAdd = [];
       const toRemove = [];
       produkAktif.forEach(p => {
         const stokBaru = Number(stokForm.stok[p.id]||0);
         updates[`stok_${p.id}`] = stokBaru;
-        const sudahAda = existingIds.includes(p.id);
+        const sudahAda = !!t[`produk_${p.id}`];
         if (stokBaru > 0 && !sudahAda) toAdd.push(p.id);
         else if (stokBaru === 0 && sudahAda) toRemove.push(p.id);
       });
       if (toAdd.length > 0 || toRemove.length > 0) {
-        const finalIds = existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd);
+        const finalIds = [...new Set(existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd))];
         updates.produkIds = finalIds;
-        // ✅ Ikut update flag produk_<id> juga — sebelumnya cuma produkIds
-        // (array) yang diupdate di sini, padahal tabel & ceklis "Produk
-        // yang Dijual" di Master Toko sebenarnya membaca flag produk_<id>,
-        // bukan array-nya. Akibatnya ceklis di layar tetap kelihatan
-        // tercentang walau produkIds sudah benar terhapus.
         produkAktif.forEach(p => { updates[`produk_${p.id}`] = finalIds.includes(p.id); });
       }
       return { ...t, ...updates };
