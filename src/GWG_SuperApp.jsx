@@ -6780,10 +6780,43 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       : "Siklus Kontrol — pilih wilayah dulu";
     activeFilename = `siklus_${filterSiklusWilayahs.join("-")||"wilayah"}_${filterSiklusStart||""}_${filterSiklusEnd||""}`;
   } else if (mode==="perputaran") {
-    activeData = []; // bespoke render (PerputaranDetail), tidak pakai tabel generik
-    activeCols = [];
-    activeTitle = "Perputaran Stok";
-    activeFilename = `perputaran_stok_${perputaranPeriodeType}`;
+    // Tampilan layarnya "bespoke" (PerputaranDetail, 3 tabel bertingkat),
+    // tapi untuk export perlu diratakan jadi 1 tabel biasa: setiap baris
+    // = 1 cakupan (Keseluruhan/Wilayah/Rute), kolom = Terjual, Stok Beredar,
+    // dan Persentase per produk.
+    const perpRows = [];
+    perpRows.push({ cakupan:"🌍 Keseluruhan", nama:"Semua Wilayah",
+      ...Object.fromEntries(produkAktif.flatMap(p => [
+        [`terjual_${p.id}`, perputaranStok.total.terjual[p.id]||0],
+        [`stok_${p.id}`, perputaranStok.total.stok[p.id]||0],
+        [`pct_${p.id}`, perputaranStok.total.stok[p.id] ? `${((perputaranStok.total.terjual[p.id]||0)/perputaranStok.total.stok[p.id]*100).toFixed(1)}%` : "—"],
+      ])) });
+    perputaranStok.wilayahRows.forEach(w => perpRows.push({ cakupan:"📍 Wilayah", nama:w.wilayahNama,
+      ...Object.fromEntries(produkAktif.flatMap(p => [
+        [`terjual_${p.id}`, w.terjual[p.id]||0],
+        [`stok_${p.id}`, w.stok[p.id]||0],
+        [`pct_${p.id}`, w.stok[p.id] ? `${((w.terjual[p.id]||0)/w.stok[p.id]*100).toFixed(1)}%` : "—"],
+      ])) }));
+    perputaranStok.ruteRows.forEach(r => perpRows.push({ cakupan:"🛣️ Rute", nama:`${r.ruteNama} (${r.wilayahNama})`,
+      ...Object.fromEntries(produkAktif.flatMap(p => [
+        [`terjual_${p.id}`, r.terjual[p.id]||0],
+        [`stok_${p.id}`, r.stok[p.id]||0],
+        [`pct_${p.id}`, r.stok[p.id] ? `${((r.terjual[p.id]||0)/r.stok[p.id]*100).toFixed(1)}%` : "—"],
+      ])) }));
+    activeData = perpRows;
+    activeCols = [
+      { key:"cakupan", label:"Cakupan" },
+      { key:"nama", label:"Nama" },
+      ...produkAktif.flatMap(p => [
+        { key:`terjual_${p.id}`, label:`${p.nama} - Terjual` },
+        { key:`stok_${p.id}`, label:`${p.nama} - Stok Beredar` },
+        { key:`pct_${p.id}`, label:`${p.nama} - %` },
+      ]),
+    ];
+    const periodeLabel = perputaranPeriodeType==="bulanan" ? filterBulan
+      : perputaranPeriodeType==="kuartal" ? `Q${filterKuartal} ${filterTahun}` : filterTahun;
+    activeTitle = `Perputaran Stok (${periodeLabel})`;
+    activeFilename = `perputaran_stok_${perputaranPeriodeType}_${periodeLabel}`;
   } else {
     activeData = rekapTahunan;
     activeCols = filterWilayah ? colsKuartalRute : colsKuartalWil;
