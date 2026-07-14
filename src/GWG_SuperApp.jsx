@@ -2756,16 +2756,16 @@ function SearchableSelect({ label, value, onChange, options, required, placehold
   const s = { width:"100%", padding:"9px 12px", border:`1.5px solid ${T.gray200}`,
     borderRadius:8, fontSize:13, fontFamily:"inherit", outline:"none",
     background: disabled ? T.gray50 : T.white, boxSizing:"border-box", color:T.gray800,
-    cursor: disabled ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"space-between" };
+    cursor: disabled ? "not-allowed" : "pointer", display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, minWidth:0 };
 
   return (
-    <div style={{ marginBottom:14, position:"relative" }} ref={boxRef}>
+    <div style={{ marginBottom:14, position:"relative", minWidth:0 }} ref={boxRef}>
       <label style={{ display:"block", fontSize:12, fontWeight:600, color:T.gray600, marginBottom:5 }}>
         {label}{required && <span style={{ color:T.red }}> *</span>}
       </label>
       <div style={s} onClick={()=>{ if(!disabled){ setOpen(o=>!o); } }}>
-        <span style={{ color: selected ? T.gray800 : T.gray400, display:"flex", alignItems:"center", gap:6, overflow:"hidden" }}>
-          <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{selected ? selected.label : "— Pilih —"}</span>
+        <span style={{ color: selected ? T.gray800 : T.gray400, display:"flex", alignItems:"center", gap:6, overflow:"hidden", minWidth:0, flex:1 }}>
+          <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0, flexShrink:1 }}>{selected ? selected.label : "— Pilih —"}</span>
           {selected?.sudahDikontrol && (
             <span title="Toko ini sudah ada entri kontrol pada tanggal yang dipilih" style={{ flexShrink:0, fontSize:10, fontWeight:700,
               color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px" }}>✅ Sudah</span>
@@ -2788,11 +2788,11 @@ function SearchableSelect({ label, value, onChange, options, required, placehold
             ) : filtered.map(o => (
               <div key={o.value} onClick={()=>{ onChange(o.value); setOpen(false); setQ(""); }}
                 style={{ padding:"9px 12px", fontSize:13, cursor:"pointer", color:T.gray800,
-                  display:"flex", alignItems:"center", justifyContent:"space-between", gap:8,
+                  display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, minWidth:0,
                   background: o.value===value ? T.greenLt : T.white }}
                 onMouseEnter={e=>e.currentTarget.style.background=T.gray50}
                 onMouseLeave={e=>e.currentTarget.style.background = o.value===value ? T.greenLt : T.white}>
-                <span>{o.label}</span>
+                <span style={{ minWidth:0, wordBreak:"break-word" }}>{o.label}</span>
                 {/* ✅ Badge: toko ini sudah ada entri kontrol pada tanggal yang sedang dipilih di form */}
                 {o.sudahDikontrol && (
                   <span title="Sudah dikontrol pada tanggal ini" style={{ flexShrink:0, fontSize:10, fontWeight:700,
@@ -2814,14 +2814,14 @@ function Modal({ title, children, onClose, width=480 }) {
       display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
       onClick={e => e.target===e.currentTarget && onClose()}>
       <div style={{ background:T.white, borderRadius:16, width:"100%", maxWidth:width,
-        maxHeight:"90vh", overflow:"auto", boxShadow:"0 20px 60px rgba(0,0,0,.2)" }}>
+        maxHeight:"90vh", overflowY:"auto", overflowX:"hidden", boxShadow:"0 20px 60px rgba(0,0,0,.2)", boxSizing:"border-box" }}>
         <div className="gw-modal-header" style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
           padding:"18px 24px", borderBottom:`1px solid ${T.gray200}`,
           position:"sticky", top:0, background:T.white, zIndex:1 }}>
           <div style={{ fontSize:16, fontWeight:700, color:T.gray800 }}>{title}</div>
           <button onClick={onClose} style={{ border:"none", background:"none", cursor:"pointer", fontSize:20, color:T.gray400 }}>×</button>
         </div>
-        <div className="gw-modal-body" style={{ padding:24 }}>{children}</div>
+        <div className="gw-modal-body" style={{ padding:24, boxSizing:"border-box", minWidth:0 }}>{children}</div>
       </div>
     </div>
   );
@@ -5708,12 +5708,12 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
       {modal && (
         <Modal title={modal==="add"?"Tambah Kontrol Bulanan":"Edit Kontrol Bulanan"} onClose={()=>setModal(null)} width={600}>
-          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:4 }}>
+          <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:4, minWidth:0 }}>
             <Input label="Wilayah" value={modalFilter.wilayahId} onChange={handleModalWilayahChange}
               options={wilayahOpts} hint="Pilih wilayah untuk mempersempit pilihan rute & toko" />
             <Input label="Rute" value={modalFilter.ruteId} onChange={handleModalRuteChange}
               options={modalRuteOpts} hint="Pilih rute untuk mempersempit pilihan toko" />
-            <div style={{ gridColumn:"1/-1" }}>
+            <div style={{ gridColumn:"1/-1", minWidth:0 }}>
               <SearchableSelect
                 label="Toko"
                 value={form.tokoId}
@@ -5738,10 +5738,10 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                     background: isBaru ? T.blueLt : T.greenLt,
                     border: `1px solid ${isBaru ? "#93C5FD" : T.green+"33"}`,
                     borderRadius: 8, padding: "8px 12px",
-                    display: "flex", alignItems: "center", gap: 10, fontSize: 12
+                    display: "flex", alignItems: "flex-start", gap: 10, fontSize: 12
                   }}>
-                    <span style={{ fontSize: 18 }}>{isBaru ? "🆕" : "✅"}</span>
-                    <div>
+                    <span style={{ fontSize: 18, flexShrink:0 }}>{isBaru ? "🆕" : "✅"}</span>
+                    <div style={{ minWidth:0, flex:1, wordBreak:"break-word" }}>
                       <span style={{ fontWeight: 700, color: isBaru ? T.blue : T.green }}>
                         {toko.nama}
                       </span>
@@ -5749,7 +5749,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                         marginLeft: 8,
                         background: isBaru ? T.blue : T.green,
                         color: "#fff", fontSize: 10, fontWeight: 700,
-                        borderRadius: 99, padding: "1px 8px"
+                        borderRadius: 99, padding: "1px 8px", whiteSpace:"nowrap", display:"inline-block"
                       }}>
                         {toko.status}
                       </span>
@@ -5766,8 +5766,8 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                   borderRadius: 8, padding: "8px 12px",
                   display: "flex", alignItems: "flex-start", gap: 10, fontSize: 12
                 }}>
-                  <span style={{ fontSize: 18 }}>⚠️</span>
-                  <div style={{ color: T.red }}>
+                  <span style={{ fontSize: 18, flexShrink:0 }}>⚠️</span>
+                  <div style={{ color: T.red, minWidth:0, flex:1, wordBreak:"break-word" }}>
                     <b>Toko ini sudah dikontrol pada tanggal {form.tanggal}.</b>
                     <div style={{ color: T.gray500, marginTop: 2 }}>
                       {modal==="add"
