@@ -3981,7 +3981,11 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
-    cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni: false });
+    cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni: false,
+    // ✅ Filter tambahan supaya lebih gampang ketemu kesalahan input:
+    // status catatan kunjungan (Tutup/Tidak Terjual/Bermasalah/Isi Manual),
+    // dan rentang jumlah penjualan (total pcs semua produk per entri).
+    catatanStatus:"", minJumlah:"", maxJumlah:"" });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
 
   // ✅ AUTO-APPROVE: pengajuan Penyesuaian Stok dari Sales yang sudah lewat
@@ -4052,17 +4056,18 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const toko = (db.toko||[]).find(t=>t.id===k.tokoId);
     const rute = toko ? (db.rute||[]).find(r=>r.id===toko.ruteId) : null;
     const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
-    let totalRev = 0, totalBonus = 0;
+    let totalRev = 0, totalBonus = 0, totalTerjual = 0;
     produkAktif.forEach(p => {
       const terjual = k[`terjual_${p.id}`]||0;
       totalRev += terjual * (p.harga||0);
+      totalTerjual += terjual;
       // bonus per kontrol = jumlah pcs bonus produk (bukan uang)
       const bonusPcs = k[`bonusInput_${p.id}`] !== undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0);
       totalBonus += bonusPcs;
     });
     return { ...k, tokoNama:toko?.nama||"?", ruteNama:rute?.nama||"?",
       wilayahNama:wilayah?.nama||"?", ruteId:rute?.id||"", wilayahId:wilayah?.id||"",
-      totalRev, totalBonus, toko, rute, wilayah };
+      totalRev, totalBonus, totalTerjual, toko, rute, wilayah };
   }), [db, produkAktif]);
 
   // Filter: wilayah → rute cascade.
@@ -4086,7 +4091,10 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     (!filter.wilayahId || k.wilayahId === filter.wilayahId) &&
     (!filter.ruteId    || k.ruteId    === filter.ruteId) &&
     (!filter.bulan     || k.tanggal?.startsWith(filter.bulan)) &&
-    (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q)))
+    (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q))) &&
+    (!filter.catatanStatus || (filter.catatanStatus==="manual" ? !k.catatanStatus || k.catatanStatus==="manual" : k.catatanStatus===filter.catatanStatus)) &&
+    (filter.minJumlah==="" || filter.minJumlah==null || k.totalTerjual >= Number(filter.minJumlah)) &&
+    (filter.maxJumlah==="" || filter.maxJumlah==null || k.totalTerjual <= Number(filter.maxJumlah))
   ), [enriched, filter]);
 
   // ✅ Penjualan Luar Rute yang cocok dengan filter Wilayah/Rute/Bulan yang
@@ -5252,11 +5260,40 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         { key:"bulan",     label:"Bulan",    value:filter.bulan,     type:"month", placeholder:"2026-06" },
         ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
+        { key:"catatanStatus", label:"Status Kunjungan", value:filter.catatanStatus,
+          options:[
+            { value:"manual",  label:"✅ Isi Manual (normal)" },
+            { value:"tutup",   label:"🔵 Toko Tutup" },
+            { value:"terjual", label:"🟡 Tidak Terjual" },
+            { value:"masalah", label:"🔴 Bermasalah" },
+          ] },
       ]} onChange={(k,v)=>{
         if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
         else setFilter(p=>({...p,[k]:v}));
       }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:"",
-        cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false})} />
+        cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
+        catatanStatus:"", minJumlah:"", maxJumlah:""})} />
+
+      {/* Filter rentang Jumlah Penjualan (total pcs semua produk per entri)
+          — membantu cari entri yang kelihatan janggal, mis. salah ketik
+          angka kebesaran/kekecilan saat input kontrol. */}
+      <div style={{ display:"flex", gap:10, alignItems:"flex-end", marginBottom:16, flexWrap:"wrap" }}>
+        <div style={{ minWidth:130 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Jumlah Terjual Min</div>
+          <input type="number" min="0" placeholder="cth: 0" value={filter.minJumlah}
+            onChange={e=>setFilter(p=>({...p, minJumlah:e.target.value}))}
+            style={{ padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", width:110 }} />
+        </div>
+        <div style={{ minWidth:130 }}>
+          <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>Jumlah Terjual Maks</div>
+          <input type="number" min="0" placeholder="cth: 100" value={filter.maxJumlah}
+            onChange={e=>setFilter(p=>({...p, maxJumlah:e.target.value}))}
+            style={{ padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", width:110 }} />
+        </div>
+        {(filter.minJumlah!=="" || filter.maxJumlah!=="") && (
+          <Btn variant="secondary" size="sm" onClick={()=>setFilter(p=>({...p, minJumlah:"", maxJumlah:""}))}>Reset Jumlah</Btn>
+        )}
+      </div>
 
       {/* Summary per Produk */}
       {produkAktif.length > 0 && (data.length > 0 || luarRuteData.length > 0) && (
@@ -6069,7 +6106,13 @@ function Dashboard({ db, analytics, salesWilayahId }) {
                 </tr>
               </thead>
               <tbody>
-                {kontrolScoped.slice().reverse().slice(0,8).map((k,i)=>{
+                {kontrolScoped.slice()
+                  // ✅ Diurutkan berdasarkan TANGGAL sungguhan (turun/terbaru
+                  // dulu), bukan cuma dibalik urutan array — sebelumnya
+                  // reverse() saja bisa salah tampil kalau urutan data di
+                  // database tidak kebetulan sama dengan urutan tanggal.
+                  .sort((a,b) => (b.tanggal||"").localeCompare(a.tanggal||"") || (b.id||"").localeCompare(a.id||""))
+                  .slice(0,8).map((k,i)=>{
                   const cs = CATATAN_STATUS[k.catatanStatus]||CATATAN_STATUS.manual;
                   return (
                     <tr key={k.id} style={{ borderBottom:`1px solid ${T.gray100}`, background:i%2===0?T.white:T.gray50 }}>
