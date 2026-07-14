@@ -2764,8 +2764,14 @@ function SearchableSelect({ label, value, onChange, options, required, placehold
         {label}{required && <span style={{ color:T.red }}> *</span>}
       </label>
       <div style={s} onClick={()=>{ if(!disabled){ setOpen(o=>!o); } }}>
-        <span style={{ color: selected ? T.gray800 : T.gray400 }}>{selected ? selected.label : "— Pilih —"}</span>
-        <span style={{ color:T.gray400, fontSize:11 }}>{open ? "▲" : "▼"}</span>
+        <span style={{ color: selected ? T.gray800 : T.gray400, display:"flex", alignItems:"center", gap:6, overflow:"hidden" }}>
+          <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{selected ? selected.label : "— Pilih —"}</span>
+          {selected?.sudahDikontrol && (
+            <span title="Toko ini sudah ada entri kontrol pada tanggal yang dipilih" style={{ flexShrink:0, fontSize:10, fontWeight:700,
+              color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px" }}>✅ Sudah</span>
+          )}
+        </span>
+        <span style={{ color:T.gray400, fontSize:11, flexShrink:0 }}>{open ? "▲" : "▼"}</span>
       </div>
       {open && !disabled && (
         <div style={{ position:"absolute", top:"100%", left:0, right:0, marginTop:4, background:T.white,
@@ -2782,10 +2788,16 @@ function SearchableSelect({ label, value, onChange, options, required, placehold
             ) : filtered.map(o => (
               <div key={o.value} onClick={()=>{ onChange(o.value); setOpen(false); setQ(""); }}
                 style={{ padding:"9px 12px", fontSize:13, cursor:"pointer", color:T.gray800,
+                  display:"flex", alignItems:"center", justifyContent:"space-between", gap:8,
                   background: o.value===value ? T.greenLt : T.white }}
                 onMouseEnter={e=>e.currentTarget.style.background=T.gray50}
                 onMouseLeave={e=>e.currentTarget.style.background = o.value===value ? T.greenLt : T.white}>
-                {o.label}
+                <span>{o.label}</span>
+                {/* ✅ Badge: toko ini sudah ada entri kontrol pada tanggal yang sedang dipilih di form */}
+                {o.sudahDikontrol && (
+                  <span title="Sudah dikontrol pada tanggal ini" style={{ flexShrink:0, fontSize:10, fontWeight:700,
+                    color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>✅ Sudah</span>
+                )}
               </div>
             ))}
           </div>
@@ -4434,6 +4446,22 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
 
   function submit() {
     if (!form.tokoId || !form.tanggal) return alert("Toko & Tanggal wajib diisi");
+    // ⚠️ Validasi kontrol ganda: cegah input dobel untuk toko yang sama di
+    // tanggal yang sama (kecuali entri yang sedang diedit sendiri). Tetap
+    // izinkan lanjut kalau memang disengaja (mis. koreksi/kunjungan susulan),
+    // tapi wajib konfirmasi eksplisit dulu.
+    const duplikatKontrol = (db.kontrol||[]).some(k =>
+      k.tokoId === form.tokoId && k.tanggal === form.tanggal && !(modal==="edit" && k.id===form.id)
+    );
+    if (duplikatKontrol) {
+      const namaTokoDup = (db.toko||[]).find(t=>t.id===form.tokoId)?.nama || "Toko ini";
+      const lanjut = confirm(
+        `⚠️ ${namaTokoDup} SUDAH ada entri kontrol pada tanggal ${form.tanggal}.\n\n` +
+        `Menyimpan sekarang akan menambah entri kontrol KEDUA di hari yang sama untuk toko ini.\n\n` +
+        `Lanjutkan simpan?`
+      );
+      if (!lanjut) return;
+    }
     // Status kunjungan WAJIB jika tidak ada produk terjual; opsional jika ada penjualan
     if (!adaTerjual && !form.catatanStatus) return alert("Pilih status kunjungan karena tidak ada produk yang terjual");
     const d = form.tanggal;
@@ -4634,11 +4662,27 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       const ruteIds = (db.rute||[]).filter(r=>r.wilayahId===modalFilter.wilayahId).map(r=>r.id);
       list = list.filter(t=>ruteIds.includes(t.ruteId));
     }
+    // ✅ Validasi kontrol ganda: cek toko mana saja yang SUDAH ada entri kontrol
+    // pada tanggal yang sedang dipilih di form (form.tanggal). Entri yang sedang
+    // diedit sendiri dikecualikan supaya edit tidak dianggap "duplikat".
+    const tglCek = form.tanggal;
     return list.map(t => {
       const statusBadge = t.status === "Baru" ? " 🆕 [BARU]" : t.status === "Aktif" ? "" : ` [${t.status}]`;
-      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}` };
+      const sudahDikontrol = !!tglCek && (db.kontrol||[]).some(k =>
+        k.tokoId === t.id && k.tanggal === tglCek && !(modal==="edit" && k.id===form.id)
+      );
+      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol };
     });
-  }, [db.toko, db.rute, modalFilter]);
+  }, [db.toko, db.rute, db.kontrol, modalFilter, form.tanggal, form.id, modal]);
+
+  // ✅ Flag toko yang sedang dipilih di form: apakah SUDAH ada entri kontrol
+  // untuk tanggal yang sama (dipakai untuk banner peringatan di modal)
+  const tokoSudahDikontrolHariIni = useMemo(() => {
+    if (!form.tokoId || !form.tanggal) return false;
+    return (db.kontrol||[]).some(k =>
+      k.tokoId === form.tokoId && k.tanggal === form.tanggal && !(modal==="edit" && k.id===form.id)
+    );
+  }, [db.kontrol, form.tokoId, form.tanggal, form.id, modal]);
 
   // Daftar toko untuk dropdown Penyesuaian Stok (tidak terikat filter wilayah/rute modal kontrol)
   const allTokoOpts = useMemo(() => {
@@ -5714,6 +5758,25 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                   </div>
                 );
               })()}
+              {/* ⚠️ Peringatan: toko yang dipilih SUDAH ada entri kontrol di tanggal yang sama */}
+              {tokoSudahDikontrolHariIni && (
+                <div style={{
+                  marginTop: -8, marginBottom: 14,
+                  background: T.redLt, border: `1px solid #FCA5A5`,
+                  borderRadius: 8, padding: "8px 12px",
+                  display: "flex", alignItems: "flex-start", gap: 10, fontSize: 12
+                }}>
+                  <span style={{ fontSize: 18 }}>⚠️</span>
+                  <div style={{ color: T.red }}>
+                    <b>Toko ini sudah dikontrol pada tanggal {form.tanggal}.</b>
+                    <div style={{ color: T.gray500, marginTop: 2 }}>
+                      {modal==="add"
+                        ? "Menyimpan sekarang akan membuat entri kontrol KEDUA di hari yang sama untuk toko ini."
+                        : "Ada entri kontrol lain untuk toko & tanggal yang sama."}
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
             <Input label="Tanggal Kontrol" value={form.tanggal} onChange={v=>f("tanggal",v)} type="date" required />
           </div>
