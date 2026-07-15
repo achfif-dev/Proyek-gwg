@@ -6957,11 +6957,15 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       if (!k.tokoId) return;
       if (!byToko[k.tokoId]) byToko[k.tokoId] = {
         tokoId:k.tokoId, tokoNama:k.tokoNama, ruteNama:k.ruteNama, wilayahNama:k.wilayahNama,
-        totalTerjual:0, totalRev:0, jumlahKunjungan:0,
+        totalTerjual:0, totalRev:0, jumlahKunjungan:0, totalBonus:0,
       };
       byToko[k.tokoId].totalTerjual += k.totalTerjual||0;
       byToko[k.tokoId].totalRev += k.totalRev||0;
       byToko[k.tokoId].jumlahKunjungan += 1;
+      // ⚠️ FIX: field totalBonus juga tidak pernah diakumulasi di sini —
+      // sama seperti terjual_${p.id} di bawah, akibatnya kartu "Total Bonus"
+      // di mode Ranking Toko selalu tampil 0 pcs walau sebetulnya ada bonus.
+      byToko[k.tokoId].totalBonus += k.totalBonus||0;
       // ⚠️ FIX: sebelumnya field per-produk (terjual_${p.id}) tidak pernah
       // diisi di sini — hanya totalTerjual gabungan semua produk yang
       // diakumulasi. Akibatnya kartu ringkasan "Jual B35/Roll On/Roll 7500"
