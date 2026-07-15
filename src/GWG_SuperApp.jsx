@@ -6962,11 +6962,21 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       byToko[k.tokoId].totalTerjual += k.totalTerjual||0;
       byToko[k.tokoId].totalRev += k.totalRev||0;
       byToko[k.tokoId].jumlahKunjungan += 1;
+      // ⚠️ FIX: sebelumnya field per-produk (terjual_${p.id}) tidak pernah
+      // diisi di sini — hanya totalTerjual gabungan semua produk yang
+      // diakumulasi. Akibatnya kartu ringkasan "Jual B35/Roll On/Roll 7500"
+      // di mode Ranking Toko selalu tampil 0 pcs, karena kartu itu (generik,
+      // dipakai semua mode) mencari field terjual_${p.id} per baris yang
+      // memang belum ada di sini. Ditambahkan supaya konsisten dengan mode
+      // rekap lain.
+      produkAktif.forEach(p => {
+        byToko[k.tokoId][`terjual_${p.id}`] = (byToko[k.tokoId][`terjual_${p.id}`]||0) + Number(k[`terjual_${p.id}`]||0);
+      });
     });
     const list = Object.values(byToko).filter(r => r.jumlahKunjungan > 0);
     list.sort((a,b) => rankingSortBy === "revenue" ? b.totalRev - a.totalRev : b.totalTerjual - a.totalTerjual);
     return list.map((r,i) => ({ ...r, rank:i+1 }));
-  }, [enrichKontrol, filterWilayah, rankingScope, rankingSortBy]);
+  }, [enrichKontrol, filterWilayah, rankingScope, rankingSortBy, produkAktif]);
 
   // ─── RANKING TOKO — Konsisten terjual N bulan berturut-turut ───
   // Sebuah bulan dihitung "terjual" untuk toko itu kalau totalTerjual > 0
@@ -7147,11 +7157,23 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   }
 
   // ─── Summary cards ───
-  const totalRevAll = activeData.reduce((s,r)=>s+r.totalRev,0);
-  const totalKunjungan = activeData.reduce((s,r)=>s+(r.jumlahToko||r.jumlahKunjungan||0),0);
-  const totalBonusAll = activeData.reduce((s,r)=>s+(r.totalBonus||0),0);
-  const totalTutupAll = activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
-  const totalTidakTerjualAll = activeData.reduce((s,r)=>s+(r.jumlahTidakTerjual||0),0);
+  // ⚠️ FIX TRIPLE-COUNT: untuk mode Perputaran Stok, activeData (perpRows)
+  // berisi 3 tingkat baris sekaligus dalam 1 array — "🌍 Keseluruhan" (1
+  // baris = total nasional), "📍 Wilayah" (jumlahnya = total nasional lagi),
+  // dan "🛣️ Rute" (jumlahnya = total nasional lagi juga). Array ini memang
+  // dirancang begitu supaya file ekspor jadi 1 tabel datar berjenjang.
+  // Tapi kalau di-reduce polos seperti mode lain (yang activeData-nya flat,
+  // baris SALING EKSKLUSIF), angka "Terjual" jadi ke-hitung 3x lipat
+  // (Keseluruhan + semua Wilayah + semua Rute ditumpuk). Makanya sebelumnya
+  // Jual Roll 7500 tampil 30 pcs padahal aslinya cuma 10 pcs (10 × 3 level).
+  // Untuk mode ini, sumber angka yang benar adalah perputaranStok.total
+  // (dihitung sekali, bukan hasil jumlah baris yang tumpang tindih).
+  const isPerputaran = mode === "perputaran";
+  const totalRevAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+r.totalRev,0);
+  const totalKunjungan = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahToko||r.jumlahKunjungan||0),0);
+  const totalBonusAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.totalBonus||0),0);
+  const totalTutupAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
+  const totalTidakTerjualAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTidakTerjual||0),0);
 
   // ─── RENDER HARIAN DETAIL (per toko dalam rute) ───
   function PerputaranDetail() {
@@ -7384,9 +7406,14 @@ function TabRekap({ db, analytics, salesWilayahId }) {
               totalRevFmt: fmtRp(totalRevAll),
               totalBonus: totalBonusAll,
               ...produkAktif.reduce((acc, p) => {
-                acc[`stok_${p.id}`]    = activeData.reduce((s,r)=>s+(r[`stok_${p.id}`]||0),0);
-                acc[`terjual_${p.id}`] = activeData.reduce((s,r)=>s+(r[`terjual_${p.id}`]||0),0);
-                acc[`bonus_${p.id}`]   = activeData.reduce((s,r)=>s+(r[`bonus_${p.id}`]||0),0);
+                // ⚠️ Sama seperti fix kartu ringkasan di atas: khusus mode
+                // Perputaran Stok, activeData (perpRows) berisi 3 tingkat
+                // baris tumpang tindih (Keseluruhan+Wilayah+Rute), jadi
+                // reduce polos akan triple-count. Ambil dari
+                // perputaranStok.total yang sudah benar untuk mode ini.
+                acc[`stok_${p.id}`]    = isPerputaran ? (perputaranStok.total.stok[p.id]||0)    : activeData.reduce((s,r)=>s+(r[`stok_${p.id}`]||0),0);
+                acc[`terjual_${p.id}`] = isPerputaran ? (perputaranStok.total.terjual[p.id]||0) : activeData.reduce((s,r)=>s+(r[`terjual_${p.id}`]||0),0);
+                acc[`bonus_${p.id}`]   = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r[`bonus_${p.id}`]||0),0);
                 return acc;
               }, {}),
             },
@@ -7630,7 +7657,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         {produkAktif.map(p => (
           <StatCard key={p.id}
             label={`Jual ${p.nama}`}
-            value={`${fmt(activeData.reduce((s,r)=>s+(r[`terjual_${p.id}`]||0),0))} pcs`}
+            value={`${fmt(isPerputaran ? (perputaranStok.total.terjual[p.id]||0) : activeData.reduce((s,r)=>s+(r[`terjual_${p.id}`]||0),0))} pcs`}
             icon="🧴" color={T.purple} />
         ))}
       </div>
