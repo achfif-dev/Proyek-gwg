@@ -5055,19 +5055,27 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         );
       })()}
 
-      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
-        <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
-          <div style={{ fontSize:12, color:T.gray400 }}>
-            {data.length} entri
-            {luarRuteData.length>0 && <span> · 🛣️ +{luarRuteData.length} luar rute</span>}
-            {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
-            {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
-          </div>
+      <div style={{ marginBottom:16 }}>
+        <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
+        <div style={{ fontSize:12, color:T.gray400, marginBottom:12 }}>
+          {data.length} entri
+          {luarRuteData.length>0 && <span> · 🛣️ +{luarRuteData.length} luar rute</span>}
+          {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
+          {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
         </div>
-        <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+
+        {/* Toolbar aksi — ✅ Dirapikan: sebelumnya tombol-tombol ini cuma
+            flex-wrap bebas (lebar tiap tombol beda-beda mengikuti isi teks),
+            jadi barisnya patah tidak rata. Sekarang dibungkus 1 kartu putih
+            bertepi seperti kartu "Mode Tabs" di tab Rekap, dengan CSS grid
+            (auto-fit, lebar kolom seragam) supaya rapi & konsisten di layar
+            HP — satu kartu besar, bukan tombol lepas berserakan. */}
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(150px, 1fr))",
+          gap:8, background:T.white, border:`1px solid ${T.gray200}`, borderRadius:12,
+          padding:10, boxShadow:"0 1px 4px rgba(0,0,0,.05)", marginBottom:8 }}>
           <ImportMenu label="Import Kontrol" onTemplate={()=>downloadKontrolTemplate(db)} onParseRows={importKontrolFromRows} />
           <Btn variant="secondary" icon="🔄" onClick={recalcAllTokoStok}
+            style={{ width:"100%", justifyContent:"center" }}
             title="Hitung ulang stok Master Toko untuk semua toko yang pernah dikontrol, pakai data kontrol & penyesuaian yang sudah ada">
             Hitung Ulang Semua Stok
           </Btn>
@@ -5138,18 +5146,23 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             );
           })()}
           <Btn variant="secondary" size="sm" icon="📅"
+            style={{ width:"100%", justifyContent:"center" }}
             onClick={()=>setViewMode(v=>v==="table"?"monthly":"table")}>
             {viewMode==="table"?"🗺️ View per Rute":"📋 View Tabel"}
           </Btn>
-          <Btn variant="secondary" onClick={()=>{
+          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={()=>{
             // Pre-fill rute dari filter aktif jika ada
             setTambahTokoForm({ nama:"", ruteId:filter.ruteId||"", status:"Aktif", catatan:"", produkIds:[] });
             setTambahTokoModal(true);
           }} icon="🏪">Tambah Toko</Btn>
-          <Btn variant="secondary" onClick={()=>openPenyesuaian("")} icon="🔧">Penyesuaian Stok</Btn>
-          <Btn variant="secondary" onClick={openLuarRute} icon="🛣️">Penjualan Luar Rute</Btn>
-          <Btn onClick={openAdd} icon="＋">Tambah Kontrol</Btn>
+          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={()=>openPenyesuaian("")} icon="🔧">Penyesuaian Stok</Btn>
+          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={openLuarRute} icon="🛣️">Penjualan Luar Rute</Btn>
         </div>
+
+        {/* ✅ "Tambah Kontrol" tetap jadi tombol utama (hijau, aksi paling
+            sering dipakai) — dipisah di bawah grid supaya menonjol, full
+            lebar layar, senada dengan gaya tombol utama di tab lain. */}
+        <Btn onClick={openAdd} icon="＋" style={{ width:"100%", justifyContent:"center", padding:"12px 20px", fontSize:14 }}>Tambah Kontrol</Btn>
       </div>
 
       {/* Modal Tambah Toko Cepat */}
@@ -5397,9 +5410,12 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         )}
       </div>
 
-      {/* Summary per Produk */}
+      {/* Summary per Produk — ✅ Dirapikan supaya konsisten dengan gaya kartu
+          di tab Rekap Penjualan (StatCard: ikon, label kapital berwarna,
+          angka besar), disusun dalam SATU KOLOM PENUH (bukan grid/flex-wrap
+          2 kolom seperti sebelumnya) supaya rapi & mudah dibaca di layar HP. */}
       {produkAktif.length > 0 && (data.length > 0 || luarRuteData.length > 0) && (
-        <div style={{ display:"flex", gap:10, flexWrap:"wrap", marginBottom:14 }}>
+        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:14 }}>
           {produkAktif.map(p => {
             // ✅ Pcs terjual & bonus kini ikut menjumlahkan Penjualan Luar
             // Rute yang cocok filter — sebelumnya cuma dari entri Kontrol
@@ -5409,12 +5425,11 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
             const bonusTotal = data.reduce((s,k)=>s+(k[`bonusInput_${p.id}`]!==undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0)),0)
               + luarRuteData.reduce((s,k)=>s+Number(k[`bonusInput_${p.id}`]||0),0);
             return (
-              <div key={p.id} style={{ background:T.goldLt, border:`1px solid ${T.gold}33`,
-                borderRadius:10, padding:"10px 16px", flex:1, minWidth:130 }}>
-                <div style={{ fontSize:11, fontWeight:700, color:T.gold, marginBottom:2 }}>{p.nama}</div>
-                <div style={{ fontSize:16, fontWeight:800, color:T.gray800 }}>{fmt(totalTerjual)} pcs terjual</div>
-                <div style={{ fontSize:12, color:T.orange }}>Bonus: {fmt(bonusTotal)} pcs</div>
-              </div>
+              <StatCard key={p.id}
+                label={p.nama}
+                value={`${fmt(totalTerjual)} pcs terjual`}
+                sub={`Bonus: ${fmt(bonusTotal)} pcs`}
+                icon="🧴" color={T.gold} />
             );
           })}
         </div>
