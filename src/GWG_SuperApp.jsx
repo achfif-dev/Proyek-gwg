@@ -1540,6 +1540,19 @@ function useDB(user) {
           await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), recs);
           await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), true);
         }
+        // ✅ FIX SINKRONISASI: sebelumnya, tahun-tahun kontrol dari backup
+        // yang BUKAN tahun live (mis. tahun-tahun lama) hanya sempat tampil
+        // sekilas lewat setDB(restored) di atas — begitu event Firebase apa
+        // pun terjadi pada tahun yang sedang live (termasuk tulisan restore
+        // ini sendiri ke tahun berjalan), recomputeKontrolArr() otomatis
+        // terpicu dan membangun ulang db.kontrol HANYA dari kontrolByYearRef
+        // (tahun-tahun yang benar-benar ter-listen) — diam-diam MEMBUANG
+        // tahun-tahun lama yang baru saja dipulihkan dari tampilan (datanya
+        // tetap aman di Firebase, cuma hilang dari layar tanpa peringatan).
+        // Memanggil loadKontrolYear() untuk setiap tahun di backup membuat
+        // tahun-tahun itu resmi "termuat" (listener aktif + ikut di-merge),
+        // sehingga tidak hilang lagi setelah recompute berikutnya.
+        Object.keys(kontrolByYear).forEach(year => loadKontrolYear(year));
       } catch (e) {
         console.warn('Gagal restore tabel "kontrol":', e);
         failed.push("kontrol");
@@ -1557,7 +1570,7 @@ function useDB(user) {
       return { ok: false, failed, message: `Sebagian data GAGAL disimpan ke cloud (kemungkinan koneksi terputus): ${failed.join(", ")}. Coba ulangi restore dengan koneksi lebih stabil — jangan tutup halaman saat proses berjalan.` };
     }
     return { ok: true };
-  }, [pushUpdates]);
+  }, [pushUpdates, loadKontrolYear]);
 
   // ─────────────────────────────────────────────
   //  ARSIP TAHUN LAMA (Google Drive) — hemat kuota Realtime Database
@@ -3512,7 +3525,17 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
       // membaca flag langsung, perbaikan ini otomatis "menyembuhkan" data
       // lama yang sudah telanjur tidak sinkron, bukan cuma menjaga data
       // baru tetap sinkron ke depannya.
-      const existingIds = t.produkIds || [];
+      // ✅ FIX SINKRONISASI LANJUTAN: baris di bawah ini SEBELUMNYA masih
+      // membaca `t.produkIds || []` untuk existingIds — padahal produkIds
+      // toko hasil Import Toko (lihat importTokoFromRows) TIDAK PERNAH diisi
+      // sama sekali (cuma flag produk_<id> yang diisi dari kolom Excel).
+      // Akibatnya, begitu ada SATU produk saja yang butuh ditambah/dihapus
+      // dari ceklis di sini, finalIds dibangun dari existingIds yang kosong
+      // → ceklis "Produk yang Dijual" untuk SEMUA produk lain milik toko itu
+      // (yang sebenarnya sudah benar tercentang lewat import) ikut TERHAPUS
+      // diam-diam. Disamakan dengan syncProdukIdsDariStokKontrol: existingIds
+      // dibaca dari flag produk_<id> langsung, bukan dari array produkIds.
+      const existingIds = produkAktif.filter(p=>!!t[`produk_${p.id}`]).map(p=>p.id);
       const toAdd = [];
       const toRemove = [];
       produkAktif.forEach(p => {
@@ -3591,6 +3614,14 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
         const v = String(row[`Jual: ${p.nama}`] ?? "").trim().toLowerCase();
         produkFlags[`produk_${p.id}`] = ["ya","yes","true","1"].includes(v);
       });
+      // ✅ FIX SINKRONISASI: sebelumnya import toko hanya mengisi flag
+      // produk_<id>, TIDAK PERNAH mengisi array produkIds sama sekali —
+      // padahal beberapa fitur lain (Update Stok Awal sebelum diperbaiki,
+      // Penyesuaian Stok, badge "produk baru") membaca produkIds sebagai
+      // acuan. Toko hasil import jadi punya dua representasi yang tidak
+      // sinkron sejak awal dibuat. Disamakan di sini: produkIds diturunkan
+      // dari flag yang sama persis.
+      const produkIdsFromImport = produkAktif.filter(p=>produkFlags[`produk_${p.id}`]).map(p=>p.id);
       const newId = genId("T", [...existingToko, ...toAdd, ...dupCandidates.map(d=>d.tokoObj)]);
       const prefix = "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-";
       const counter = newId.replace("T","");
@@ -3602,7 +3633,7 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
         const stokVal = Number(row[`Stok: ${p.nama}`] ?? row[`Stok ${p.nama}`] ?? 0);
         stokFromExcel[`stok_${p.id}`] = isNaN(stokVal) ? 0 : stokVal;
       });
-      const tokoObj = { id:newId, nama, ruteId:ruteObj.id, status, catatan, kode:prefix+counter, tanggalMasuk:tanggalMasukImport, ...produkFlags, ...stokFromExcel };
+      const tokoObj = { id:newId, nama, ruteId:ruteObj.id, status, catatan, kode:prefix+counter, tanggalMasuk:tanggalMasukImport, produkIds: produkIdsFromImport, ...produkFlags, ...stokFromExcel };
       if (isDup) {
         dupCandidates.push({ tokoObj, label: `Toko "${nama}" di rute "${ruteObj.nama}" (baris ${rowNum})` });
       } else {
@@ -3682,7 +3713,17 @@ function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayah
         onClearAll={()=>setSelectedIds([])}
         onDeleteSelected={deleteSelected} label="toko" />
       <Card padding={0}>
-        <Table columns={cols} data={data} onEdit={openEdit}
+        {/* ✅ FIX SINKRONISASI/HAK AKSES: sebelumnya onEdit di sini TIDAK
+            dibatasi sama sekali (beda dengan onDelete di bawah yang sudah
+            benar dikunci untuk Sales) — padahal form edit toko ini bisa
+            mengubah field struktural: Rute (dropdown-nya menampilkan SEMUA
+            rute dari SEMUA wilayah, tanpa filter wilayah Sales — jadi Sales
+            bisa memindahkan toko keluar dari wilayahnya sendiri), Status
+            (melewati alur "Nonaktifkan Toko" yang benar, yang otomatis
+            mencatat penarikan stok sebagai Penyesuaian beraudit), dan ceklis
+            "Produk yang Dijual" (melewati alur approval Penyesuaian Stok
+            sepenuhnya). Dikunci sama seperti onDelete. */}
+        <Table columns={cols} data={data} onEdit={isSalesRestricted ? undefined : openEdit}
           onDelete={isSalesRestricted ? undefined : (id=>{ if(confirm("Hapus toko ini?")) deleteRecord("toko",id); })}
           selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
@@ -4762,6 +4803,23 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           // sudah mencerminkan hasil restock etalase saat kunjungan itu.
           updated[`stok_${p.id}`] = Number(terakhir[`stok_${p.id}`]||0);
         });
+        // ✅ FIX SINKRONISASI: entri manual (submit()) selalu memanggil
+        // syncProdukIdsDariStokKontrol setelahnya supaya ceklis "Produk yang
+        // Dijual" ikut ter-update kalau ada produk baru dititip — import
+        // massal sebelumnya TIDAK melakukan ini sama sekali, jadi toko yang
+        // baru pertama kali dititipi produk lewat file Excel tidak otomatis
+        // tercentang di Master Toko (harus dicentang manual belakangan).
+        // Disamakan di sini: produk dengan Stok Awal > 0 di entri TERAKHIR
+        // yang belum tercentang, otomatis ditambahkan ke ceklis.
+        const existingIds = produkAktif.filter(p=>!!t[`produk_${p.id}`]).map(p=>p.id);
+        const toAdd = produkAktif.filter(p =>
+          Number(terakhir[`stok_${p.id}`]||0) > 0 && !existingIds.includes(p.id)
+        ).map(p=>p.id);
+        if (toAdd.length > 0) {
+          const finalIds = [...new Set(existingIds.concat(toAdd))];
+          updated.produkIds = finalIds;
+          produkAktif.forEach(p => { updated[`produk_${p.id}`] = finalIds.includes(p.id); });
+        }
         return updated;
       });
       save({ ...db, kontrol:newKontrol, toko:newToko });
@@ -5567,16 +5625,106 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                                         <Btn variant="danger" size="sm" icon="❌" onClick={()=>{
                                           if (!confirm("Tolak pengajuan penyesuaian stok ini?")) return;
                                           updateRecord("penyesuaian", pz.id, { status:"ditolak", disetujuiOleh:"Manual" });
+                                          // ✅ FIX SINKRONISASI: submitPenyesuaian (jenis "Tambah") langsung
+                                          // mendaftarkan produk baru ke ceklis "Produk yang Dijual" toko SEKETIKA
+                                          // saat diajukan — SEBELUM disetujui. Kalau ternyata pengajuannya
+                                          // DITOLAK, ceklis itu sebelumnya tidak pernah dibatalkan lagi, jadi
+                                          // toko permanen tercatat menjual produk yang pengajuannya sendiri
+                                          // ditolak. Sekarang: lepas ceklisnya lagi, KECUALI toko punya alasan
+                                          // lain untuk produk itu (ada riwayat Kontrol atau pengajuan lain yang
+                                          // belum/tidak ditolak yang melibatkan produk yang sama).
+                                          const tokoTerdampak = (db.toko||[]).find(t=>t.id===pz.tokoId);
+                                          if (tokoTerdampak && pz.jenis === "Tambah") {
+                                            const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
+                                            const adaAlasanLain = (p) => {
+                                              const adaKontrol = (db.kontrol||[]).some(k => k.tokoId===tokoTerdampak.id &&
+                                                (Number(k[`stok_${p.id}`]||0)>0 || Number(k[`terjual_${p.id}`]||0)>0));
+                                              const adaPenyesuaianLain = (db.penyesuaian||[]).some(pz2 => pz2.id!==pz.id &&
+                                                pz2.tokoId===tokoTerdampak.id && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
+                                              return adaKontrol || adaPenyesuaianLain;
+                                            };
+                                            const toRemove = produkDiPengajuanIni.filter(p=>!adaAlasanLain(p)).map(p=>p.id);
+                                            if (toRemove.length > 0) {
+                                              const existingIds = produkAktif.filter(p=>!!tokoTerdampak[`produk_${p.id}`]).map(p=>p.id);
+                                              const finalIds = existingIds.filter(id=>!toRemove.includes(id));
+                                              updateRecord("toko", tokoTerdampak.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
+                                            }
+                                          } else if (tokoTerdampak && pz.jenis === "Tarik") {
+                                            // ✅ FIX SINKRONISASI (lanjutan dari fix "Tambah" di atas): submitPenyesuaian
+                                            // untuk jenis "Tarik" JUGA langsung menghilangkan ceklis "Produk yang
+                                            // Dijual" SEKETIKA saat diajukan — sebelum disetujui. Kalau ternyata
+                                            // pengajuannya DITOLAK, ceklis yang sudah terlanjur dihilangkan itu
+                                            // sebelumnya TIDAK PERNAH dikembalikan lagi, jadi toko permanen
+                                            // kehilangan produk dari daftar jualnya walau penarikannya sendiri
+                                            // ditolak. Dikembalikan di sini, KECUALI masih ada pengajuan "Tarik"
+                                            // lain (belum ditolak) untuk produk yang sama di toko ini.
+                                            const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
+                                            const masihAdaAlasanTarikLain = (p) => (db.penyesuaian||[]).some(pz2 => pz2.id!==pz.id &&
+                                              pz2.tokoId===tokoTerdampak.id && pz2.jenis==="Tarik" && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
+                                            const toRestore = produkDiPengajuanIni.filter(p=>!masihAdaAlasanTarikLain(p)).map(p=>p.id);
+                                            if (toRestore.length > 0) {
+                                              const existingIds = produkAktif.filter(p=>!!tokoTerdampak[`produk_${p.id}`]).map(p=>p.id);
+                                              const finalIds = [...new Set(existingIds.concat(toRestore))];
+                                              updateRecord("toko", tokoTerdampak.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
+                                            }
+                                          }
                                         }}>Tolak</Btn>
                                         {" "}
                                       </>
                                     )}
+                                    {/* ✅ FIX SINKRONISASI: sebelumnya tombol Hapus di sini TIDAK dibatasi
+                                        sama sekali — Sales (walau cuma bisa lihat toko wilayahnya sendiri)
+                                        bisa menghapus SEMBARANG entri, termasuk yang SUDAH DISETUJUI Admin,
+                                        tanpa perlu persetujuan apa pun. Padahal menghapus entri yang sudah
+                                        disetujui langsung memicu recalcTokoStok() yang bisa memundurkan
+                                        angka stok toko secara diam-diam. Alur approval "menunggu → disetujui/
+                                        ditolak" cuma menjaga sisi PEMBUATAN, jadi sisi PENGHAPUSAN ini
+                                        efektif jadi celah untuk melewati approval sepenuhnya. Dibatasi:
+                                        Sales hanya boleh hapus pengajuannya sendiri yang MASIH "menunggu"
+                                        (kalau salah input, bisa dibatalkan sendiri sebelum ditinjau) — begitu
+                                        sudah "disetujui"/"ditolak", hanya Admin/Manajer yang boleh menghapus. */}
+                                    {(!isSalesRestricted || pz.status==="menunggu") && (
                                     <Btn variant="danger" size="sm" icon="🗑" onClick={()=>{
                                       if (!confirm("Hapus penyesuaian stok ini?")) return;
                                       deleteRecord("penyesuaian", pz.id);
                                       const remaining = (db.penyesuaian||[]).filter(x=>x.id!==pz.id);
                                       recalcTokoStok(toko.id, undefined, remaining);
+                                      // ✅ FIX SINKRONISASI: sama seperti "Tolak" di atas — kalau penyesuaian
+                                      // yang dihapus ini jenis "Tambah" dan sempat mendaftarkan produk baru
+                                      // ke ceklis "Produk yang Dijual", hapus juga ceklisnya kalau tidak ada
+                                      // alasan lain (riwayat Kontrol / penyesuaian lain yang tidak ditolak).
+                                      if (pz.jenis === "Tambah") {
+                                        const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
+                                        const adaAlasanLain = (p) => {
+                                          const adaKontrol = (db.kontrol||[]).some(k => k.tokoId===toko.id &&
+                                            (Number(k[`stok_${p.id}`]||0)>0 || Number(k[`terjual_${p.id}`]||0)>0));
+                                          const adaPenyesuaianLain = remaining.some(pz2 => pz2.tokoId===toko.id &&
+                                            pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
+                                          return adaKontrol || adaPenyesuaianLain;
+                                        };
+                                        const toRemove = produkDiPengajuanIni.filter(p=>!adaAlasanLain(p)).map(p=>p.id);
+                                        if (toRemove.length > 0) {
+                                          const existingIds = produkAktif.filter(p=>!!toko[`produk_${p.id}`]).map(p=>p.id);
+                                          const finalIds = existingIds.filter(id=>!toRemove.includes(id));
+                                          updateRecord("toko", toko.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
+                                        }
+                                      } else if (pz.jenis === "Tarik") {
+                                        // ✅ FIX SINKRONISASI (sama seperti "Tolak" di atas): kalau penyesuaian
+                                        // "Tarik" yang dihapus ini sempat menghilangkan ceklis "Produk yang
+                                        // Dijual", kembalikan lagi ceklisnya kalau tidak ada pengajuan "Tarik"
+                                        // lain (belum ditolak) untuk produk yang sama.
+                                        const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
+                                        const masihAdaAlasanTarikLain = (p) => remaining.some(pz2 =>
+                                          pz2.tokoId===toko.id && pz2.jenis==="Tarik" && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
+                                        const toRestore = produkDiPengajuanIni.filter(p=>!masihAdaAlasanTarikLain(p)).map(p=>p.id);
+                                        if (toRestore.length > 0) {
+                                          const existingIds = produkAktif.filter(p=>!!toko[`produk_${p.id}`]).map(p=>p.id);
+                                          const finalIds = [...new Set(existingIds.concat(toRestore))];
+                                          updateRecord("toko", toko.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
+                                        }
+                                      }
                                     }}>Hapus</Btn>
+                                    )}
                                   </td>
                                 </tr>
                               ))}
@@ -5991,6 +6139,28 @@ function Dashboard({ db, analytics, salesWilayahId }) {
     : (db.rute||[]).length;
   const maxRev = Math.max(...perWilayah.map(w=>w.rev),1);
 
+  // ✅ FIX SINKRONISASI: StatCard "Total Pendapatan" sebelumnya diberi
+  // caption statis "bulan ini", padahal `totalRev` di atas menjumlahkan
+  // SELURUH data `kontrol` yang sedang termuat di aplikasi (tanpa filter
+  // tanggal apa pun) — bukan cuma bulan berjalan. Ini penting karena data
+  // "kontrol" dipartisi per-tahun di Firebase dan hanya 1 tahun terbaru
+  // yang otomatis dimuat (lihat KONTROL_LIVE_YEARS di useDB); kalau admin
+  // memuat tahun-tahun lama secara manual, angka ini otomatis mencakup
+  // beberapa tahun sekaligus. Caption sekarang dihitung DINAMIS dari
+  // rentang tahun yang benar-benar ada di data kontrol yang sedang
+  // disumbangkan ke totalRev, supaya selalu sesuai apa pun cakupannya.
+  const kontrolUntukRentang = isSalesRestricted
+    ? analytics.kontrol.filter(k => k.wilayahId === salesWilayahId)
+    : analytics.kontrol;
+  const tahunKontrolTermuat = [...new Set(
+    kontrolUntukRentang.map(k => k.tanggal?.slice(0,4)).filter(Boolean)
+  )].sort();
+  const totalPendapatanSub = tahunKontrolTermuat.length === 0
+    ? "belum ada data"
+    : tahunKontrolTermuat.length === 1
+      ? `akumulasi tahun ${tahunKontrolTermuat[0]}`
+      : `akumulasi ${tahunKontrolTermuat[0]}–${tahunKontrolTermuat[tahunKontrolTermuat.length-1]}`;
+
   // ✅ Ekspor Dashboard — tiga kolom (Kategori, Metrik, Nilai) agar lebih rapi & terkelompok
   const _totalBonus = analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0);
   const dashboardExportRows = [
@@ -6038,8 +6208,8 @@ function Dashboard({ db, analytics, salesWilayahId }) {
       <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
         <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon="🏪" color={T.green} />
         <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon="📍" color={T.teal} />
-        <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub="bulan ini"                           icon="💰" color={T.gold} />
-        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub="70% margin"                          icon="📊" color={T.green} />
+        <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon="💰" color={T.gold} />
+        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`70% margin · ${totalPendapatanSub}`} icon="📊" color={T.green} />
         <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon="🧴" color={T.purple} />
         <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon="📋" color={T.blue} />
         <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon="🎁" color={T.orange} />
@@ -6487,9 +6657,10 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   // ─── PERPUTARAN STOK (Terjual periode ÷ Stok Beredar saat ini) ───
   const perputaranStok = useMemo(() => {
     // 1) Terjual per rute, sesuai tipe periode yang dipilih (bulanan/kuartal/tahunan)
-    let rowsPeriode;
+    let rowsPeriode, luarRowsPeriode;
     if (perputaranPeriodeType === "bulanan") {
       rowsPeriode = enrichKontrol.filter(k => k.tanggal?.startsWith(filterBulan));
+      luarRowsPeriode = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(filterBulan));
     } else if (perputaranPeriodeType === "kuartal") {
       const KUARTAL_MONTHS_LOCAL = { "1":["01","02","03"], "2":["04","05","06"], "3":["07","08","09"], "4":["10","11","12"] };
       const months = KUARTAL_MONTHS_LOCAL[filterKuartal] || [];
@@ -6498,8 +6669,14 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         const [y,m] = k.tanggal.split("-");
         return y===filterTahun && months.includes(m);
       });
+      luarRowsPeriode = (analytics.penjualanLuar||[]).filter(pl => {
+        if (!pl.tanggal) return false;
+        const [y,m] = pl.tanggal.split("-");
+        return y===filterTahun && months.includes(m);
+      });
     } else {
       rowsPeriode = enrichKontrol.filter(k => k.tanggal?.startsWith(filterTahun));
+      luarRowsPeriode = (analytics.penjualanLuar||[]).filter(pl => pl.tanggal?.startsWith(filterTahun));
     }
     const terjualByRute = {};
     rowsPeriode.forEach(k => {
@@ -6509,13 +6686,33 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         terjualByRute[key][p.id] = (terjualByRute[key][p.id]||0) + Number(k[`terjual_${p.id}`]||0);
       });
     });
+    // ✅ FIX SINKRONISASI: ikutkan Penjualan Luar Rute yang sudah terkait ke
+    // rute (ruteId terisi) — mode Harian/Siklus/Bulanan/Kuartal/Tahunan
+    // sudah menggabungkan ini, tapi Perputaran Stok sebelumnya tidak,
+    // sehingga angka "Terjual" di sini selalu lebih rendah (under-count)
+    // dibanding rekap lain untuk periode yang sama persis.
+    (luarRowsPeriode||[]).forEach(pl => {
+      if (!pl.ruteId) return; // rute tidak diketahui — tidak bisa dikaitkan ke rute manapun di sini
+      if (!terjualByRute[pl.ruteId]) terjualByRute[pl.ruteId] = {};
+      produkAktif.forEach(p => {
+        terjualByRute[pl.ruteId][p.id] = (terjualByRute[pl.ruteId][p.id]||0) + Number(pl[`terjual_${p.id}`]||0);
+      });
+    });
 
     // 2) Stok Beredar per rute — LIVE dari Master Toko saat ini (bukan
     //    historis per periode), karena stok memang selalu "kembali ke
     //    kapasitas etalase" tiap kunjungan kecuali ada penyesuaian —
     //    jadi yang relevan dibandingkan adalah kondisi SEKARANG.
+    // ✅ FIX SINKRONISASI: sebelumnya hanya toko status "Aktif" yang dihitung
+    // di sini, padahal TabKontrol mengizinkan entri kontrol (jadi ikut
+    // menyumbang angka "Terjual" di atas) untuk toko berstatus "Aktif" MAUPUN
+    // "Baru" (toko baru otomatis naik status jadi "Aktif" setelah 30 hari —
+    // lihat autoUpgradeBaruToAktif). Kalau toko "Baru" sudah tercatat
+    // penjualannya tapi stoknya tidak ikut dihitung di penyebut, persentase
+    // Perputaran Stok jadi digelembungkan secara tidak akurat (pembilang naik,
+    // penyebut tidak). Disamakan cakupan status-nya di sini.
     const stokByRute = {};
-    (db.toko||[]).filter(t=>t.status==="Aktif").forEach(t => {
+    (db.toko||[]).filter(t=>t.status==="Aktif"||t.status==="Baru").forEach(t => {
       const key = t.ruteId || "NORUTE";
       if (!stokByRute[key]) stokByRute[key] = {};
       produkAktif.forEach(p => {
@@ -6531,6 +6728,25 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       return { ruteId:r.id, ruteNama:r.nama, wilayahId:r.wilayahId, wilayahNama:w?.nama||"—", stok, terjual };
     }).filter(r => !isSalesRestricted || r.wilayahId===salesWilayahId)
       .sort((a,b) => a.wilayahNama.localeCompare(b.wilayahNama,"id",{sensitivity:"base"}) || naturalCompare(a.ruteNama,b.ruteNama));
+
+    // ✅ FIX SINKRONISASI: toko/kontrol yang TIDAK punya rute (ruteId kosong —
+    // toko belum diset rute-nya, atau rute-nya sudah terlanjur dihapus) masuk
+    // ke bucket "NORUTE" di terjualByRute/stokByRute di atas, tapi sebelumnya
+    // diam-diam HILANG dari sini karena ruteRows hanya dibangun dari daftar
+    // db.rute (rute yang benar-benar masih ada) — Total Perputaran Stok jadi
+    // under-count dan tidak sinkron dengan Rekap Harian/Bulanan/Kuartal/
+    // Tahunan/Siklus, yang semuanya SUDAH menampilkan entri semacam ini
+    // sebagai baris generik "Tanpa Rute"/"Tanpa Wilayah". Disamakan di sini
+    // dengan menambahkan baris generik yang sama (khusus non-Sales, karena
+    // wilayahnya memang tidak diketahui — tidak relevan untuk tampilan yang
+    // sudah di-scope per wilayah Sales).
+    if (!isSalesRestricted && (terjualByRute.NORUTE || stokByRute.NORUTE)) {
+      ruteRows.push({
+        ruteId: "NORUTE", ruteNama: "🛣️ Tanpa Rute",
+        wilayahId: "NOWIL", wilayahNama: "— (Tanpa Wilayah)",
+        stok: stokByRute.NORUTE || {}, terjual: terjualByRute.NORUTE || {},
+      });
+    }
 
     // 4) Agregasi per wilayah
     const wilByMap = {};
@@ -6553,7 +6769,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
     });
 
     return { ruteRows, wilayahRows, total };
-  }, [enrichKontrol, db.toko, db.rute, db.wilayah, produkAktif, perputaranPeriodeType, filterBulan, filterKuartal, filterTahun, isSalesRestricted, salesWilayahId]);
+  }, [enrichKontrol, db.toko, db.rute, db.wilayah, produkAktif, perputaranPeriodeType, filterBulan, filterKuartal, filterTahun, isSalesRestricted, salesWilayahId, analytics.penjualanLuar]);
 
   // ─── BULANAN PER WILAYAH ───
   const rekapBulanan = useMemo(() => {
@@ -7195,13 +7411,19 @@ function TabRekap({ db, analytics, salesWilayahId }) {
         })()}
       </div>
 
-      {/* Mode Tabs */}
-      <div style={{ display:"flex", gap:6, marginBottom:16, background:T.white, border:`1px solid ${T.gray200}`,
+      {/* Mode Tabs — pakai CSS grid (bukan flex:1 tanpa wrap) supaya di
+          layar sempit tombol otomatis pindah ke baris baru dengan lebar
+          kolom yang tetap sama rata (simetris), bukan malah terdorong
+          keluar dari kartu seperti sebelumnya (flex row tanpa flexWrap
+          bisa overflow kalau total lebar minimum ke-7 tombol > lebar layar). */}
+      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit, minmax(104px, 1fr))",
+        gap:6, marginBottom:16, background:T.white, border:`1px solid ${T.gray200}`,
         borderRadius:12, padding:6, boxShadow:"0 1px 4px rgba(0,0,0,.05)" }}>
         {MODE_TABS.map(m => (
           <button key={m.key} onClick={()=>setMode(m.key)}
-            style={{ flex:1, padding:"9px 0", border:"none", borderRadius:8, cursor:"pointer",
-              fontFamily:"inherit", fontWeight:700, fontSize:13, transition:"all .15s",
+            style={{ padding:"9px 6px", border:"none", borderRadius:8, cursor:"pointer",
+              fontFamily:"inherit", fontWeight:700, fontSize:12.5, lineHeight:1.25, transition:"all .15s",
+              textAlign:"center", whiteSpace:"normal", wordBreak:"break-word",
               background:mode===m.key ? T.green : "transparent",
               color:mode===m.key ? "#fff" : T.gray600 }}>
             {m.label}
@@ -7412,6 +7634,15 @@ function TabRekap({ db, analytics, salesWilayahId }) {
             icon="🧴" color={T.purple} />
         ))}
       </div>
+      {/* ℹ️ Ranking Toko dihitung per-toko, jadi Penjualan Luar Rute (toko
+          tidak diketahui) tidak ikut masuk di sini — beda cakupan dengan
+          badge "Rev" di header yang mencakup seluruh perusahaan. Ini bukan
+          data tidak sinkron, cuma beda cakupan; catatan ini supaya jelas. */}
+      {mode==="ranking" && (
+        <div style={{ fontSize:11, color:T.gray500, marginTop:-8, marginBottom:16 }}>
+          ℹ️ Total di atas hanya mencakup penjualan yang terikat ke toko tertentu. Penjualan Luar Rute (toko tidak diketahui) tidak dihitung di sini, sehingga totalnya bisa lebih kecil dari badge "Rev" di header.
+        </div>
+      )}
 
       {/* Title Banner */}
       <div style={{ background:T.green, borderRadius:10, padding:"12px 18px", marginBottom:14,
@@ -7525,7 +7756,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
 //  TAB BAGI HASIL — Simulasi Akuntansi Lengkap
 // ─────────────────────────────────────────────
 function TabBagiHasil({ db, analytics, save }) {
-  const { totalRev, labaBersih, produkStats, kontrol } = analytics;
+  const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
 
   // State untuk konfigurasi bagi hasil (tersimpan di db.bagiHasilConfig)
   const config = db.bagiHasilConfig || {
@@ -7556,20 +7787,35 @@ function TabBagiHasil({ db, analytics, save }) {
   // Hitung revenue berdasarkan filter periode
   const revPeriode = useMemo(() => {
     let rows = kontrol;
+    let luarRows = penjualanLuar||[];
     if (periodeMode === "bulanan") {
       rows = kontrol.filter(k => k.tanggal?.startsWith(filterBulan));
+      luarRows = luarRows.filter(pl => pl.tanggal?.startsWith(filterBulan));
     } else if (periodeMode === "tahunan") {
       rows = kontrol.filter(k => k.tanggal?.startsWith(filterTahun));
+      luarRows = luarRows.filter(pl => pl.tanggal?.startsWith(filterTahun));
     } else {
       rows = kontrol.filter(k => k.tanggal >= filterStart && k.tanggal <= filterEnd);
+      luarRows = luarRows.filter(pl => pl.tanggal >= filterStart && pl.tanggal <= filterEnd);
     }
-    const rev = rows.reduce((s,k) => s+k.totalRev, 0);
-    const bonusTotal = rows.reduce((s,k) => s+(k.totalBonus||0), 0);
-    const terjualTotal = rows.reduce((s,k) => s+k.totalTerjual, 0);
+    // ✅ FIX SINKRONISASI: Penjualan Luar Rute (transaksi yang tokonya tidak
+    // diketahui/dicatat sales) sebelumnya TIDAK IKUT dihitung di sini sama
+    // sekali, padahal itu tetap pendapatan & laba resmi perusahaan (lihat
+    // enrichLuarRute di useAnalytics) — Dashboard dan semua mode Tab Rekap
+    // sudah menyertakannya. Akibatnya, "Total Pendapatan" dan Laba Bersih
+    // di Bagi Hasil (yang menentukan nominal yang benar-benar dibagi ke
+    // Pemilik/Investor/Manajer/Karyawan) bisa lebih kecil dari kenyataan
+    // kalau ada Penjualan Luar Rute di periode terpilih. Pcs terjual & bonus
+    // ikut disertakan juga; tapi kunjunganTotal & tokoUnik TIDAK ditambah
+    // karena Penjualan Luar Rute bukan kunjungan ke toko tertentu.
+    const rev = rows.reduce((s,k) => s+k.totalRev, 0) + luarRows.reduce((s,k)=>s+k.totalRev, 0);
+    const bonusTotal = rows.reduce((s,k) => s+(k.totalBonus||0), 0) + luarRows.reduce((s,k)=>s+(k.totalBonus||0), 0);
+    const terjualTotal = rows.reduce((s,k) => s+k.totalTerjual, 0) + luarRows.reduce((s,k)=>s+k.totalTerjual, 0);
     const kunjunganTotal = rows.length;
     const tokoUnik = new Set(rows.map(k => k.tokoId)).size;
-    return { rev, bonusTotal, terjualTotal, kunjunganTotal, tokoUnik, rows };
-  }, [kontrol, periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
+    return { rev, bonusTotal, terjualTotal, kunjunganTotal, tokoUnik, rows, luarRows };
+  }, [kontrol, penjualanLuar, periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
+
 
   // Kalkulasi akuntansi lengkap
   const akuntansi = useMemo(() => {
@@ -7911,7 +8157,12 @@ function TabBagiHasil({ db, analytics, save }) {
               </thead>
               <tbody>
                 {produkStats.map((p,i) => {
-                  const terjual = revPeriode.rows.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
+                  // ✅ Ikutkan Penjualan Luar Rute juga di sini — supaya jumlah
+                  // baris per-produk konsisten/pas dengan baris TOTAL di bawah
+                  // (yang sejak perbaikan sinkronisasi di atas sudah mencakup
+                  // Luar Rute), bukan cuma dari kunjungan toko biasa saja.
+                  const terjual = revPeriode.rows.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0)
+                    + revPeriode.luarRows.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
                   const rev = terjual * (p.harga||0);
                   const pctDariTotal = akuntansi.pendapatan > 0 ? (rev/akuntansi.pendapatan*100).toFixed(1) : "0";
                   const labaKontribusi = rev * (akuntansi.marginPct/100);
