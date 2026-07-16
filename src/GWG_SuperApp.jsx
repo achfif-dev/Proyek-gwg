@@ -1829,7 +1829,13 @@ function useAnalytics(db) {
 
     const totalRev = enrichKontrol.reduce((s,k) => s + k.totalRev, 0) + totalRevLuarRute;
     const tokoAktif = (db.toko||[]).filter(t => t.status==="Aktif").length;
-    const labaBersih = totalRev * 0.7;
+    // ✅ FIX SINKRONISASI: marginPct sebelumnya hardcoded 70% di sini,
+    // terpisah dari konfigurasi yang bisa diedit user di Tab Bagi Hasil
+    // (db.bagiHasilConfig.marginLaba). Sekarang keduanya membaca sumber
+    // yang sama, supaya "Laba Bersih Estimasi" di Dashboard & Tab Rekap
+    // selalu konsisten dengan margin % yang di-set user di Tab Bagi Hasil.
+    const marginPctGlobal = Number(db.bagiHasilConfig?.marginLaba) || 70;
+    const labaBersih = totalRev * (marginPctGlobal/100);
 
     const perWilayah = (db.wilayah||[]).map(w => {
       const rows = enrichKontrol.filter(k => k.wilayah?.id === w.id);
@@ -1881,15 +1887,30 @@ function useAnalytics(db) {
         + enrichLuarRute.reduce((s,k) => s + (k[`terjual_${p.id}`]||0) * p.harga, 0),
     }));
 
-    const bagiHasil = [
-      { nama:"Pemilik Utama", pct:0.60, tipe:"Laba", nominal: labaBersih*0.60 },
-      { nama:"Investor A",    pct:0.20, tipe:"Pendapatan", nominal: totalRev*0.20 },
-      { nama:"Manajer Ops",   pct:0.10, tipe:"Laba", nominal: labaBersih*0.10 },
-      { nama:"Karyawan Pool", pct:0.10, tipe:"Laba", nominal: labaBersih*0.10 },
+    // ✅ FIX SINKRONISASI: daftar pihak & persentase sebelumnya hardcoded
+    // (60/20/10/10) di sini, terpisah dari daftar pihak yang bisa
+    // ditambah/diubah user di Tab Bagi Hasil (db.bagiHasilConfig.pihak).
+    // Kalau user mengedit pihak/persentase di sana, kartu "Simulasi Bagi
+    // Hasil" di Dashboard sebelumnya tetap menampilkan susunan lama.
+    // Sekarang keduanya membaca daftar pihak yang sama.
+    const pihakConfig = db.bagiHasilConfig?.pihak || [
+      { nama:"Pemilik Utama", pct:60, basis:"laba" },
+      { nama:"Investor A",    pct:20, basis:"revenue" },
+      { nama:"Manajer Ops",   pct:10, basis:"laba" },
+      { nama:"Karyawan Pool", pct:10, basis:"laba" },
     ];
+    const bagiHasil = pihakConfig.map(p => {
+      const basisNilai = p.basis === "laba" ? labaBersih : totalRev;
+      return {
+        nama: p.nama,
+        pct: (Number(p.pct)||0)/100,
+        tipe: p.basis === "laba" ? "Laba" : "Pendapatan",
+        nominal: basisNilai * ((Number(p.pct)||0)/100),
+      };
+    });
 
     return { kontrol: enrichKontrol, penjualanLuar: enrichLuarRute, totalRevLuarRute,
-      totalRev, labaBersih, tokoAktif, perWilayah, perRute, produkStats, bagiHasil };
+      totalRev, labaBersih, marginPctGlobal, tokoAktif, perWilayah, perRute, produkStats, bagiHasil };
   }, [db]);
 }
 
@@ -6119,7 +6140,7 @@ function MiniBar({ value, max, color }) {
 function Dashboard({ db, analytics, salesWilayahId }) {
   const isSalesRestricted = !!salesWilayahId;
   // Filter analytics data berdasarkan wilayah Sales (jika berlaku)
-  const { totalRev: allRev, labaBersih: allLaba, produkStats, bagiHasil } = analytics;
+  const { totalRev: allRev, labaBersih: allLaba, marginPctGlobal, produkStats, bagiHasil } = analytics;
   const perWilayahAll = analytics.perWilayah;
   const perRuteAll = analytics.perRute;
 
@@ -6135,7 +6156,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
 
   // Hitung ulang total hanya untuk wilayah yang tampil
   const totalRev = isSalesRestricted ? perWilayah.reduce((s,w)=>s+w.rev,0) : allRev;
-  const labaBersih = totalRev * 0.7;
+  const labaBersih = totalRev * (marginPctGlobal/100);
   const tokoAktif = isSalesRestricted
     ? (db.toko||[]).filter(t => {
         if (t.status !== "Aktif") return false;
@@ -6185,7 +6206,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
   const dashboardExportRows = [
     // ── Keuangan ──
     { kategori:"💰 KEUANGAN",      metrik:"Total Revenue",          nilai:fmtRp(totalRev) },
-    { kategori:"",                  metrik:"Laba Bersih Est. (70%)", nilai:fmtRp(labaBersih) },
+    { kategori:"",                  metrik:`Laba Bersih Est. (${marginPctGlobal}%)`, nilai:fmtRp(labaBersih) },
     { kategori:"",                  metrik:"",                       nilai:"" },
     // ── Master Data ──
     { kategori:"🏪 MASTER DATA",   metrik:"Toko Aktif",             nilai:`${tokoAktif} dari ${tokoTotalScoped}` },
@@ -6228,7 +6249,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
         <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon="🏪" color={T.green} />
         <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon="📍" color={T.teal} />
         <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon="💰" color={T.gold} />
-        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`70% margin · ${totalPendapatanSub}`} icon="📊" color={T.green} />
+        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon="📊" color={T.green} />
         <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon="🧴" color={T.purple} />
         <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon="📋" color={T.blue} />
         <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon="🎁" color={T.orange} />
@@ -6317,7 +6338,7 @@ function Dashboard({ db, analytics, salesWilayahId }) {
         {!isSalesRestricted && (
           <Card>
             <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:4 }}>💰 Simulasi Bagi Hasil</div>
-            <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>Asumsi margin laba bersih 70% dari pendapatan</div>
+            <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>Asumsi margin laba bersih {marginPctGlobal}% dari pendapatan · ikut konfigurasi Tab Bagi Hasil</div>
             {bagiHasil.map((b,i)=>(
               <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
                 padding:"10px 12px", borderRadius:8, marginBottom:8, background:i===0?T.greenLt:T.gray50 }}>
@@ -7193,6 +7214,9 @@ function TabRekap({ db, analytics, salesWilayahId }) {
   // (dihitung sekali, bukan hasil jumlah baris yang tumpang tindih).
   const isPerputaran = mode === "perputaran";
   const totalRevAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+r.totalRev,0);
+  // ✅ FIX SINKRONISASI: margin sebelumnya hardcoded *0.7 di tab ini,
+  // sekarang ikut config yang sama dengan Tab Bagi Hasil & Dashboard.
+  const marginPctRekap = Number(db.bagiHasilConfig?.marginLaba) || 70;
   const totalKunjungan = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahToko||r.jumlahKunjungan||0),0);
   const totalBonusAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.totalBonus||0),0);
   const totalTutupAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
@@ -7674,7 +7698,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
       {/* Summary Cards */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
         <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon="💰" color={T.green} />
-        <StatCard label="Laba Est. (70%)" value={fmtRp(totalRevAll*0.7)} icon="📊" color={T.gold} />
+        <StatCard label={`Laba Est. (${marginPctRekap}%)`} value={fmtRp(totalRevAll*(marginPctRekap/100))} icon="📊" color={T.gold} />
         <StatCard label={mode==="harian"?"Toko":"Kunjungan"} value={totalKunjungan} icon="🏪" color={T.blue} />
         <StatCard label="Total Bonus" value={`${fmt(totalBonusAll)} pcs`} icon="🎁" color={T.orange} />
         {produkAktif.map(p => (
@@ -7730,7 +7754,7 @@ function TabRekap({ db, analytics, salesWilayahId }) {
                 </div>
                 <div>
                   <div style={{ fontSize:11, color:T.gray500 }}>Laba Bersih Est.</div>
-                  <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>{fmtRp(totalRevAll*0.7)}</div>
+                  <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>{fmtRp(totalRevAll*(marginPctRekap/100))}</div>
                 </div>
                 <div>
                   <div style={{ fontSize:11, color:T.gray500 }}>Total Kunjungan</div>
