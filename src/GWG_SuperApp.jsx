@@ -384,6 +384,10 @@ function useAuth() {
       if (Capacitor.isNativePlatform()) {
         try { await FirebaseAuthentication.signOut(); } catch {}
       }
+      // Hapus tab terakhir yang tersimpan supaya saat LOGIN ULANG (bukan
+      // sekadar refresh halaman), tampilan selalu kembali ke Dashboard —
+      // bukan melanjutkan tab terakhir dari sesi sebelumnya.
+      try { sessionStorage.removeItem(ACTIVE_TAB_SESSION_KEY); } catch {}
       await firebaseAuth.signOut(firebaseAuth.auth);
     } catch {}
   };
@@ -8694,6 +8698,27 @@ function LoginPage({ onLoginGoogle, fbReady, error }) {
 // Admin & Manajer otomatis bisa mengakses SEMUA tab (lihat fungsi canAccessTab).
 const SALES_ALLOWED_TABS = ["dashboard", "kontrol", "rekap", "toko"];
 
+// Key sessionStorage untuk mengingat tab yang sedang aktif.
+// SENGAJA pakai sessionStorage (bukan localStorage):
+// - sessionStorage tetap ada selama TAB BROWSER ini masih terbuka, sehingga
+//   refresh (baik tombol refresh di header maupun refresh bawaan browser,
+//   yang keduanya memanggil window.location.reload()) akan tetap berada di
+//   tab yang sama seperti sebelum di-refresh.
+// - sessionStorage otomatis KOSONG lagi kalau tab/aplikasi ditutup lalu
+//   dibuka ulang (sesi baru), dan juga sengaja DIHAPUS saat logout (lihat
+//   fungsi logout di useAuth) — sehingga saat LOGIN ULANG, tampilan selalu
+//   kembali otomatis ke Dashboard, bukan melanjutkan tab terakhir.
+const ACTIVE_TAB_SESSION_KEY = "gwg_active_tab";
+
+function getInitialActiveTab() {
+  try {
+    const saved = sessionStorage.getItem(ACTIVE_TAB_SESSION_KEY);
+    return saved || "dashboard";
+  } catch {
+    return "dashboard";
+  }
+}
+
 const TABS = [
   { key:"dashboard",  label:"📈 Dashboard" },
   { key:"wilayah",    label:"📍 Wilayah" },
@@ -8744,7 +8769,12 @@ export default function GWGSuperApp() {
 
   const isOnline = useOnlineStatus();
   useAppResumeReload();
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useState(getInitialActiveTab);
+  // Simpan tab aktif ke sessionStorage setiap kali berubah, supaya refresh
+  // (tombol header maupun refresh browser) tetap membuka tab yang sama.
+  useEffect(() => {
+    try { sessionStorage.setItem(ACTIVE_TAB_SESSION_KEY, activeTab); } catch {}
+  }, [activeTab]);
   const [showReset, setShowReset] = useState(false);
   const [resetConfirmText, setResetConfirmText] = useState("");
   const [resetStep, setResetStep] = useState(1); // 1 = alasan, 2 = konfirmasi ketik
@@ -8849,6 +8879,31 @@ export default function GWGSuperApp() {
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
   const analytics = useAnalytics(db);
+
+  // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
+  // sesi masih berjalan):
+  // - Refresh (tombol refresh header ATAU refresh bawaan browser) memuat
+  //   ulang seluruh halaman via window.location.reload(), lalu Firebase Auth
+  //   otomatis memulihkan sesi yang sama. Dalam kasus ini status "loading"
+  //   akan langsung berubah ke user yang SAMA tanpa pernah melewati kondisi
+  //   "belum login" (halaman Login tidak pernah benar-benar tampil) →
+  //   activeTab TETAP dipertahankan (diambil dari sessionStorage, lihat
+  //   getInitialActiveTab di atas).
+  // - Login ulang sesungguhnya (mis. baru buka aplikasi tanpa sesi tersimpan,
+  //   atau logout lalu login lagi) akan benar-benar menampilkan halaman
+  //   Login (user === null && loading === false) sebelum akhirnya login
+  //   berhasil → transisi INI yang memicu reset otomatis ke tab Dashboard.
+  const pernahDiHalamanLoginRef = useRef(false);
+  useEffect(() => {
+    if (loading) return; // status auth belum pasti, jangan simpulkan apa-apa dulu
+    if (!user) {
+      pernahDiHalamanLoginRef.current = true;
+    } else if (pernahDiHalamanLoginRef.current) {
+      pernahDiHalamanLoginRef.current = false;
+      setActiveTab("dashboard");
+      try { sessionStorage.setItem(ACTIVE_TAB_SESSION_KEY, "dashboard"); } catch {}
+    }
+  }, [user, loading]);
 
   // ── Mobile-friendly: pastikan viewport meta tag benar agar tampilan tidak
   // ter-zoom-out/kepotong saat dibuka dari HP (banyak host page lupa setting ini).
