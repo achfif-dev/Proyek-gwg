@@ -4049,7 +4049,7 @@ function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
 // ─────────────────────────────────────────────
 //  TAB KONTROL BULANAN
 // ─────────────────────────────────────────────
-function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId }) {
+function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
@@ -4065,6 +4065,10 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     // dan rentang jumlah penjualan (total pcs semua produk per entri).
     catatanStatus:"", minJumlah:"", maxJumlah:"" });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
+  // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
+  // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
+  const [diagnostikOpen, setDiagnostikOpen] = useState(false);
+  const [diagnostikShowList, setDiagnostikShowList] = useState(false);
 
   // ✅ AUTO-APPROVE: pengajuan Penyesuaian Stok dari Sales yang sudah lewat
   // 24 jam (autoApproveAt) dan belum ditolak, otomatis disetujui sendiri.
@@ -4201,6 +4205,45 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
         return { ...pl, totalRev, totalBonus, wilayahNama, ruteNama };
       });
   }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, isSalesRestricted, salesWilayahId]);
+
+  // ✅ DIAGNOSTIK CAKUPAN KONTROL — dibuat permanen di dalam app (bukan cek
+  // manual sekali-sekali lewat file backup) supaya Admin/Manajer bisa
+  // memantau kapan saja:
+  //  1) Toko Aktif/Baru yang BELUM PERNAH punya entri Kontrol Bulanan sama
+  //     sekali (dari data kontrol yang SEDANG termuat di perangkat ini) —
+  //     berguna untuk prioritas kunjungan lapangan.
+  //  2) Toko yang py Stok tersimpan >0 di Master Toko TAPI tidak ada entri
+  //     kontrol yang termuat — sinyal peringatan dini: BISA berarti
+  //     kontrol terakhirnya ada di tahun yang belum dimuat (lihat
+  //     KONTROL_LIVE_YEARS/partisi tahun di useDB), sehingga baseline stok
+  //     berisiko salah kalau "Hitung Ulang Semua Stok" dijalankan.
+  // Dihitung dari SELURUH db.kontrol yang termuat (bukan `data` yang sudah
+  // kena filter Wilayah/Rute/Bulan di atas) supaya angkanya konsisten
+  // berapa pun filter yang sedang aktif di tabel.
+  const cakupanDiagnostik = useMemo(() => {
+    const controlledIds = new Set((db.kontrol||[]).map(k=>k.tokoId));
+    const tokoRelevan = (db.toko||[]).filter(t => t.status==="Aktif" || t.status==="Baru");
+    const belumPernah = tokoRelevan.filter(t => !controlledIds.has(t.id));
+    const berstokTanpaKontrol = belumPernah.filter(t =>
+      produkAktif.some(p => Number(t[`stok_${p.id}`]||0) > 0));
+
+    const perWilayah = {};
+    belumPernah.forEach(t => {
+      const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+      const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
+      const nama = wilayah?.nama || t.wilayahNama || "Tidak diketahui";
+      perWilayah[nama] = (perWilayah[nama]||0) + 1;
+    });
+    const perWilayahSorted = Object.entries(perWilayah).sort((a,b)=>b[1]-a[1]);
+
+    // Tahun kontrol lama yang ADA di cloud tapi BELUM dimuat ke perangkat
+    // ini — kalau ada, angka "berstokTanpaKontrol" di atas patut dicurigai
+    // sebagai histori tahun lama, bukan murni toko baru yang belum dikunjungi.
+    const tahunBelumDimuat = (availableKontrolYears||[])
+      .filter(y => !(loadedKontrolYears||[]).includes(y));
+
+    return { totalRelevan: tokoRelevan.length, belumPernah, berstokTanpaKontrol, perWilayahSorted, tahunBelumDimuat };
+  }, [db.toko, db.kontrol, db.rute, db.wilayah, produkAktif, availableKontrolYears, loadedKontrolYears]);
 
   // Monthly view: tampilkan SEMUA toko di rute terpilih, bukan hanya yang ada entri kontrol
   const tokoPerRute = useMemo(() => {
@@ -5088,6 +5131,121 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
           {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
           {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
         </div>
+
+        {/* ✅ Kartu Diagnostik Cakupan Kontrol — khusus Admin/Manajer, supaya
+            bisa memantau toko yang belum pernah dikontrol & sinyal dini
+            "kemungkinan histori tahun lama belum dimuat" tanpa perlu unduh
+            backup manual tiap kali mau cek. */}
+        {isManajer && cakupanDiagnostik.totalRelevan > 0 && (
+          <div style={{ background:cakupanDiagnostik.belumPernah.length>0?T.orangeLt:T.greenLt,
+            border:`1px solid ${cakupanDiagnostik.belumPernah.length>0?T.orange:T.green}44`,
+            borderRadius:10, marginBottom:8, overflow:"hidden" }}>
+            <div onClick={()=>setDiagnostikOpen(o=>!o)}
+              style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                padding:"10px 14px", cursor:"pointer", gap:10, flexWrap:"wrap" }}>
+              <div style={{ fontSize:12.5, fontWeight:700,
+                color:cakupanDiagnostik.belumPernah.length>0?T.orange:T.green }}>
+                🩺 Diagnostik Cakupan Kontrol
+                {" — "}
+                {cakupanDiagnostik.belumPernah.length===0
+                  ? "semua toko aktif sudah pernah dikontrol ✅"
+                  : `${fmt(cakupanDiagnostik.belumPernah.length)} dari ${fmt(cakupanDiagnostik.totalRelevan)} toko aktif belum pernah dikontrol`}
+              </div>
+              <span style={{ fontSize:11, color:T.gray500 }}>{diagnostikOpen?"▲ Tutup":"▼ Detail"}</span>
+            </div>
+            {diagnostikOpen && (
+              <div style={{ padding:"0 14px 14px", fontSize:12.5, color:T.gray700 }}>
+                {cakupanDiagnostik.belumPernah.length===0 ? (
+                  <div>Semua toko berstatus Aktif/Baru sudah punya minimal satu entri Kontrol Bulanan pada data yang termuat saat ini. 🎉</div>
+                ) : (
+                  <>
+                    <div style={{ marginBottom:8 }}>
+                      Toko ini status Aktif/Baru tapi <b>tidak ada satu pun entri Kontrol Bulanan</b> untuknya
+                      di data yang sedang termuat di perangkat ini — kemungkinan belum pernah dikunjungi sales,
+                      atau (kalau ada tahun lama yang belum dimuat, lihat catatan di bawah) histori lamanya
+                      belum ikut terunduh.
+                    </div>
+                    {cakupanDiagnostik.berstokTanpaKontrol.length > 0 && (
+                      <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8,
+                        padding:"8px 12px", marginBottom:10, color:"#DC2626" }}>
+                        ⚠️ <b>{fmt(cakupanDiagnostik.berstokTanpaKontrol.length)} toko</b> di antaranya sudah
+                        punya <b>Stok tersimpan {'>'}0</b> di Master Toko meski tidak ada entri kontrol termuat —
+                        patut dicek manual, karena baseline stoknya bisa salah kalau "Hitung Ulang Semua Stok"
+                        dijalankan sebelum histori lamanya (kalau ada) dimuat.
+                      </div>
+                    )}
+                    {cakupanDiagnostik.tahunBelumDimuat.length > 0 ? (
+                      <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8,
+                        padding:"8px 12px", marginBottom:10, color:"#92400E" }}>
+                        📅 Ada data kontrol tahun <b>{cakupanDiagnostik.tahunBelumDimuat.join(", ")}</b> di cloud
+                        yang belum dimuat ke perangkat ini. Muat dulu lewat menu <b>Cadangan/Admin → Muat Data
+                        Tahun Lama</b> sebelum menyimpulkan toko-toko di atas benar-benar "belum pernah dikontrol".
+                      </div>
+                    ) : (
+                      <div style={{ fontSize:11.5, color:T.gray500, marginBottom:10 }}>
+                        Tidak ada tahun kontrol lama yang tertunda dimuat — jadi daftar di atas mencerminkan
+                        histori penuh yang tersedia di cloud.
+                      </div>
+                    )}
+                    <div style={{ marginBottom:10 }}>
+                      <div style={{ fontWeight:700, marginBottom:6 }}>Per Wilayah:</div>
+                      {cakupanDiagnostik.perWilayahSorted.map(([nama,cnt]) => (
+                        <div key={nama} style={{ display:"flex", justifyContent:"space-between",
+                          padding:"3px 0", borderBottom:`1px solid ${T.gray100}` }}>
+                          <span>{nama}</span><b>{fmt(cnt)}</b>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                      <Btn size="sm" variant="secondary" onClick={()=>setDiagnostikShowList(v=>!v)}>
+                        {diagnostikShowList ? "Sembunyikan Daftar Toko" : "📋 Lihat Daftar Toko"}
+                      </Btn>
+                      <Btn size="sm" variant="secondary" icon="📥" onClick={()=>{
+                        const rows = cakupanDiagnostik.belumPernah.map(t => {
+                          const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+                          const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
+                          return { kode:t.kode||"", nama:t.nama||"", wilayah:wilayah?.nama||"-", rute:rute?.nama||"-",
+                            status:t.status, punyaStok: produkAktif.some(p=>Number(t[`stok_${p.id}`]||0)>0) ? "Ya" : "Tidak" };
+                        });
+                        exportExcel(rows,
+                          [{key:"kode",label:"Kode"},{key:"nama",label:"Nama Toko"},{key:"wilayah",label:"Wilayah"},
+                           {key:"rute",label:"Rute"},{key:"status",label:"Status"},{key:"punyaStok",label:"Sudah Ada Stok?"}],
+                          "Toko Belum Pernah Dikontrol", "toko_belum_dikontrol");
+                      }}>Ekspor Excel</Btn>
+                    </div>
+                    {diagnostikShowList && (
+                      <div style={{ marginTop:10, maxHeight:320, overflowY:"auto", border:`1px solid ${T.gray200}`, borderRadius:8 }}>
+                        <table style={{ width:"100%", borderCollapse:"collapse", fontSize:11.5 }}>
+                          <thead>
+                            <tr style={{ background:T.gray50, position:"sticky", top:0 }}>
+                              <th style={{ padding:"6px 8px", textAlign:"left" }}>Toko</th>
+                              <th style={{ padding:"6px 8px", textAlign:"left" }}>Wilayah / Rute</th>
+                              <th style={{ padding:"6px 8px", textAlign:"center" }}>Stok?</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {cakupanDiagnostik.belumPernah.map(t => {
+                              const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+                              const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
+                              const punyaStok = produkAktif.some(p=>Number(t[`stok_${p.id}`]||0)>0);
+                              return (
+                                <tr key={t.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
+                                  <td style={{ padding:"5px 8px" }}>{t.nama}</td>
+                                  <td style={{ padding:"5px 8px", color:T.gray500 }}>{wilayah?.nama||"-"} / {rute?.nama||"-"}</td>
+                                  <td style={{ padding:"5px 8px", textAlign:"center" }}>{punyaStok ? "⚠️" : "—"}</td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Toolbar aksi — ✅ Dirapikan: sebelumnya tombol-tombol ini cuma
             flex-wrap bebas (lebar tiap tombol beda-beda mengikuti isi teks),
@@ -9493,15 +9651,65 @@ export default function GWGSuperApp() {
 
       {/* CONTENT */}
       <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
-        {activeTab==="dashboard" && <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
-        {activeTab==="wilayah"   && canAccessTab("wilayah",  { isAdmin, isManajer }) && <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="rute"      && canAccessTab("rute",     { isAdmin, isManajer }) && <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="toko"      && canAccessTab("toko",     { isAdmin, isManajer }) && <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} isSalesRestricted={!isManajer} />}
-        {activeTab==="produk"    && canAccessTab("produk",   { isAdmin, isManajer }) && <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />}
-        {activeTab==="kontrol"   && canAccessTab("kontrol",  { isAdmin, isManajer }) && <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
-        {activeTab==="rekap"     && canAccessTab("rekap",    { isAdmin, isManajer }) && <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />}
-        {activeTab==="bagihasil" && canAccessTab("bagihasil",{ isAdmin, isManajer }) && <TabBagiHasil db={db} analytics={analytics} save={save} />}
-        {activeTab==="pengguna"  && canAccessTab("pengguna", { isAdmin, isManajer }) && <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} />}
+        {/* ✅ FIX: sebelumnya setiap tab di-render kondisional penuh
+            ({activeTab==="x" && <TabX/>}), jadi pindah tab = komponen lama
+            di-UNMOUNT total (state lokalnya, termasuk semua filter, ikut
+            hilang) dan komponen baru dipasang dari nol. Begitu balik lagi
+            ke tab sebelumnya, filter kembali ke default. Sekarang semua tab
+            yang boleh diakses tetap "hidup" (mounted) di background, cuma
+            disembunyikan lewat CSS (display:none) saat tidak aktif — jadi
+            filter, hasil pencarian, dan state lain tetap tersimpan persis
+            seperti saat ditinggalkan. Pengecekan izin akses (canAccessTab)
+            tetap dilakukan SEBELUM komponennya sempat dipasang sama sekali,
+            jadi tab yang memang tidak boleh diakses tetap tidak pernah ikut
+            di-render (bukan cuma disembunyikan). Ini melengkapi (bukan
+            menggantikan) fix sessionStorage activeTab di atas — yang itu
+            mengingat tab mana yang aktif lintas refresh, yang ini menjaga
+            state DI DALAM tiap tab tetap utuh saat pindah-pindah tab. */}
+        <div style={{ display: activeTab==="dashboard" ? "block" : "none" }}>
+          <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />
+        </div>
+        {canAccessTab("wilayah",  { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="wilayah" ? "block" : "none" }}>
+            <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+          </div>
+        )}
+        {canAccessTab("rute",     { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="rute" ? "block" : "none" }}>
+            <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+          </div>
+        )}
+        {canAccessTab("toko",     { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="toko" ? "block" : "none" }}>
+            <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} isSalesRestricted={!isManajer} />
+          </div>
+        )}
+        {canAccessTab("produk",   { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="produk" ? "block" : "none" }}>
+            <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+          </div>
+        )}
+        {canAccessTab("kontrol",  { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="kontrol" ? "block" : "none" }}>
+            <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
+              isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} />
+          </div>
+        )}
+        {canAccessTab("rekap",    { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="rekap" ? "block" : "none" }}>
+            <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />
+          </div>
+        )}
+        {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="bagihasil" ? "block" : "none" }}>
+            <TabBagiHasil db={db} analytics={analytics} save={save} />
+          </div>
+        )}
+        {canAccessTab("pengguna", { isAdmin, isManajer }) && (
+          <div style={{ display: activeTab==="pengguna" ? "block" : "none" }}>
+            <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} />
+          </div>
+        )}
       </div>
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
