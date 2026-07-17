@@ -4069,6 +4069,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
   const [diagnostikOpen, setDiagnostikOpen] = useState(false);
   const [diagnostikShowList, setDiagnostikShowList] = useState(false);
+  const [diagnostikGroupBy, setDiagnostikGroupBy] = useState("wilayah"); // "wilayah" | "rute"
 
   // ✅ AUTO-APPROVE: pengajuan Penyesuaian Stok dari Sales yang sudah lewat
   // 24 jam (autoApproveAt) dan belum ditolak, otomatis disetujui sendiri.
@@ -4228,13 +4229,23 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
       produkAktif.some(p => Number(t[`stok_${p.id}`]||0) > 0));
 
     const perWilayah = {};
+    const perRute = {}; // key: "Nama Rute — Nama Wilayah" → hitung per rute, bukan cuma per wilayah
     belumPernah.forEach(t => {
       const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
       const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
-      const nama = wilayah?.nama || t.wilayahNama || "Tidak diketahui";
-      perWilayah[nama] = (perWilayah[nama]||0) + 1;
+      const namaWilayah = wilayah?.nama || t.wilayahNama || "Tidak diketahui";
+      perWilayah[namaWilayah] = (perWilayah[namaWilayah]||0) + 1;
+      const namaRute = rute?.nama || t.ruteNama || "Tidak diketahui";
+      const keyRute = `${namaRute}|||${namaWilayah}`;
+      perRute[keyRute] = (perRute[keyRute]||0) + 1;
     });
     const perWilayahSorted = Object.entries(perWilayah).sort((a,b)=>b[1]-a[1]);
+    // ✅ Diurutkan per Wilayah (abjad) dulu lalu jumlah terbanyak — supaya
+    // rute-rute di wilayah yang sama tetap mengelompok, bukan tercampur
+    // acak hanya berdasar angka terbanyak lintas wilayah.
+    const perRuteSorted = Object.entries(perRute)
+      .map(([key,cnt]) => { const [rute,wilayah] = key.split("|||"); return { rute, wilayah, cnt }; })
+      .sort((a,b) => a.wilayah.localeCompare(b.wilayah,"id",{sensitivity:"base"}) || b.cnt - a.cnt);
 
     // Tahun kontrol lama yang ADA di cloud tapi BELUM dimuat ke perangkat
     // ini — kalau ada, angka "berstokTanpaKontrol" di atas patut dicurigai
@@ -4242,7 +4253,7 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
     const tahunBelumDimuat = (availableKontrolYears||[])
       .filter(y => !(loadedKontrolYears||[]).includes(y));
 
-    return { totalRelevan: tokoRelevan.length, belumPernah, berstokTanpaKontrol, perWilayahSorted, tahunBelumDimuat };
+    return { totalRelevan: tokoRelevan.length, belumPernah, berstokTanpaKontrol, perWilayahSorted, perRuteSorted, tahunBelumDimuat };
   }, [db.toko, db.kontrol, db.rute, db.wilayah, produkAktif, availableKontrolYears, loadedKontrolYears]);
 
   // Monthly view: tampilkan SEMUA toko di rute terpilih, bukan hanya yang ada entri kontrol
@@ -5188,13 +5199,41 @@ function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWila
                       </div>
                     )}
                     <div style={{ marginBottom:10 }}>
-                      <div style={{ fontWeight:700, marginBottom:6 }}>Per Wilayah:</div>
-                      {cakupanDiagnostik.perWilayahSorted.map(([nama,cnt]) => (
-                        <div key={nama} style={{ display:"flex", justifyContent:"space-between",
-                          padding:"3px 0", borderBottom:`1px solid ${T.gray100}` }}>
-                          <span>{nama}</span><b>{fmt(cnt)}</b>
+                      <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6, gap:8, flexWrap:"wrap" }}>
+                        <div style={{ fontWeight:700 }}>
+                          {diagnostikGroupBy==="wilayah" ? "Per Wilayah:" : "Per Rute:"}
                         </div>
-                      ))}
+                        <div style={{ display:"flex", gap:4, background:T.gray100, borderRadius:99, padding:2 }}>
+                          <button onClick={()=>setDiagnostikGroupBy("wilayah")}
+                            style={{ border:"none", cursor:"pointer", fontSize:11, fontWeight:700, borderRadius:99,
+                              padding:"4px 10px", background:diagnostikGroupBy==="wilayah"?T.white:"transparent",
+                              color:diagnostikGroupBy==="wilayah"?T.gray800:T.gray500,
+                              boxShadow:diagnostikGroupBy==="wilayah"?"0 1px 2px rgba(0,0,0,.12)":"none" }}>Wilayah</button>
+                          <button onClick={()=>setDiagnostikGroupBy("rute")}
+                            style={{ border:"none", cursor:"pointer", fontSize:11, fontWeight:700, borderRadius:99,
+                              padding:"4px 10px", background:diagnostikGroupBy==="rute"?T.white:"transparent",
+                              color:diagnostikGroupBy==="rute"?T.gray800:T.gray500,
+                              boxShadow:diagnostikGroupBy==="rute"?"0 1px 2px rgba(0,0,0,.12)":"none" }}>Rute</button>
+                        </div>
+                      </div>
+                      {diagnostikGroupBy==="wilayah" ? (
+                        cakupanDiagnostik.perWilayahSorted.map(([nama,cnt]) => (
+                          <div key={nama} style={{ display:"flex", justifyContent:"space-between",
+                            padding:"3px 0", borderBottom:`1px solid ${T.gray100}` }}>
+                            <span>{nama}</span><b>{fmt(cnt)}</b>
+                          </div>
+                        ))
+                      ) : (
+                        <div style={{ maxHeight:260, overflowY:"auto" }}>
+                          {cakupanDiagnostik.perRuteSorted.map(({rute,wilayah,cnt}) => (
+                            <div key={`${wilayah}-${rute}`} style={{ display:"flex", justifyContent:"space-between",
+                              padding:"3px 0", borderBottom:`1px solid ${T.gray100}` }}>
+                              <span>{rute} <span style={{ color:T.gray400, fontSize:11 }}>({wilayah})</span></span>
+                              <b>{fmt(cnt)}</b>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                     <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
                       <Btn size="sm" variant="secondary" onClick={()=>setDiagnostikShowList(v=>!v)}>
