@@ -1,6 +1,6 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import GWGSuperApp from './GWG_SuperApp'
+import GWGSuperApp from './App'
 import { registerSW } from 'virtual:pwa-register'
 
 registerSW({
