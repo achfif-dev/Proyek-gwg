@@ -28,6 +28,18 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   const [diagnostikOpen, setDiagnostikOpen] = useState(false);
   const [diagnostikShowList, setDiagnostikShowList] = useState(false);
   const [diagnostikGroupBy, setDiagnostikGroupBy] = useState("wilayah"); // "wilayah" | "rute"
+  // ✅ Filter khusus daftar/ekspor di kartu Diagnostik Cakupan Kontrol — terpisah
+  // dari filter utama tab, supaya bisa saring per Wilayah/Rute + cari nama/kode
+  // toko sebelum kirim daftar "belum dikontrol" ke sales tertentu.
+  const [diagnostikFilterWilayahId, setDiagnostikFilterWilayahId] = useState("");
+  const [diagnostikFilterRuteId, setDiagnostikFilterRuteId] = useState("");
+  const [diagnostikSearchQ, setDiagnostikSearchQ] = useState("");
+  // ✅ Mode "Rentang Waktu": selain "belum pernah SAMA SEKALI", tambahkan opsi
+  // "tidak dikontrol dalam N hari terakhir" — menangkap toko yang PERNAH
+  // dikontrol tapi sudah lama tidak dikunjungi lagi (kasus ini tidak kena
+  // filter "belum pernah" karena secara historis pernah ada entrinya).
+  const [diagnostikMode, setDiagnostikMode] = useState("never"); // "never" | "rentang"
+  const [diagnostikRentangHari, setDiagnostikRentangHari] = useState(30);
 
   // ✅ AUTO-APPROVE: pengajuan Penyesuaian Stok dari Sales yang sudah lewat
   // 24 jam (autoApproveAt) dan belum ditolak, otomatis disetujui sendiri.
@@ -213,6 +225,62 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
     return { totalRelevan: tokoRelevan.length, belumPernah, berstokTanpaKontrol, perWilayahSorted, perRuteSorted, tahunBelumDimuat };
   }, [db.toko, db.kontrol, db.rute, db.wilayah, produkAktif, availableKontrolYears, loadedKontrolYears]);
+
+  // ✅ Rute untuk dropdown filter Diagnostik (dipersempit sesuai Wilayah yang dipilih di filter diagnostik)
+  const diagnostikRuteOpts = useMemo(() => {
+    const list = diagnostikFilterWilayahId
+      ? (db.rute||[]).filter(r=>r.wilayahId===diagnostikFilterWilayahId)
+      : (db.rute||[]);
+    return list.map(r=>({ value:r.id, label:r.nama }));
+  }, [db.rute, diagnostikFilterWilayahId]);
+
+  // ✅ Tanggal entri Kontrol Bulanan PALING BARU per toko (dari seluruh data
+  // kontrol yang sudah termuat) — dipakai untuk mode "tidak dikontrol dalam
+  // rentang waktu". Beda dengan "belum pernah" (yang cuma cek ada/tidaknya
+  // entri sama sekali), ini bisa menangkap toko yang pernah dikontrol tapi
+  // sudah lama tidak dikunjungi ulang.
+  const lastKontrolByToko = useMemo(() => {
+    const map = {};
+    (db.kontrol||[]).forEach(k => {
+      if (!k.tokoId || !k.tanggal) return;
+      if (!map[k.tokoId] || k.tanggal > map[k.tokoId]) map[k.tokoId] = k.tanggal;
+    });
+    return map;
+  }, [db.kontrol]);
+
+  // ✅ Daftar dasar sebelum disaring Wilayah/Rute/pencarian — tergantung mode:
+  //  - "never": toko yang TIDAK PERNAH SAMA SEKALI ada entri kontrol (sama seperti sebelumnya)
+  //  - "rentang": toko Aktif/Baru yang entri kontrol TERAKHIRnya (kalau ada)
+  //    lebih lama dari N hari yang lalu, ATAU belum pernah sama sekali
+  //    (otomatis ikut kehitung "tidak dikontrol dalam rentang" juga).
+  const diagnostikBaseList = useMemo(() => {
+    if (diagnostikMode === "never") return cakupanDiagnostik.belumPernah;
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - Number(diagnostikRentangHari || 30));
+    const cutoffStr = cutoff.toISOString().slice(0, 10);
+    const tokoRelevan = (db.toko || []).filter(t => t.status === "Aktif" || t.status === "Baru");
+    return tokoRelevan.filter(t => {
+      const last = lastKontrolByToko[t.id];
+      return !last || last < cutoffStr;
+    });
+  }, [diagnostikMode, diagnostikRentangHari, cakupanDiagnostik.belumPernah, db.toko, lastKontrolByToko]);
+
+  // ✅ Daftar "belum pernah dikontrol" setelah disaring Wilayah/Rute/pencarian —
+  // dipakai baik untuk tabel "Lihat Daftar Toko" maupun tombol "Ekspor Excel",
+  // supaya file yang diunduh persis sama dengan yang tampil di layar (bisa
+  // dikirim langsung ke sales wilayah/rute tertentu tanpa perlu disortir manual).
+  const diagnostikFiltered = useMemo(() => {
+    const q = normTxt(diagnostikSearchQ||"");
+    return diagnostikBaseList.filter(t => {
+      if (diagnostikFilterRuteId && t.ruteId !== diagnostikFilterRuteId) return false;
+      if (diagnostikFilterWilayahId && !diagnostikFilterRuteId) {
+        const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+        if (!rute || rute.wilayahId !== diagnostikFilterWilayahId) return false;
+      }
+      if (q && !normTxt(t.nama).includes(q) && !normTxt(t.kode||"").includes(q)) return false;
+      return true;
+    });
+  }, [diagnostikBaseList, diagnostikFilterWilayahId, diagnostikFilterRuteId, diagnostikSearchQ, db.rute]);
 
   // Monthly view: tampilkan SEMUA toko di rute terpilih, bukan hanya yang ada entri kontrol
   const tokoPerRute = useMemo(() => {
@@ -1193,22 +1261,79 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                         </div>
                       )}
                     </div>
-                    <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
+                    {/* ✅ Mode: "Belum Pernah Sama Sekali" vs "Tidak Dikontrol dalam Rentang Waktu" */}
+                    <div style={{ marginBottom:8 }}>
+                      <div style={{ display:"flex", gap:4, background:T.gray100, borderRadius:99, padding:2, width:"fit-content" }}>
+                        <button onClick={()=>setDiagnostikMode("never")}
+                          style={{ border:"none", cursor:"pointer", fontSize:11, fontWeight:700, borderRadius:99,
+                            padding:"5px 12px", background:diagnostikMode==="never"?T.white:"transparent",
+                            color:diagnostikMode==="never"?T.gray800:T.gray500,
+                            boxShadow:diagnostikMode==="never"?"0 1px 2px rgba(0,0,0,.12)":"none" }}>Belum Pernah Sama Sekali</button>
+                        <button onClick={()=>setDiagnostikMode("rentang")}
+                          style={{ border:"none", cursor:"pointer", fontSize:11, fontWeight:700, borderRadius:99,
+                            padding:"5px 12px", background:diagnostikMode==="rentang"?T.white:"transparent",
+                            color:diagnostikMode==="rentang"?T.gray800:T.gray500,
+                            boxShadow:diagnostikMode==="rentang"?"0 1px 2px rgba(0,0,0,.12)":"none" }}>Tidak Dikontrol dalam Rentang Waktu</button>
+                      </div>
+                      {diagnostikMode==="rentang" && (
+                        <div style={{ display:"flex", alignItems:"center", gap:8, marginTop:8, flexWrap:"wrap" }}>
+                          <span style={{ fontSize:12, color:T.gray600 }}>Tidak dikontrol lebih dari</span>
+                          <input type="number" min={1} value={diagnostikRentangHari}
+                            onChange={e=>setDiagnostikRentangHari(e.target.value)}
+                            style={{ width:70, padding:"5px 8px", border:`1.5px solid ${T.gray200}`,
+                              borderRadius:7, fontSize:12.5, fontFamily:"inherit", boxSizing:"border-box" }} />
+                          <span style={{ fontSize:12, color:T.gray600 }}>hari terakhir</span>
+                          <div style={{ display:"flex", gap:4 }}>
+                            {[30,60,90].map(h => (
+                              <button key={h} onClick={()=>setDiagnostikRentangHari(h)}
+                                style={{ border:`1px solid ${T.gray200}`, cursor:"pointer", fontSize:10.5, fontWeight:700,
+                                  borderRadius:99, padding:"3px 9px",
+                                  background:Number(diagnostikRentangHari)===h?T.orange:T.white,
+                                  color:Number(diagnostikRentangHari)===h?"#fff":T.gray500 }}>
+                                {h===30?"1 bulan":h===60?"2 bulan":"3 bulan"}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    {/* ✅ Filter Wilayah/Rute + pencarian, khusus untuk daftar & ekspor di bawah —
+                        supaya bisa saring daftar per wilayah/rute lalu ekspor terpisah per sales. */}
+                    <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}>
+                      <Input label="Filter Wilayah" value={diagnostikFilterWilayahId}
+                        onChange={v=>{ setDiagnostikFilterWilayahId(v); setDiagnostikFilterRuteId(""); }}
+                        options={[{value:"",label:"Semua Wilayah"}, ...wilayahOpts]} />
+                      <Input label="Filter Rute" value={diagnostikFilterRuteId}
+                        onChange={setDiagnostikFilterRuteId}
+                        options={[{value:"",label:"Semua Rute"}, ...diagnostikRuteOpts]} />
+                    </div>
+                    <input placeholder="🔍 Cari nama/kode toko..." value={diagnostikSearchQ}
+                      onChange={e=>setDiagnostikSearchQ(e.target.value)}
+                      style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                        borderRadius:8, fontSize:12.5, fontFamily:"inherit", boxSizing:"border-box", marginBottom:10 }} />
+                    <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
                       <Btn size="sm" variant="secondary" onClick={()=>setDiagnostikShowList(v=>!v)}>
                         {diagnostikShowList ? "Sembunyikan Daftar Toko" : "📋 Lihat Daftar Toko"}
                       </Btn>
-                      <Btn size="sm" variant="secondary" icon="📥" onClick={()=>{
-                        const rows = cakupanDiagnostik.belumPernah.map(t => {
+                      <Btn size="sm" variant="secondary" icon="📥" disabled={diagnostikFiltered.length===0} onClick={()=>{
+                        const rows = diagnostikFiltered.map(t => {
                           const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
                           const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
                           return { kode:t.kode||"", nama:t.nama||"", wilayah:wilayah?.nama||"-", rute:rute?.nama||"-",
                             status:t.status, punyaStok: produkAktif.some(p=>Number(t[`stok_${p.id}`]||0)>0) ? "Ya" : "Tidak" };
                         });
+                        const namaWilayahTerpilih = wilayahOpts.find(w=>w.value===diagnostikFilterWilayahId)?.label;
+                        const namaRuteTerpilih = diagnostikRuteOpts.find(r=>r.value===diagnostikFilterRuteId)?.label;
+                        const suffix = namaRuteTerpilih ? `_${namaRuteTerpilih}` : namaWilayahTerpilih ? `_${namaWilayahTerpilih}` : "";
                         exportExcel(rows,
                           [{key:"kode",label:"Kode"},{key:"nama",label:"Nama Toko"},{key:"wilayah",label:"Wilayah"},
                            {key:"rute",label:"Rute"},{key:"status",label:"Status"},{key:"punyaStok",label:"Sudah Ada Stok?"}],
-                          "Toko Belum Pernah Dikontrol", "toko_belum_dikontrol");
-                      }}>Ekspor Excel</Btn>
+                          "Toko Belum Pernah Dikontrol", `toko_belum_dikontrol${suffix}`);
+                      }}>Ekspor Excel {diagnostikFiltered.length !== diagnostikBaseList.length ? `(${fmt(diagnostikFiltered.length)})` : ""}</Btn>
+                      <span style={{ fontSize:11, color:T.gray400 }}>
+                        Menampilkan {fmt(diagnostikFiltered.length)} dari {fmt(diagnostikBaseList.length)} toko
+                        {diagnostikMode==="rentang" ? ` (tidak dikontrol >${diagnostikRentangHari} hari)` : ""}
+                      </span>
                     </div>
                     {diagnostikShowList && (
                       <div style={{ marginTop:10, maxHeight:320, overflowY:"auto", border:`1px solid ${T.gray200}`, borderRadius:8 }}>
@@ -1221,7 +1346,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                             </tr>
                           </thead>
                           <tbody>
-                            {cakupanDiagnostik.belumPernah.map(t => {
+                            {diagnostikFiltered.map(t => {
                               const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
                               const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
                               const punyaStok = produkAktif.some(p=>Number(t[`stok_${p.id}`]||0)>0);
@@ -1233,6 +1358,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                 </tr>
                               );
                             })}
+                            {diagnostikFiltered.length===0 && (
+                              <tr><td colSpan={3} style={{ padding:"12px 8px", textAlign:"center", color:T.gray400 }}>Tidak ada toko yang cocok dengan filter.</td></tr>
+                            )}
                           </tbody>
                         </table>
                       </div>
@@ -2133,7 +2261,26 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
           {/* Stok, Terjual, & Bonus per produk */}
           <div style={{ marginBottom:14 }}>
-            <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:4 }}>📦 Stok, Penjualan & Bonus Produk</div>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
+              <div style={{ fontSize:12, fontWeight:700, color:T.gray600 }}>📦 Stok, Penjualan & Bonus Produk</div>
+              {/* ✅ Tarik Toko Ini: tandai SEMUA produk toko ini sebagai "Ditarik" sekaligus,
+                  supaya tidak perlu centang satu-satu saat toko benar-benar berhenti dititipi. */}
+              {form.tokoId && produkAktif.length > 0 && (() => {
+                const semuaSudahDitarik = produkAktif.every(p => !!form[`ditarik_${p.id}`]);
+                return (
+                  <Btn size="sm" variant={semuaSudahDitarik ? "danger" : "secondary"}
+                    onClick={() => {
+                      const val = !semuaSudahDitarik; // toggle: tarik semua / batal tarik semua
+                      produkAktif.forEach(p => {
+                        f(`ditarik_${p.id}`, val);
+                        if (val) f(`stok_${p.id}`, 0);
+                      });
+                    }}>
+                    {semuaSudahDitarik ? "↩️ Batal Tarik Semua" : "🔻 Tarik Toko Ini (semua produk)"}
+                  </Btn>
+                );
+              })()}
+            </div>
             <div style={{ fontSize:11, color:T.gray400, marginBottom:10 }}>Kolom <b style={{ color:T.gold }}>Bonus Produk</b> adalah jumlah <b>pcs produk</b> yang diberikan ke toko saat kunjungan ini</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:10 }}>
               {/* Roll On ditaruh paling depan karena produk ini paling banyak dititipkan ke toko */}
