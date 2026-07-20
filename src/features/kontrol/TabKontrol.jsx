@@ -759,6 +759,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
     setTokoStatusModal(null);
     setStokPenarikan({});
+    // ✅ Kalau dipicu dari dalam modal Tambah/Edit Kontrol (form.tokoId sama
+    // dengan toko yang baru dinonaktifkan), tutup juga modal itu — toko sudah
+    // Non-Aktif, tidak relevan lagi melanjutkan input kontrol bulanan untuknya.
+    if (modal && form.tokoId === toko.id) {
+      setModal(null);
+    }
   }
 
   // ✅ BARU: Buka modal Edit Status Toko
@@ -2300,20 +2306,20 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div style={{ marginBottom:14 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
               <div style={{ fontSize:12, fontWeight:700, color:T.gray600 }}>📦 Stok, Penjualan & Bonus Produk</div>
-              {/* ✅ Tarik Toko Ini: tandai SEMUA produk toko ini sebagai "Ditarik" sekaligus,
-                  supaya tidak perlu centang satu-satu saat toko benar-benar berhenti dititipi. */}
-              {form.tokoId && produkAktif.length > 0 && (() => {
-                const semuaSudahDitarik = produkAktif.every(p => !!form[`ditarik_${p.id}`]);
+              {/* ✅ Tarik Toko Ini: DISAMAKAN dengan alur "🏪 Tarik / Non-Aktifkan Toko"
+                  yang sudah ada di view per rute — bukan sekadar mencentang "Ditarik"
+                  di form ini. Klik tombol ini membuka modal konfirmasi yang sama
+                  (input stok kembali ke gudang, catat Penyesuaian Stok otomatis,
+                  ubah status toko jadi Non-Aktif di Master Toko). Setelah
+                  dikonfirmasi, modal Tambah Kontrol ini otomatis ditutup karena
+                  toko sudah tidak aktif — tidak perlu lagi entri kontrol bulanan
+                  terpisah untuk kunjungan ini. */}
+              {form.tokoId && (() => {
+                const tokoTerpilih = (db.toko||[]).find(t=>t.id===form.tokoId);
+                if (!tokoTerpilih || tokoTerpilih.status === "Non-Aktif") return null;
                 return (
-                  <Btn size="sm" variant={semuaSudahDitarik ? "danger" : "secondary"}
-                    onClick={() => {
-                      const val = !semuaSudahDitarik; // toggle: tarik semua / batal tarik semua
-                      produkAktif.forEach(p => {
-                        f(`ditarik_${p.id}`, val);
-                        if (val) f(`stok_${p.id}`, 0);
-                      });
-                    }}>
-                    {semuaSudahDitarik ? "↩️ Batal Tarik Semua" : "🔻 Tarik Toko Ini (semua produk)"}
+                  <Btn size="sm" variant="danger" onClick={() => openTokoStatusModal(tokoTerpilih)}>
+                    🏪 Tarik / Non-Aktifkan Toko Ini
                   </Btn>
                 );
               })()}
