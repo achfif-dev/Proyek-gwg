@@ -30,6 +30,18 @@ export function useDB(user) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [syncError, setSyncError] = useState(null);
+  // ✅ BARU: khusus menampung penolakan TULIS oleh security rules (bukan
+  // gagal baca seperti syncError, dan bukan sekadar offline). Array berisi
+  // { path, message, at } — setiap kali Firebase menolak satu perubahan
+  // (permission-denied), dicatat di sini SUPAYA TAMPIL JELAS ke pengguna,
+  // bukan didiamkan seolah cuma "belum sempat sinkron". Sebelumnya semua
+  // jenis error (offline ATAU ditolak rules) diperlakukan SAMA — didiamkan
+  // & dicoba lagi tiap 30 detik — sehingga penolakan permanen oleh rules
+  // tidak pernah ketahuan pengguna: tampilan lokal sudah kadung berubah
+  // (optimistic update), padahal Firebase yang sebenarnya menolaknya, jadi
+  // perangkat/akun lain masih melihat data yang lama.
+  const [writeDenied, setWriteDenied] = useState([]);
+  const clearWriteDenied = useCallback(() => setWriteDenied([]), []);
   // cloudLoaded: true setelah snapshot PERTAMA dari Firebase diterima (baik
   // datanya ada isi atau kosong). Dipakai untuk MENCEGAH logika bootstrap-admin
   // di komponen utama berjalan sebelum kita benar-benar tahu isi database di
@@ -474,6 +486,19 @@ export function useDB(user) {
           await set(ref(rtdb, `gwg_data/shared/${path}`), value);
           await queueRemove(path);
         } catch (e) {
+          // ✅ FIX: bedakan "ditolak security rules" (PERMANEN, tidak akan
+          // pernah berhasil walau dicoba ulang) dari "kemungkinan masih
+          // offline" (SEMENTARA, wajar dicoba lagi nanti). Sebelumnya
+          // keduanya diperlakukan sama, jadi penolakan rules jadi nyangkut
+          // selamanya di antrean tanpa pernah kelihatan oleh pengguna.
+          const kode = String(e?.code || e?.message || "").toUpperCase();
+          const ditolakRules = kode.includes("PERMISSION_DENIED");
+          if (ditolakRules) {
+            console.error("Ditolak security rules (permanen, tidak dicoba ulang):", path, e);
+            await queueRemove(path); // hentikan percobaan ulang yang sia-sia
+            setWriteDenied(prev => [...prev, { path, message: e?.message || "Permission denied", at: Date.now() }]);
+            continue; // lanjut proses sisa antrean — bukan berhenti total
+          }
           console.warn("Sinkron tertunda (kemungkinan masih offline):", path, e);
           break; // hentikan, coba lagi nanti begitu online/retry berikutnya
         }
@@ -1047,7 +1072,7 @@ export function useDB(user) {
     } catch {}
   }, []);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear };
 }
 
 
