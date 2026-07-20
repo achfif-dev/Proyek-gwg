@@ -713,11 +713,15 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   }
 
   function openTokoStatusModal(toko) {
-    // Ambil stok saat ini dari master toko sebagai nilai awal form
+    // ✅ FIX: default ke 0 (dianggap SEMUA stok ditarik/habis), bukan stok
+    // saat ini — sebelumnya form ini prefill dengan stok yang masih ada,
+    // sehingga kalau admin tidak sengaja tidak mengubah apapun lalu langsung
+    // konfirmasi, stok di Master Toko malah TIDAK berubah sama sekali
+    // (delta=0, tidak ada Penyesuaian tercatat), padahal tokonya sudah
+    // dinonaktifkan. Kalau memang ada stok yang secara nyata dikembalikan ke
+    // gudang, admin tinggal isi manual jumlahnya.
     const stokInit = {};
-    produkAktif.forEach(p => {
-      stokInit[p.id] = toko[`stok_${p.id}`] || 0;
-    });
+    produkAktif.forEach(p => { stokInit[p.id] = 0; });
     setStokPenarikan(stokInit);
     setTokoStatusModal({ toko });
   }
@@ -726,7 +730,11 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     if (!tokoStatusModal) return;
     const { toko } = tokoStatusModal;
     // Update status toko → Non-Aktif di master toko, sekaligus update stok saat penarikan
-    const tokoUpdates = { status: "Non-Aktif" };
+    // ✅ FIX: toko yang dinonaktifkan sudah tidak menjual produk apapun lagi —
+    // kosongkan juga produkIds & ceklis produk_<id> di Master Toko (sebelumnya
+    // dua field ini tidak ikut disentuh, jadi toko yang sudah Non-Aktif masih
+    // tampak "menjual" produk lama dengan ceklis tercentang di tab Toko).
+    const tokoUpdates = { status: "Non-Aktif", produkIds: [], ...buildProdukFlagUpdates([]) };
 
     // ✅ Catat selisih stok (sebelum vs sesudah penarikan) sebagai Penyesuaian
     // Stok otomatis — sebelumnya perubahan stok di sini langsung menimpa
@@ -1080,7 +1088,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             </div>
           </div>
           <div style={{ background:"#EFF6FF", border:"1px solid #BFDBFE", borderRadius:8, padding:"10px 14px", marginBottom:16, fontSize:12 }}>
-            ℹ️ Data kontrol yang sudah ada untuk toko ini <b>tidak akan dihapus</b> — hanya status toko yang diubah menjadi Non-Aktif dan stok diperbarui.
+            ℹ️ Data kontrol yang sudah ada untuk toko ini <b>tidak akan dihapus</b> — status toko diubah menjadi Non-Aktif, stok diperbarui, dan ceklis "Produk yang Dijual" di Master Toko ikut <b>dikosongkan</b> (karena toko ini sudah tidak menjual produk apapun).
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
             <Btn variant="secondary" onClick={() => { setTokoStatusModal(null); setStokPenarikan({}); }}>Batal</Btn>
