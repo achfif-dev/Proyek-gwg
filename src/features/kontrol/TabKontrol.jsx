@@ -40,6 +40,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // filter "belum pernah" karena secara historis pernah ada entrinya).
   const [diagnostikMode, setDiagnostikMode] = useState("never"); // "never" | "rentang"
   const [diagnostikRentangHari, setDiagnostikRentangHari] = useState(30);
+  // ✅ Edit nama toko langsung dari modal Tambah/Edit Kontrol — untuk kasus
+  // nama toko ternyata salah ketik dan baru ketahuan saat kunjungan berikutnya.
+  // Cuma Manajer/Admin (field master toko, bukan operasional seperti Sales).
+  const [renameToko, setRenameToko] = useState(null); // { tokoId, value }
 
   // ✅ AUTO-APPROVE: pengajuan Penyesuaian Stok dari Sales yang sudah lewat
   // 24 jam (autoApproveAt) dan belum ditolak, otomatis disetujui sendiri.
@@ -2256,18 +2260,49 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                   }}>
                     <span style={{ fontSize: 18, flexShrink:0 }}>{isBaru ? "🆕" : "✅"}</span>
                     <div style={{ minWidth:0, flex:1, wordBreak:"break-word" }}>
-                      <span style={{ fontWeight: 700, color: isBaru ? T.blue : T.green }}>
-                        {toko.nama}
-                      </span>
-                      <span style={{
-                        marginLeft: 8,
-                        background: isBaru ? T.blue : T.green,
-                        color: "#fff", fontSize: 10, fontWeight: 700,
-                        borderRadius: 99, padding: "1px 8px", whiteSpace:"nowrap", display:"inline-block"
-                      }}>
-                        {toko.status}
-                      </span>
-                      {toko.kode && <span style={{ marginLeft: 6, color: T.gray400 }}>· {toko.kode}</span>}
+                      {renameToko?.tokoId === toko.id ? (
+                        <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
+                          <input autoFocus value={renameToko.value}
+                            onChange={e=>setRenameToko(r=>({ ...r, value:e.target.value }))}
+                            style={{ flex:1, minWidth:120, padding:"5px 8px", border:`1.5px solid ${T.gray300}`,
+                              borderRadius:6, fontSize:12.5, fontFamily:"inherit" }} />
+                          <Btn size="sm" onClick={()=>{
+                            const namaBaru = renameToko.value.trim();
+                            if (!namaBaru) return alert("Nama toko tidak boleh kosong");
+                            const dup = (db.toko||[]).some(t=>t.id!==toko.id && t.ruteId===toko.ruteId &&
+                              t.nama.toLowerCase().trim()===namaBaru.toLowerCase());
+                            if (dup && !confirm(`Sudah ada toko lain bernama "${namaBaru}" di rute yang sama. Tetap simpan?`)) return;
+                            updateRecord("toko", toko.id, { nama: namaBaru });
+                            setRenameToko(null);
+                          }}>Simpan</Btn>
+                          <Btn size="sm" variant="secondary" onClick={()=>setRenameToko(null)}>Batal</Btn>
+                        </div>
+                      ) : (
+                        <>
+                          <span style={{ fontWeight: 700, color: isBaru ? T.blue : T.green }}>
+                            {toko.nama}
+                          </span>
+                          {/* ✅ Edit nama toko langsung dari sini — untuk kasus salah ketik
+                              yang baru ketahuan saat kunjungan berikutnya. Manajer/Admin saja,
+                              karena "nama" adalah field master (bukan operasional milik Sales). */}
+                          {!isSalesRestricted && (
+                            <button onClick={()=>setRenameToko({ tokoId: toko.id, value: toko.nama })}
+                              style={{ marginLeft:6, border:"none", background:"transparent", cursor:"pointer",
+                                fontSize:11, color:T.gray500, textDecoration:"underline", padding:0 }}>
+                              ✏️ Edit Nama
+                            </button>
+                          )}
+                          <span style={{
+                            marginLeft: 8,
+                            background: isBaru ? T.blue : T.green,
+                            color: "#fff", fontSize: 10, fontWeight: 700,
+                            borderRadius: 99, padding: "1px 8px", whiteSpace:"nowrap", display:"inline-block"
+                          }}>
+                            {toko.status}
+                          </span>
+                          {toko.kode && <span style={{ marginLeft: 6, color: T.gray400 }}>· {toko.kode}</span>}
+                        </>
+                      )}
                     </div>
                   </div>
                 );
