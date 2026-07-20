@@ -162,6 +162,14 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // sudah cocok dengan rute tsb yang ikut dihitung (konsisten dengan
   // logika Rekap & daftar Penjualan Luar Rute di bawah).
   const luarRuteData = useMemo(() => {
+    // ✅ FIX: Penjualan Luar Rute tidak terikat toko manapun (tidak ada field
+    // nama/kode toko sama sekali di record ini) — jadi kalau sedang mencari
+    // toko tertentu (filter.q terisi), entri Luar Rute TIDAK relevan dan
+    // harus dikosongkan. Sebelumnya field ini tidak ikut disaring filter.q,
+    // sehingga Rev/Bonus di ringkasan header masih ikut menambahkan seluruh
+    // Penjualan Luar Rute walau sedang mencari 1 toko spesifik — bikin
+    // angkanya tidak sinkron dengan hasil pencarian yang tampil di tabel.
+    if (filter.q) return [];
     return (db.penjualanLuar||[])
       .filter(pl =>
         (!isSalesRestricted || pl.wilayahId===salesWilayahId) &&
@@ -179,7 +187,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         const ruteNama = (db.rute||[]).find(r=>r.id===pl.ruteId)?.nama || "";
         return { ...pl, totalRev, totalBonus, wilayahNama, ruteNama };
       });
-  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, isSalesRestricted, salesWilayahId]);
+  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, filter.q, isSalesRestricted, salesWilayahId]);
 
   // ✅ DIAGNOSTIK CAKUPAN KONTROL — dibuat permanen di dalam app (bukan cek
   // manual sekali-sekali lewat file backup) supaya Admin/Manajer bisa
