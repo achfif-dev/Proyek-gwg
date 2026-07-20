@@ -168,7 +168,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
@@ -760,6 +760,38 @@ export default function GWGSuperApp() {
 
       {/* CONTENT */}
       <div className="gw-content" style={{ maxWidth:1400, margin:"0 auto", padding:"24px 20px" }}>
+        {/* ✅ BARU: Banner darurat kalau ada perubahan yang DITOLAK security
+            rules (bukan sekadar offline). Sengaja dibuat sangat mencolok dan
+            tidak bisa ketinggalan — supaya kejadian seperti sebelumnya
+            (Admin "menghapus" sesuatu, tapi tampilan lokalnya sudah kadung
+            berubah padahal Firebase menolak, sehingga akun lain masih lihat
+            data lama) langsung ketahuan saat itu juga, bukan baru sadar
+            belakangan setelah bingung kenapa "tidak sinkron". Tombol "Muat
+            Ulang" sengaja full page reload (bukan sekadar re-fetch state)
+            supaya tampilan pasti kembali 100% sesuai data asli di server. */}
+        {writeDenied && writeDenied.length > 0 && (
+          <div style={{ background:"#FEF2F2", border:"2px solid #DC2626", borderRadius:12,
+            padding:"14px 18px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:12,
+            flexWrap:"wrap" }}>
+            <span style={{ fontSize:22, flexShrink:0 }}>🚫</span>
+            <div style={{ flex:1, minWidth:200 }}>
+              <div style={{ fontWeight:800, fontSize:14, color:"#DC2626", marginBottom:4 }}>
+                {writeDenied.length} perubahan GAGAL disimpan — tidak ada izin
+              </div>
+              <div style={{ fontSize:12.5, color:"#7F1D1D", lineHeight:1.6 }}>
+                Firebase menolak perubahan ini (bukan soal koneksi). Tampilan di layar Anda
+                <b> mungkin masih menunjukkan hasil yang "seolah berhasil"</b> padahal sebenarnya
+                belum tersimpan — data asli di server tidak berubah. Klik "Muat Ulang" untuk
+                mengembalikan tampilan sesuai data yang sebenarnya, lalu coba lagi atau hubungi Admin
+                kalau seharusnya Anda punya izin untuk ini.
+              </div>
+            </div>
+            <div style={{ display:"flex", gap:8, flexShrink:0 }}>
+              <Btn size="sm" variant="danger" onClick={()=>window.location.reload()}>🔄 Muat Ulang</Btn>
+              <Btn size="sm" variant="secondary" onClick={clearWriteDenied}>Tutup</Btn>
+            </div>
+          </div>
+        )}
         {/* ✅ FIX: sebelumnya setiap tab di-render kondisional penuh
             ({activeTab==="x" && <TabX/>}), jadi pindah tab = komponen lama
             di-UNMOUNT total (state lokalnya, termasuk semua filter, ikut
