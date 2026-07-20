@@ -558,7 +558,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       initial[`ditarik_${p.id}`] = false;
     });
     setForm(initial);
-    setModalFilter({ wilayahId: filter.wilayahId||"", ruteId: filter.ruteId||"" });
+    // ✅ FIX: untuk Sales, wilayah modal SELALU dipaksa ke wilayahnya sendiri
+    // (jangan ikut apa adanya filter.wilayahId, jaga-jaga kalau kosong/berubah).
+    setModalFilter({ wilayahId: isSalesRestricted ? salesWilayahId : (filter.wilayahId||""), ruteId: filter.ruteId||"" });
     setModal("add");
   }
 
@@ -592,6 +594,17 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
   function submit() {
     if (!form.tokoId || !form.tanggal) return alert("Toko & Tanggal wajib diisi");
+    // ✅ FIX (pengaman kedua): walau dropdown sudah dikunci di UI, tetap cek
+    // ulang di sini sebelum simpan — kalau toko yang dipilih ternyata berada
+    // di luar wilayah Sales (misal karena bug lain / state basi), tolak simpan
+    // daripada diam-diam tersimpan lintas wilayah.
+    if (isSalesRestricted) {
+      const tokoDipilih = (db.toko||[]).find(t=>t.id===form.tokoId);
+      const ruteDipilih = tokoDipilih ? (db.rute||[]).find(r=>r.id===tokoDipilih.ruteId) : null;
+      if (!ruteDipilih || ruteDipilih.wilayahId !== salesWilayahId) {
+        return alert("❌ Toko ini berada di luar wilayah Anda. Kontrol tidak dapat disimpan.");
+      }
+    }
     // ⚠️ Validasi kontrol ganda: cegah input dobel untuk toko yang sama di
     // tanggal yang sama (kecuali entri yang sedang diedit sendiri). Tetap
     // izinkan lanjut kalau memang disengaja (mis. koreksi/kunjungan susulan),
@@ -786,9 +799,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
   // Opsi Rute & Toko di dalam modal Tambah/Edit Kontrol — mengikuti cascade Wilayah → Rute → Toko
   const modalRuteOpts = useMemo(() => {
-    const list = modalFilter.wilayahId
+    let list = modalFilter.wilayahId
       ? (db.rute||[]).filter(r=>r.wilayahId===modalFilter.wilayahId)
       : (db.rute||[]);
+    // ✅ FIX: Sales cuma boleh pilih rute di wilayahnya sendiri — sebelumnya
+    // dropdown ini tidak dibatasi sama sekali, sehingga Sales bisa memilih
+    // rute (dan toko) di wilayah manapun lewat modal Tambah Kontrol.
+    if (isSalesRestricted) list = list.filter(r=>r.wilayahId===salesWilayahId);
     return [...list].sort((a,b) => {
       const wA = (db.wilayah||[]).find(w=>w.id===a.wilayahId)?.nama||"";
       const wB = (db.wilayah||[]).find(w=>w.id===b.wilayahId)?.nama||"";
@@ -796,12 +813,20 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       if (wCompare !== 0) return wCompare;
       return naturalCompare(a.nama||"", b.nama||"");
     }).map(r=>({ value:r.id, label:r.nama }));
-  }, [db.rute, db.wilayah, modalFilter.wilayahId]);
+  }, [db.rute, db.wilayah, modalFilter.wilayahId, isSalesRestricted, salesWilayahId]);
 
   const modalTokoOpts = useMemo(() => {
     // Tampilkan toko Aktif DAN Baru di dropdown kontrol (jangan tampilkan Non-Aktif)
     // Label disertai badge status supaya petugas langsung tahu statusnya tanpa buka tab Toko
     let list = (db.toko||[]).filter(t => t.status === "Aktif" || t.status === "Baru");
+    // ✅ FIX: Sales cuma boleh pilih toko di wilayahnya sendiri, sama seperti
+    // sudah diterapkan di allTokoOpts (Penyesuaian Stok) — sebelumnya dropdown
+    // toko di modal Tambah Kontrol ini tidak ikut dibatasi, jadi Sales bisa
+    // input kontrol untuk toko wilayah lain.
+    if (isSalesRestricted) {
+      const ruteIdsSendiri = new Set((db.rute||[]).filter(r=>r.wilayahId===salesWilayahId).map(r=>r.id));
+      list = list.filter(t=>ruteIdsSendiri.has(t.ruteId));
+    }
     if (modalFilter.ruteId) {
       list = list.filter(t=>t.ruteId===modalFilter.ruteId);
     } else if (modalFilter.wilayahId) {
@@ -819,7 +844,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       );
       return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol };
     });
-  }, [db.toko, db.rute, db.kontrol, modalFilter, form.tanggal, form.id, modal]);
+  }, [db.toko, db.rute, db.kontrol, modalFilter, form.tanggal, form.id, modal, isSalesRestricted, salesWilayahId]);
 
   // ✅ Flag toko yang sedang dipilih di form: apakah SUDAH ada entri kontrol
   // untuk tanggal yang sama (dipakai untuk banner peringatan di modal)
@@ -2180,8 +2205,20 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       {modal && (
         <Modal title={modal==="add"?"Tambah Kontrol Bulanan":"Edit Kontrol Bulanan"} onClose={()=>setModal(null)} width={600}>
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:4, minWidth:0 }}>
-            <Input label="Wilayah" value={modalFilter.wilayahId} onChange={handleModalWilayahChange}
-              options={wilayahOpts} hint="Pilih wilayah untuk mempersempit pilihan rute & toko" />
+            {/* ✅ FIX: untuk Sales, field Wilayah dikunci (tidak bisa diganti) —
+                sebelumnya dropdown ini terbuka untuk semua wilayah, jadi Sales
+                bisa input kontrol ke wilayah manapun lewat modal ini. */}
+            {isSalesRestricted ? (
+              <div>
+                <div style={{ fontSize:12.5, fontWeight:600, color:T.gray600, marginBottom:5 }}>Wilayah</div>
+                <div style={{ padding:"8px 10px", background:T.gray50, border:`1.5px solid ${T.gray200}`, borderRadius:8, fontSize:13, color:T.gray700 }}>
+                  🔒 {(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}
+                </div>
+              </div>
+            ) : (
+              <Input label="Wilayah" value={modalFilter.wilayahId} onChange={handleModalWilayahChange}
+                options={wilayahOpts} hint="Pilih wilayah untuk mempersempit pilihan rute & toko" />
+            )}
             <Input label="Rute" value={modalFilter.ruteId} onChange={handleModalRuteChange}
               options={modalRuteOpts} hint="Pilih rute untuk mempersempit pilihan toko" />
             <div style={{ gridColumn:"1/-1", minWidth:0 }}>
