@@ -106,6 +106,10 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     return {
       jumlahTutup: rows.filter(k => k.catatanStatus === "tutup").length,
       jumlahTidakTerjual: rows.filter(k => k.catatanStatus === "terjual").length,
+      // ✅ BARU: hitung juga kunjungan yang ditandai "Bermasalah" di form
+      // Tambah Kontrol, supaya ikut muncul di ekspor (Excel/PDF/JPG) — bukan
+      // cuma Toko Tutup & Tidak Terjual seperti sebelumnya.
+      jumlahMasalah: rows.filter(k => k.catatanStatus === "masalah").length,
     };
   }
 
@@ -146,7 +150,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
       jumlahKunjungan: luarRows.length, jumlahToko: luarRows.length,
       totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
       totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
-      jumlahTutup: 0, jumlahTidakTerjual: 0, // penjualan luar rute tidak punya status kunjungan
+      jumlahTutup: 0, jumlahTidakTerjual: 0, jumlahMasalah: 0, // penjualan luar rute tidak punya status kunjungan
       ...sp, detail: luarRows, ...extra,
     };
   }
@@ -214,7 +218,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
         jumlahToko: luarSisa.length,
         totalRev: luarSisa.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: luarSisa.reduce((s,k)=>s+(k.totalBonus||0),0),
-        jumlahTutup: 0, jumlahTidakTerjual: 0,
+        jumlahTutup: 0, jumlahTidakTerjual: 0, jumlahMasalah: 0,
         ...sp,
         detail: luarSisa,
       });
@@ -664,6 +668,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"jumlahToko",     label:"Jml Toko",     render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
     { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahMasalah",      label:"Bermasalah",      render:v=>v>0?<Badge color={"#DC2626"} bg={"#FEE2E2"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -673,6 +678,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
     { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahMasalah",      label:"Bermasalah",      render:v=>v>0?<Badge color={"#DC2626"} bg={"#FEE2E2"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -683,6 +689,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.blue }}>{v}</span> },
     { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahMasalah",      label:"Bermasalah",      render:v=>v>0?<Badge color={"#DC2626"} bg={"#FEE2E2"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -693,6 +700,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.teal }}>{v}</span> },
     { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahMasalah",      label:"Bermasalah",      render:v=>v>0?<Badge color={"#DC2626"} bg={"#FEE2E2"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -704,6 +712,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     { key:"jumlahKunjungan",label:"Kunjungan",    render:v=><span style={{ fontWeight:700,color:T.teal }}>{v}</span> },
     { key:"jumlahTutup",        label:"Toko Tutup",      render:v=>v>0?<Badge color={T.blue} bg={"#DBEAFE"}>{v} tutup</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     { key:"jumlahTidakTerjual", label:"Tidak Terjual",   render:v=>v>0?<Badge color={"#CA8A04"} bg={"#FEF9C3"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
+    { key:"jumlahMasalah",      label:"Bermasalah",      render:v=>v>0?<Badge color={"#DC2626"} bg={"#FEE2E2"}>{v} toko</Badge>:<span style={{ color:T.gray300 }}>0</span> },
     ...produkCols,
     { key:"totalRev",       label:"Revenue",      render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",     label:"Total Bonus",  render:v=><span style={{ color:T.gold }}>{fmt(v)} pcs</span> },
@@ -817,6 +826,24 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
   const totalBonusAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.totalBonus||0),0);
   const totalTutupAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
   const totalTidakTerjualAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTidakTerjual||0),0);
+  const totalMasalahAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahMasalah||0),0);
+  // ✅ BARU: jumlah toko yang statusnya Non-Aktif ("ditarik" lewat fitur
+  // Tarik/Nonaktifkan Toko), dibatasi sesuai filter Wilayah/Rute yang sedang
+  // aktif di Rekap. Beda dengan Tutup/Tidak Terjual/Bermasalah yang dihitung
+  // dari entri kontrol per kunjungan, ini snapshot status TERKINI toko
+  // (bukan kejadian yang terikat tanggal), jadi ditampilkan sebagai satu
+  // angka ringkasan, bukan pecahan per baris wilayah/rute.
+  const totalTokoDitarik = useMemo(() => {
+    return (db.toko||[]).filter(t => {
+      if (t.status !== "Non-Aktif") return false;
+      if (filterRute) return t.ruteId === filterRute;
+      if (filterWilayah) {
+        const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+        return !!rute && rute.wilayahId === filterWilayah;
+      }
+      return true;
+    }).length;
+  }, [db.toko, db.rute, filterWilayah, filterRute]);
 
   // ─── RENDER HARIAN DETAIL (per toko dalam rute) ───
   function PerputaranDetail() {
@@ -986,11 +1013,13 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
               <div style={{ textAlign:"right" }}>
                 <div style={{ fontSize:20, fontWeight:800, color:T.green }}>{fmtRp(totalRevAll)}</div>
                 <div style={{ fontSize:13, color:T.gold }}>Bonus: {fmt(totalBonusAll)} pcs · {totalKunjungan} toko</div>
-                {(totalTutupAll>0 || totalTidakTerjualAll>0) && (
+                {(totalTutupAll>0 || totalTidakTerjualAll>0 || totalMasalahAll>0) && (
                   <div style={{ fontSize:12, color:T.gray500, marginTop:2 }}>
                     {totalTutupAll>0 && <span>🔵 {totalTutupAll} toko tutup</span>}
-                    {totalTutupAll>0 && totalTidakTerjualAll>0 && <span> · </span>}
+                    {totalTutupAll>0 && (totalTidakTerjualAll>0||totalMasalahAll>0) && <span> · </span>}
                     {totalTidakTerjualAll>0 && <span>🟡 {totalTidakTerjualAll} tidak terjual</span>}
+                    {totalTidakTerjualAll>0 && totalMasalahAll>0 && <span> · </span>}
+                    {totalMasalahAll>0 && <span>🔴 {totalMasalahAll} bermasalah</span>}
                   </div>
                 )}
               </div>
@@ -1046,6 +1075,7 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
               jumlahKunjungan: totalKunjungan,
               jumlahTutup: totalTutupAll,
               jumlahTidakTerjual: totalTidakTerjualAll,
+              jumlahMasalah: totalMasalahAll,
               totalRevFmt: fmtRp(totalRevAll),
               totalBonus: totalBonusAll,
               ...produkAktif.reduce((acc, p) => {
@@ -1069,6 +1099,8 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
             { wilayahNama:"Jumlah Kunjungan/Toko",    ruteNama:String(totalKunjungan),     totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Toko Tutup",                ruteNama:String(totalTutupAll),       totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Toko Tidak Terjual",        ruteNama:String(totalTidakTerjualAll),totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Toko Bermasalah",           ruteNama:String(totalMasalahAll),     totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"Toko Ditarik/Non-Aktif",    ruteNama:String(totalTokoDitarik),    totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Jumlah Baris Data",         ruteNama:String(activeData.length),  totalRevFmt:"", totalBonus:"" },
           ];
           return (
