@@ -33,8 +33,89 @@ jobs:
 
       - name: Install dependencies npm
         run: |
-          # Belum ada package-lock.json di repo → setiap run bisa menarik versi
-          # dependency (firebase, @capacitor-firebase/authentication, dst) yang
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Simpan package-lock.json ke repo (hanya sekali, saat pertama dibuat)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add package-lock.json
+          git diff --cached --quiet || git commit -m "chore: kunci versi dependency (package-lock.json) supaya build reproducible [skip ci]"
+          git push || true
+
+      - name: Build web app (Vite)
+        run: npm run build
+
+      - name: Tambahkan platform Android (Capacitor)
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          else
+            npx cap sync android
+          fi
+
+      - name: Sinkronkan aset web ke Android
+        run: npx cap sync android
+
+      - name: Generate ikon aplikasi dari logo GWG
+        run: npx @capacitor/assets generate --android
+
+      - name: Simpan folder android/ ke repo (hanya jika baru dibuat/berubah)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add android
+          git diff --cached --quiet || git commit -m "chore: sync android/ platform files [skip ci]"
+          git push || true
+
+      - name: Build APK debug
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Jalankan app di emulator & tangkap log error
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          arch: x86_64
+          profile: pixel_6
+          script: |
+            adb install -r android/app/build/outputs/apk/debug/app-debug.apk
+            adb logcat -c
+            adb shell am start -n com.gwg.superapp/.MainActivity
+            sleep 60
+            adb logcat -d > full-log.txt
+            grep -i -A 30 "FATAL EXCEPTION\|AndroidRuntime" full-log.txt > crash-log.txt || echo "Tidak ada crash terdeteksi di log" > crash-log.txt
+            grep -i "firebase\|chromium\|CapacitorHttp\|CronetHttp\|www.googleapis\|Auth\b\|Capacitor" full-log.txt > network-log.txt || echo "Tidak ada log jaringan/Firebase yang cocok" > network-log.txt
+
+      - name: Upload log crash sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: crash-log
+          path: crash-log.txt
+
+      - name: Upload log jaringan/Firebase sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-log
+          path: network-log.txt
+
+      - name: Upload log logcat LENGKAP sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-log
+          path: full-log.txt
+
+      - name: Upload APK sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gwg-superapp-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk          # dependency (firebase, @capacitor-firebase/authentication, dst) yang
           # BERBEDA dari run sebelumnya walau tidak ada kode yang diubah sama
           # sekali, karena package.json pakai rentang versi "^" bukan versi
           # persis. Ini kemungkinan besar penyebab build lama (di HP lain)
