@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { firebaseDB } from "../firebase/init";
-import { idbGet, idbSet, queueWrite, queueRemove, queueGetAll, queueCount, saveLocalDB } from "../lib/offlineStore";
+import { idbGet, idbSet, queueWrite, queueRemove, queueGetAll, queueCount, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
 import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey } from "../lib/dataHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
@@ -10,8 +10,16 @@ import { downloadJSON } from "../lib/fileSave";
 export function useDB(user) {
   const [db, setDB] = useState(() => {
     try {
-      const saved = localStorage.getItem("gwg_db_v2");
-      return saved ? JSON.parse(saved) : DB_EMPTY;
+      // Key baru (skema pasca-optimisasi): hanya tabel kecil, selalu ada &
+      // selalu ringan. Tabel besar (toko/kontrol) menyusul lewat idbGet di
+      // bawah begitu IndexedDB siap (biasanya dalam hitungan puluhan ms).
+      const savedSmall = localStorage.getItem("gwg_db_v2_small");
+      if (savedSmall) return { ...DB_EMPTY, ...JSON.parse(savedSmall) };
+      // Fallback sekali pakai: user lama yang belum pernah tersimpan lewat
+      // skema baru (key lama masih menyimpan seluruh db, termasuk tabel
+      // besar, dari sebelum patch ini).
+      const savedOld = localStorage.getItem("gwg_db_v2");
+      return savedOld ? JSON.parse(savedOld) : DB_EMPTY;
     } catch { return DB_EMPTY; }
   });
   // Hidrasi dari IndexedDB begitu tersedia (di render pertama kita hanya
@@ -697,6 +705,7 @@ export function useDB(user) {
     backupNow(db, { reason: "sebelum-reset" });
     setDB(DB_EMPTY);
     saveLocalDB(DB_EMPTY);
+    flushLocalDBNow(); // pastikan tidak ada penulisan lama (debounced) yang menimpa balik setelah ini
     // Reset menghapus SETIAP path tabel secara eksplisit (bukan menulis satu
     // blob kosong ke root), supaya konsisten dengan skema per-path di atas.
     const updates = {};
@@ -823,6 +832,7 @@ export function useDB(user) {
     const restored = { ...DB_EMPTY, ...snapshotData };
     setDB(restored);
     saveLocalDB(restored);
+    flushLocalDBNow(); // sama seperti resetDB — hindari race dengan write lama yang masih ditunda debounce
 
     const failed = [];
 
