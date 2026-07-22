@@ -32,7 +32,28 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install dependencies npm
-        run: npm install
+        run: |
+          # Belum ada package-lock.json di repo → setiap run bisa menarik versi
+          # dependency (firebase, @capacitor-firebase/authentication, dst) yang
+          # BERBEDA dari run sebelumnya walau tidak ada kode yang diubah sama
+          # sekali, karena package.json pakai rentang versi "^" bukan versi
+          # persis. Ini kemungkinan besar penyebab build lama (di HP lain)
+          # normal sementara build baru macet — bukan dari perubahan kode.
+          # Begitu package-lock.json ada, "npm ci" dipakai supaya SETIAP run
+          # ke depannya menginstal versi PERSIS yang sama, tidak drift lagi.
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Simpan package-lock.json ke repo (hanya sekali, saat pertama dibuat)
+        run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add package-lock.json
+          git diff --cached --quiet || git commit -m "chore: kunci versi dependency (package-lock.json) supaya build reproducible [skip ci]"
+          git push || true
 
       - name: Build web app (Vite)
         run: npm run build
@@ -78,12 +99,29 @@ jobs:
             sleep 20
             adb logcat -d > full-log.txt
             grep -i -A 30 "FATAL EXCEPTION\|AndroidRuntime" full-log.txt > crash-log.txt || echo "Tidak ada crash terdeteksi di log" > crash-log.txt
+            # Hang/macet diam (mis. koneksi Firebase tidak pernah selesai) TIDAK
+            # menghasilkan FATAL EXCEPTION di atas, jadi crash-log.txt saja bisa
+            # kelihatan "bersih" padahal appnya nyangkut. Saring juga baris yang
+            # relevan ke jaringan/Firebase/Capacitor secara terpisah.
+            grep -i "firebase\|chromium\|CapacitorHttp\|CronetHttp\|www.googleapis\|Auth\b" full-log.txt > network-log.txt || echo "Tidak ada log jaringan/Firebase yang cocok" > network-log.txt
 
       - name: Upload log crash sebagai artifact
         uses: actions/upload-artifact@v4
         with:
           name: crash-log
           path: crash-log.txt
+
+      - name: Upload log jaringan/Firebase sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: network-log
+          path: network-log.txt
+
+      - name: Upload log logcat LENGKAP sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-log
+          path: full-log.txt
 
       - name: Upload APK sebagai artifact
         uses: actions/upload-artifact@v4
