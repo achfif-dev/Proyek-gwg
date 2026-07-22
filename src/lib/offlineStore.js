@@ -99,14 +99,63 @@ export async function queueCount() {
     } catch { resolve(0); }
   });
 }
-// Titik tunggal untuk menyimpan seluruh state `db` secara lokal. Dipanggil
-// di SETIAP tempat yang dulu memanggil localStorage.setItem("gwg_db_v2", ...)
-// langsung — perilaku localStorage dipertahankan (sinkron, cepat), ditambah
-// tulis ke IndexedDB (async, best-effort, tidak memblokir UI) sebagai
-// cadangan berkapasitas besar yang jauh lebih tahan dipakai offline.
+// ── Penyimpanan lokal, dipecah 2 jalur berdasarkan ukuran tabel ──────────
+// Sebelumnya SETIAP panggilan saveLocalDB() men-JSON.stringify SELURUH
+// `db` (termasuk `toko` & `kontrol`) lalu localStorage.setItem SECARA
+// SINKRON — di skala ribuan toko ini bisa >30MB dan blocking main thread
+// ratusan ms per klik. Lebih parah: localStorage punya kuota ~5-10MB per
+// origin, jauh di bawah ukuran itu, dan localStorage.setItem dibungkus
+// try{}catch{} kosong → di skala besar kemungkinan GAGAL SENYAP tiap kali.
+//
+// Skema baru:
+// 1) Tabel KECIL (semua KECUALI toko/kontrol) → localStorage, SINKRON.
+//    Ukurannya tetap kecil (ratusan KB) walau bisnis berkembang, jadi
+//    aman dari kuota & instan sebagai fallback tercepat saat app baru
+//    dibuka (sebelum IndexedDB sempat siap).
+// 2) SELURUH data (termasuk toko/kontrol) → IndexedDB, ASYNC + DI-DEBOUNCE
+//    ~500ms. IndexedDB tidak kena batas kuota seketat localStorage, dan
+//    API-nya memang didesain tidak memblokir UI thread. Debounce memastikan
+//    klik beruntun cepat (mis. isi banyak baris kontrol) cuma memicu 1x
+//    tulis di akhir, bukan 1x tulis besar per klik.
+const LARGE_TABLES = ["toko", "kontrol"];
+
+let idbFlushTimer = null;
+let idbFlushPending = null;
+
+function flushIdbNow() {
+  if (idbFlushTimer) { clearTimeout(idbFlushTimer); idbFlushTimer = null; }
+  if (idbFlushPending) {
+    const payload = idbFlushPending;
+    idbFlushPending = null;
+    idbSet("gwg_db_v2", payload);
+  }
+}
+
+if (typeof window !== "undefined") {
+  // Jaga-jaga: kalau tab ditutup / app dipindah ke background persis di
+  // tengah jendela debounce 500ms, jangan sampai perubahan terakhir hilang.
+  window.addEventListener("beforeunload", flushIdbNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushIdbNow();
+  });
+}
+
 export function saveLocalDB(data) {
-  try { localStorage.setItem("gwg_db_v2", JSON.stringify(data)); } catch {}
-  idbSet("gwg_db_v2", data);
+  const smallSlice = {};
+  for (const key in data) {
+    if (!LARGE_TABLES.includes(key)) smallSlice[key] = data[key];
+  }
+  try { localStorage.setItem("gwg_db_v2_small", JSON.stringify(smallSlice)); } catch {}
+
+  idbFlushPending = data;
+  if (idbFlushTimer) clearTimeout(idbFlushTimer);
+  idbFlushTimer = setTimeout(flushIdbNow, 500);
+}
+
+// Dipakai di titik-titik kritis (sebelum reset/restore/logout) supaya
+// tidak menunggu window debounce 500ms saat kepastian tersimpan itu penting.
+export function flushLocalDBNow() {
+  flushIdbNow();
 }
 
 // Hook status koneksi — dipakai untuk menampilkan indikator "Offline" di
