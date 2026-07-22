@@ -15,7 +15,7 @@
       "providers": ["google.com"]
     },
     "CapacitorHttp": {
-      "enabled": true
+      "enabled": false
     }
   }
 }
