@@ -850,10 +850,28 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
   function PerputaranDetail() {
     const { ruteRows, wilayahRows, total } = perputaranStok;
 
-    // Format 1 sel: "terjual/stok (persentase%)" — kalau stok 0, tampilkan
-    // "—" (bukan pembagian dengan nol yang tidak berarti apa-apa).
+    // Format 1 sel: "terjual/stok (persentase%)" — kalau stok 0 DAN terjual
+    // juga 0, tampilkan "—" (memang tidak ada aktivitas apa pun).
+    // ⚠️ FIX: sebelumnya stok=0 langsung ditampilkan "—" TANPA peduli apakah
+    // terjual>0 — ini menyembunyikan histori penjualan pada kasus produk
+    // yang sudah ditarik dari rute (stok LIVE Master Toko jadi 0 setelah
+    // ditarik) padahal periode yang direkap masih mencatat ada penjualan
+    // saat produk itu masih beredar. Total per Wilayah/Perusahaan tetap
+    // benar (dihitung dari penjumlahan terjual & stok terpisah), tapi baris
+    // Per Rute jadi terlihat kosong padahal datanya ada — sekarang
+    // ditampilkan sebagai warning "terjual/0 ⚠️" supaya kasus ini tetap
+    // kelihatan, bukan hilang senyap.
     function selPerputaran(terjual, stok) {
-      if (!stok) return <span style={{ color:T.gray400 }}>—</span>;
+      if (!stok) {
+        if (terjual) {
+          return (
+            <span style={{ color:T.red, fontWeight:700 }} title="Stok beredar saat ini 0 (kemungkinan produk sudah ditarik dari rute ini), tapi ada histori terjual di periode ini.">
+              {fmt(terjual)}<span style={{ color:T.gray400 }}>/0</span> ⚠️
+            </span>
+          );
+        }
+        return <span style={{ color:T.gray400 }}>—</span>;
+      }
       const pct = (terjual / stok) * 100;
       const warna = pct >= 50 ? T.green : pct >= 20 ? T.gold : T.red;
       return (
