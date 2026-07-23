@@ -1,5 +1,13 @@
 export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna", "penyesuaian", "penjualanLuar"];
 
+// Jeda maksimum (hari) antar tanggal kontrol berurutan di satu wilayah supaya
+// masih dianggap 1 putaran/siklus yang sama (dipakai di Rekap → "Siklus
+// Wilayah", dan di Kontrol Bulanan untuk penanda toko yang belum dikontrol
+// di siklus berjalan). Satu konstanta dipakai bersama supaya definisi
+// "periode kontrol" konsisten di seluruh app — tidak berpatokan pada bulan
+// kalender, karena siklus kunjungan tiap wilayah bisa maju-mundur tanggalnya.
+export const SIKLUS_GAP_DAYS = 10;
+
 // Konversi array → objek ber-key id, untuk ditulis ke Firebase per-record.
 export function arrToMap(arr) {
   const map = {};
