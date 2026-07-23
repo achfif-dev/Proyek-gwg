@@ -4,6 +4,7 @@ import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
+import { SIKLUS_GAP_DAYS } from "../../lib/dataHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 
@@ -13,6 +14,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
   // Jika Sales dengan wilayah terkunci, filter modal otomatis menggunakan wilayah Sales
   const [modalFilter, setModalFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"" });
+  // Filter tambahan di dropdown Toko modal Kontrol: kalau aktif, cuma
+  // tampilkan toko yang punya badge 🔴/🟠 (belum ada kontrol berhasil di
+  // siklus berjalan) — mempermudah menyisir toko yang masih perlu dikunjungi.
+  const [hanyaBelumKontrol, setHanyaBelumKontrol] = useState(false);
   const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
@@ -841,6 +846,42 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     }).map(r=>({ value:r.id, label:r.nama }));
   }, [db.rute, db.wilayah, modalFilter.wilayahId, isSalesRestricted, salesWilayahId]);
 
+  // ✅ Rentang siklus per wilayah — pakai algoritma & konstanta yang SAMA
+  // dengan "Siklus Wilayah" di Rekap (lib/dataHelpers.js → SIKLUS_GAP_DAYS):
+  // mundur dari tanggal kontrol terbaru di wilayah itu, selama jeda antar
+  // tanggal berurutan tidak lebih dari SIKLUS_GAP_DAYS hari. Periode kontrol
+  // TIDAK selalu pas 1 bulan kalender — bisa maju-mundur tanggalnya, jadi
+  // definisinya harus ikut yang dipakai Rekap, bukan sekadar potong "YYYY-MM".
+  // Tanggal yang sedang diisi di form (form.tanggal) ikut dianggap bagian
+  // siklus berjalan walau belum tersimpan, supaya badge langsung bereaksi
+  // begitu tanggal diisi/diganti.
+  const siklusRangePerWilayah = useMemo(() => {
+    const byWilayah = {};
+    enriched.forEach(k => {
+      if (!k.wilayahId || !k.tanggal) return;
+      (byWilayah[k.wilayahId] ||= new Set()).add(k.tanggal);
+    });
+    if (form.tanggal) {
+      const tokoTerpilih = (db.toko||[]).find(t => t.id === form.tokoId);
+      const ruteTerpilih = tokoTerpilih ? (db.rute||[]).find(r=>r.id===tokoTerpilih.ruteId) : null;
+      const wilayahAnchor = ruteTerpilih?.wilayahId || modalFilter.wilayahId;
+      if (wilayahAnchor) (byWilayah[wilayahAnchor] ||= new Set()).add(form.tanggal);
+    }
+    const map = {};
+    Object.entries(byWilayah).forEach(([wilayahId, dateSet]) => {
+      const dates = [...dateSet].sort();
+      let end = dates[dates.length-1];
+      let start = end;
+      for (let i = dates.length-2; i >= 0; i--) {
+        const diffDays = (new Date(start) - new Date(dates[i])) / 86400000;
+        if (diffDays > SIKLUS_GAP_DAYS) break;
+        start = dates[i];
+      }
+      map[wilayahId] = { start, end };
+    });
+    return map;
+  }, [enriched, form.tanggal, form.tokoId, db.toko, db.rute, modalFilter.wilayahId]);
+
   const modalTokoOpts = useMemo(() => {
     // Tampilkan toko Aktif DAN Baru di dropdown kontrol (jangan tampilkan Non-Aktif)
     // Label disertai badge status supaya petugas langsung tahu statusnya tanpa buka tab Toko
@@ -859,18 +900,30 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       const ruteIds = (db.rute||[]).filter(r=>r.wilayahId===modalFilter.wilayahId).map(r=>r.id);
       list = list.filter(t=>ruteIds.includes(t.ruteId));
     }
-    // ✅ Validasi kontrol ganda: cek toko mana saja yang SUDAH ada entri kontrol
-    // pada tanggal yang sedang dipilih di form (form.tanggal). Entri yang sedang
-    // diedit sendiri dikecualikan supaya edit tidak dianggap "duplikat".
     const tglCek = form.tanggal;
     return list.map(t => {
       const statusBadge = t.status === "Baru" ? " 🆕 [BARU]" : t.status === "Aktif" ? "" : ` [${t.status}]`;
       const sudahDikontrol = !!tglCek && (db.kontrol||[]).some(k =>
         k.tokoId === t.id && k.tanggal === tglCek && !(modal==="edit" && k.id===form.id)
       );
-      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol };
+      let extraBadge = null;
+      if (!sudahDikontrol) {
+        const ruteToko = (db.rute||[]).find(r=>r.id===t.ruteId);
+        const siklus = ruteToko ? siklusRangePerWilayah[ruteToko.wilayahId] : null;
+        if (siklus) {
+          const entriSiklusIni = (db.kontrol||[]).filter(k =>
+            k.tokoId === t.id && k.tanggal >= siklus.start && k.tanggal <= siklus.end && !(modal==="edit" && k.id===form.id)
+          );
+          if (entriSiklusIni.length === 0) {
+            extraBadge = { label: "🔴 Belum Kontrol", title: `Belum ada entri kontrol untuk toko ini di siklus berjalan (${siklus.start} s/d ${siklus.end})`, color: T.red, bg: T.redLt };
+          } else if (entriSiklusIni.every(k => k.catatanStatus === "tutup")) {
+            extraBadge = { label: "🟠 Tutup, Perlu Diulang", title: "Semua kunjungan di siklus berjalan ketemu toko tutup — belum ada kontrol yang berhasil", color: T.orange, bg: T.orangeLt };
+          }
+        }
+      }
+      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol, extraBadge };
     });
-  }, [db.toko, db.rute, db.kontrol, modalFilter, form.tanggal, form.id, modal, isSalesRestricted, salesWilayahId]);
+  }, [db.toko, db.rute, db.kontrol, modalFilter, form.tanggal, form.id, modal, isSalesRestricted, salesWilayahId, siklusRangePerWilayah]);
 
   // ✅ Flag toko yang sedang dipilih di form: apakah SUDAH ada entri kontrol
   // untuk tanggal yang sama (dipakai untuk banner peringatan di modal)
@@ -2248,16 +2301,25 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             <Input label="Rute" value={modalFilter.ruteId} onChange={handleModalRuteChange}
               options={modalRuteOpts} hint="Pilih rute untuk mempersempit pilihan toko" />
             <div style={{ gridColumn:"1/-1", minWidth:0 }}>
+              <label style={{ display:"flex", alignItems:"center", gap:7, fontSize:12.5, color:T.gray600,
+                marginBottom:8, cursor:"pointer", userSelect:"none" }}>
+                <input type="checkbox" checked={hanyaBelumKontrol}
+                  onChange={e=>setHanyaBelumKontrol(e.target.checked)}
+                  style={{ accentColor:T.red, width:15, height:15, cursor:"pointer" }} />
+                Tampilkan cuma yang <b>Belum Kontrol</b> (🔴/🟠) di siklus berjalan
+              </label>
               <SearchableSelect
                 label="Toko"
                 value={form.tokoId}
                 onChange={handleTokoChange}
-                options={modalTokoOpts}
+                options={hanyaBelumKontrol ? modalTokoOpts.filter(o => o.extraBadge) : modalTokoOpts}
                 required
                 placeholder="Ketik nama toko untuk mencari..."
                 hint={
                   modalTokoOpts.length === 0
                     ? "Tidak ada toko Aktif/Baru untuk filter ini"
+                    : hanyaBelumKontrol
+                    ? `${modalTokoOpts.filter(o=>o.extraBadge).length} dari ${modalTokoOpts.length} toko belum ada kontrol berhasil di siklus berjalan`
                     : `${modalTokoOpts.length} toko tersedia (Aktif + Baru) · Toko Non-Aktif otomatis disembunyikan · 🆕 = toko baru`
                 }
               />
