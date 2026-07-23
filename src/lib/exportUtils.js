@@ -137,6 +137,14 @@ export async function exportPDF(data, columns, title, filename) {
         return pdfSafe(str) || "—";
       }));
 
+      // Font dikecilkan otomatis kalau kolom banyak (tab Kontrol bisa punya
+      // puluhan kolom produk) — supaya lebih banyak kolom yang muat di SATU
+      // kelompok halaman, dan horizontalPageBreak (lanjutan kolom ke halaman
+      // berikutnya) hanya jadi jalan terakhir, bukan langsung kepakai untuk
+      // tabel yang sebetulnya masih bisa muat kalau fontnya lebih kecil.
+      const numColsNative = columns.length;
+      const nativeFontSize = numColsNative <= 6 ? 9 : numColsNative <= 10 ? 8 : numColsNative <= 16 ? 7 : numColsNative <= 24 ? 6 : 5;
+
       autoTable(doc, {
         head: [columns.map(c=>pdfSafe(c.label))],
         body: rows,
@@ -149,8 +157,8 @@ export async function exportPDF(data, columns, title, filename) {
         horizontalPageBreak: true,
         horizontalPageBreakRepeat: 0,
         styles: { overflow: "linebreak" },
-        headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: 8 },
-        bodyStyles: { fontSize: 8 },
+        headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: nativeFontSize },
+        bodyStyles: { fontSize: nativeFontSize },
         alternateRowStyles: { fillColor: [248,250,248] },
         margin: { left: 24, right: 24, top: 62 },
       });
@@ -178,11 +186,21 @@ export async function exportPDF(data, columns, title, filename) {
     return Math.min(Math.max(maxLen * 7 + 16, 60), 180);
   });
   const totalW = colWidths.reduce((s,w)=>s+w,0);
-  const pct = colWidths.map(w=>(w/totalW*100).toFixed(1)+"%");
+  const pct = colWidths.map(w=>(w/totalW*100).toFixed(2)+"%");
+
+  // Kolom sering sangat banyak (mis. tab Kontrol: 3 kolom/produk × jumlah
+  // produk aktif), jadi ukuran font & padding dikecilkan otomatis mengikuti
+  // jumlah kolom — supaya tabel tetap muat 1 halaman lanskap tanpa terpotong,
+  // bukannya dipaksa nowrap yang bikin tabel melebar lalu dicetak berulang
+  // di halaman-halaman berikutnya.
+  const numCols = columns.length;
+  const cellFontSize = numCols <= 6 ? 11 : numCols <= 10 ? 10 : numCols <= 16 ? 9 : numCols <= 24 ? 8 : 7;
+  const headFontSize = cellFontSize;
+  const cellPad = numCols <= 10 ? "6px 10px" : numCols <= 20 ? "5px 6px" : "3px 4px";
 
   const tableRows = rows.map((row, i) => `
     <tr style="background:${i%2===0?"#fff":"#f8faf8"}">
-      ${row.map((cell, ci) => `<td style="padding:6px 10px;font-size:11px;border-bottom:1px solid #e5e7eb;width:${pct[ci]}">${cell}</td>`).join("")}
+      ${row.map((cell, ci) => `<td style="padding:${cellPad};font-size:${cellFontSize}px;border-bottom:1px solid #e5e7eb;width:${pct[ci]};overflow-wrap:anywhere;word-break:break-word;">${cell}</td>`).join("")}
     </tr>`).join("");
 
   const html = `<!DOCTYPE html><html><head>
@@ -201,10 +219,22 @@ export async function exportPDF(data, columns, title, filename) {
     .summary-bar { display:flex; gap:16px; margin-bottom:14px; }
     .summary-item { background:#F0FDF4; border:1px solid #86EFAC; border-radius:6px; padding:6px 14px; font-size:11px; }
     .summary-item b { color:#0F4C35; display:block; font-size:13px; }
-    table { width:100%; border-collapse:collapse; font-size:11px; }
+    /* table-layout:fixed MEMAKSA lebar kolom mengikuti persentase yang sudah
+       dihitung (jumlahnya 100%) dan TIDAK PERNAH melebar mengikuti isi —
+       inilah kunci supaya tabel tidak pernah melebihi lebar kertas walau
+       kolomnya banyak (mis. tab Kontrol dengan puluhan kolom produk).
+       Sebelumnya thead th pakai white-space:nowrap yang memaksa header tetap
+       1 baris utuh, jadi tabel jadi lebih lebar dari kertas — kelebihannya
+       lalu dipotong browser dan dicetak ulang di halaman-halaman berikutnya
+       (menumpuk berkali lipat) walau sudah mode lanskap. Sekarang teks boleh
+       turun baris (word-break) sehingga tetap dalam batas lebar kolomnya. */
+    table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11px; }
+    thead { display:table-header-group; }
+    tfoot { display:table-footer-group; }
     thead tr { background:#0F4C35; }
-    thead th { color:#fff; padding:8px 10px; text-align:left; font-weight:700; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; white-space:nowrap; }
+    thead th { color:#fff; padding:8px 6px; text-align:left; font-weight:700; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; overflow-wrap:anywhere; word-break:break-word; }
     tbody tr:last-child td { border-bottom:none; }
+    tr { page-break-inside:avoid; }
     .footer { margin-top:12px; border-top:1px solid #E5E7EB; padding-top:8px; display:flex; justify-content:space-between; font-size:9px; color:#9CA3AF; }
     @media print { button { display:none !important; } }
   </style>
@@ -229,7 +259,7 @@ export async function exportPDF(data, columns, title, filename) {
     <div class="summary-item"><b>${now.split(",")[0]}</b>Tanggal Ekspor</div>
   </div>
   <table>
-    <thead><tr>${columns.map((c,i)=>`<th style="width:${pct[i]}">${c.label}</th>`).join("")}</tr></thead>
+    <thead><tr>${columns.map((c,i)=>`<th style="width:${pct[i]};font-size:${headFontSize}px;">${c.label}</th>`).join("")}</tr></thead>
     <tbody>${tableRows}</tbody>
   </table>
   <div class="footer">
