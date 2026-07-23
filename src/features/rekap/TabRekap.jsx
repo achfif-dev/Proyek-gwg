@@ -4,7 +4,7 @@ import { Dashboard } from "../../features/dashboard/Dashboard";
 import { TabKontrol } from "../../features/kontrol/TabKontrol";
 import { autoUpgradeBaruToAktif } from "../../features/toko/TabToko";
 import { fmt, fmtRp, naturalCompare } from "../../lib/format";
-import { SIKLUS_GAP_DAYS } from "../../lib/dataHelpers";
+import { SIKLUS_GAP_DAYS, statusTokoPadaTanggal } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 
 export function TabRekap({ db, analytics, salesWilayahId }) {
@@ -846,6 +846,72 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
     }).length;
   }, [db.toko, db.rute, filterWilayah, filterRute]);
 
+  // ─── RINGKASAN TOKO khusus mode "Siklus Wilayah" ───
+  // Angka tambahan yang diminta muncul di bagian Ringkasan hasil ekspor
+  // Rekap → Siklus Wilayah. Sejak riwayat status toko (statusHistory)
+  // ditambahkan, 3 dari 4 angka ini SEKARANG dihitung dari tanggal PASTI
+  // perubahan status (bukan cuma status toko saat ini/hari ini dibuka):
+  //  1) Jumlah Data Toko Keseluruhan  : semua toko terdaftar (apa pun
+  //     statusnya) di wilayah yang dipilih — snapshot data master saat ini
+  //     (aplikasi tidak melacak tanggal toko didaftarkan untuk semua toko,
+  //     jadi angka ini tetap snapshot terkini, bukan historis).
+  //  2) Toko Aktif saat Siklus Kontrol berlangsung : toko UNIK yang
+  //     benar-benar ADA entri kontrolnya (dikunjungi) dalam rentang tanggal
+  //     siklus ini — selalu akurat karena berdasar tanggal kunjungan asli.
+  //  3) Toko Ditarik/Non-Aktif saat Siklus berlangsung : toko (di wilayah
+  //     terpilih) yang riwayat statusnya BERUBAH MENJADI "Non-Aktif" dengan
+  //     TANGGAL PERUBAHAN jatuh di dalam rentang siklus ini
+  //     [filterSiklusStart, filterSiklusEnd] — dihitung dari statusHistory,
+  //     akurat untuk toko yang statusnya diubah SETELAH fitur riwayat ini
+  //     ada. Toko lama yang belum pernah statusnya diubah sejak fitur ini
+  //     ditambahkan tidak akan muncul di sini walau statusnya Non-Aktif
+  //     sekarang (karena tanggal pastinya memang tidak diketahui).
+  //  4) Toko Aktif untuk Siklus Kontrol Berikutnya : toko (di wilayah
+  //     terpilih) yang REKONSTRUKSI status-nya PADA AKHIR siklus ini
+  //     (filterSiklusEnd), berdasar statusHistory, masih Aktif/Baru (bukan
+  //     Non-Aktif) — sehingga tetap akurat walau dibuka jauh setelah
+  //     siklusnya lewat dan status toko sudah berubah lagi sesudahnya.
+  // Catatan kompatibilitas: toko yang BELUM PERNAH punya statusHistory
+  // (dibuat/diubah sebelum fitur ini ada) di-fallback ke status TERKINI —
+  // lihat statusTokoPadaTanggal() di lib/dataHelpers.js.
+  const siklusTokoSummary = useMemo(() => {
+    if (!filterSiklusWilayahs.length || !filterSiklusStart || !filterSiklusEnd) {
+      return { totalToko:0, aktifSaatSiklus:0, ditarikSaatSiklus:0, aktifSiklusBerikutnya:0, adaTanpaRiwayat:false };
+    }
+    const ruteIdsWilayah = new Set((db.rute||[]).filter(r=>filterSiklusWilayahs.includes(r.wilayahId)).map(r=>r.id));
+    const tokoWilayah = (db.toko||[]).filter(t=>ruteIdsWilayah.has(t.ruteId));
+    const totalToko = tokoWilayah.length;
+
+    // (2) Toko unik yang benar-benar dikunjungi selama rentang siklus ini
+    const tokoIdsDikunjungi = new Set(
+      enrichKontrol.filter(k =>
+        k.tokoId && filterSiklusWilayahs.includes(k.wilayahId) &&
+        k.tanggal >= filterSiklusStart && k.tanggal <= filterSiklusEnd
+      ).map(k=>k.tokoId)
+    );
+
+    // (3) Toko yang riwayat statusnya berubah jadi "Non-Aktif" TEPAT di
+    // dalam rentang tanggal siklus ini (tanggal pasti, dari statusHistory).
+    let ditarikSaatSiklus = 0;
+    tokoWilayah.forEach(t => {
+      const riwayat = Array.isArray(t.statusHistory) ? t.statusHistory : [];
+      const ditarikDiSiklusIni = riwayat.some(r =>
+        r.status === "Non-Aktif" && r.tanggal >= filterSiklusStart && r.tanggal <= filterSiklusEnd
+      );
+      if (ditarikDiSiklusIni) ditarikSaatSiklus++;
+    });
+
+    // (4) Toko yang statusnya (direkonstruksi pada akhir siklus) masih
+    // Aktif/Baru — inilah pool yang diperkirakan masuk siklus berikutnya.
+    const aktifSiklusBerikutnya = tokoWilayah.filter(t =>
+      statusTokoPadaTanggal(t, filterSiklusEnd) !== "Non-Aktif"
+    ).length;
+
+    const adaTanpaRiwayat = tokoWilayah.some(t => !Array.isArray(t.statusHistory) || t.statusHistory.length===0);
+
+    return { totalToko, aktifSaatSiklus: tokoIdsDikunjungi.size, ditarikSaatSiklus, aktifSiklusBerikutnya, adaTanpaRiwayat };
+  }, [db.rute, db.toko, enrichKontrol, filterSiklusWilayahs, filterSiklusStart, filterSiklusEnd]);
+
   // ─── RENDER HARIAN DETAIL (per toko dalam rute) ───
   function PerputaranDetail() {
     const { ruteRows, wilayahRows, total } = perputaranStok;
@@ -1121,6 +1187,19 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
             { wilayahNama:"Toko Bermasalah",           ruteNama:String(totalMasalahAll),     totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Toko Ditarik/Non-Aktif",    ruteNama:String(totalTokoDitarik),    totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Jumlah Baris Data",         ruteNama:String(activeData.length),  totalRevFmt:"", totalBonus:"" },
+            // ✅ Khusus mode Siklus Wilayah: tambahan ringkasan status toko
+            // selama siklus ini (lihat komentar siklusTokoSummary di atas).
+            ...(mode==="siklus" ? [
+              {},
+              { wilayahNama:"📦 RINGKASAN TOKO — SIKLUS INI", ruteNama:"",  totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Jumlah Data Toko Keseluruhan",              ruteNama:String(siklusTokoSummary.totalToko),            totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Toko Aktif saat Siklus Kontrol Berlangsung",ruteNama:String(siklusTokoSummary.aktifSaatSiklus),      totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Toko Ditarik/Non-Aktif saat Siklus Berlangsung", ruteNama:String(siklusTokoSummary.ditarikSaatSiklus), totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Toko Aktif untuk Siklus Kontrol Berikutnya",ruteNama:String(siklusTokoSummary.aktifSiklusBerikutnya),totalRevFmt:"", totalBonus:"" },
+              ...(siklusTokoSummary.adaTanpaRiwayat ? [
+                { wilayahNama:"ℹ️ Catatan", ruteNama:"Sebagian toko belum punya riwayat tanggal status (dibuat sebelum fitur ini ada) — memakai status terkini sebagai pendekatan untuk toko tsb.", totalRevFmt:"", totalBonus:"" },
+              ] : []),
+            ] : []),
           ];
           return (
             <ExportMenu
@@ -1355,6 +1434,22 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
             icon="🧴" color={T.purple} />
         ))}
       </div>
+      {/* ✅ Ringkasan Toko khusus mode Siklus Wilayah (sama persis dengan
+          bagian "📦 RINGKASAN TOKO — SIKLUS INI" di hasil ekspor) — supaya
+          Admin/Manajer bisa langsung lihat di layar tanpa harus ekspor dulu. */}
+      {mode==="siklus" && filterSiklusWilayahs.length>0 && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
+          <StatCard label="Jumlah Data Toko Keseluruhan" value={fmt(siklusTokoSummary.totalToko)} icon="📦" color={T.gray600} />
+          <StatCard label="Toko Aktif saat Siklus Berlangsung" value={fmt(siklusTokoSummary.aktifSaatSiklus)} icon="🟢" color={T.green} />
+          <StatCard label="Toko Ditarik/Non-Aktif saat Siklus" value={fmt(siklusTokoSummary.ditarikSaatSiklus)} icon="🔻" color={T.red} />
+          <StatCard label="Toko Aktif utk Siklus Berikutnya" value={fmt(siklusTokoSummary.aktifSiklusBerikutnya)} icon="⏭️" color={T.blue} />
+        </div>
+      )}
+      {mode==="siklus" && filterSiklusWilayahs.length>0 && siklusTokoSummary.adaTanpaRiwayat && (
+        <div style={{ fontSize:11, color:T.gray500, marginTop:-8, marginBottom:16 }}>
+          ℹ️ Sebagian toko belum punya riwayat tanggal status (dibuat/diubah sebelum fitur ini ada) — untuk toko tsb dipakai status terkini sebagai pendekatan.
+        </div>
+      )}
       {/* ℹ️ Ranking Toko dihitung per-toko, jadi Penjualan Luar Rute (toko
           tidak diketahui) tidak ikut masuk di sini — beda cakupan dengan
           badge "Rev" di header yang mencakup seluruh perusahaan. Ini bukan
