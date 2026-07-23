@@ -2,10 +2,12 @@ import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, ImportMenu, Input, Modal, SearchableSelect, Table } from "../../components/ui";
 import { fmt, fmtRp, genId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
 import { downloadTokoTemplate } from "../../lib/importUtils";
+import { appendStatusHistory } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
 
 export function autoUpgradeBaruToAktif(db, updateRecord) {
   const today = new Date();
+  const todayStr = today.toISOString().slice(0,10);
   const thirtyDaysAgo = new Date(today);
   thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
@@ -15,8 +17,11 @@ export function autoUpgradeBaruToAktif(db, updateRecord) {
     const masuk = new Date(toko.tanggalMasuk);
     if (isNaN(masuk.getTime())) return;
     if (masuk <= thirtyDaysAgo) {
-      // Sudah lebih dari 30 hari, upgrade ke Aktif
-      updateRecord("toko", toko.id, { status: "Aktif" });
+      // Sudah lebih dari 30 hari, upgrade ke Aktif — dicatat juga di
+      // riwayat status supaya Rekap Siklus Wilayah bisa merekonstruksi
+      // status toko ini secara akurat pada tanggal berapa pun di masa lalu.
+      updateRecord("toko", toko.id, { status: "Aktif",
+        statusHistory: appendStatusHistory(toko.statusHistory, "Aktif", todayStr, "Otomatis: 30 hari sejak Tanggal Masuk (Baru → Aktif)") });
     }
   });
 }
@@ -107,13 +112,25 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       const counter = newId.replace("T","");
       const today = new Date().toISOString().slice(0,10);
       const tanggalMasuk = form.status === "Baru" ? (form.tanggalMasuk || today) : (form.tanggalMasuk || null);
-      addRecord("toko", { ...form, ...produkFlags, id:newId, kode:prefix+counter, tanggalMasuk });
+      // ✅ Riwayat status: catat status awal toko sejak didaftarkan, supaya
+      // Rekap Siklus Wilayah bisa tahu persis toko ini sudah "Aktif"/"Baru"
+      // sejak tanggal berapa (bukan cuma status terkini).
+      const statusHistory = appendStatusHistory([], form.status || "Aktif", tanggalMasuk || today, "Toko didaftarkan");
+      addRecord("toko", { ...form, ...produkFlags, id:newId, kode:prefix+counter, tanggalMasuk, statusHistory });
     } else {
       // Jika status diubah ke Baru dan belum ada tanggalMasuk, isi sekarang
       const existing = (db.toko||[]).find(t=>t.id===form.id);
       const tanggalMasuk = form.tanggalMasuk || (form.status === "Baru" && !existing?.tanggalMasuk
         ? new Date().toISOString().slice(0,10) : existing?.tanggalMasuk || null);
-      updateRecord("toko", form.id, { ...form, ...produkFlags, tanggalMasuk });
+      // ✅ Kalau status BENAR-BENAR berubah lewat form edit ini, catat ke
+      // riwayat status (tanggal = hari ini, karena form umum ini tidak
+      // punya kolom tanggal khusus — untuk mengisi tanggal pasti yang bisa
+      // digeser mundur, gunakan modal "🏷️ Edit Status Toko" di tab Kontrol).
+      const today = new Date().toISOString().slice(0,10);
+      const statusHistory = (form.status && existing && form.status !== existing.status)
+        ? appendStatusHistory(existing.statusHistory, form.status, today, "Diubah lewat Master Toko")
+        : (existing?.statusHistory || undefined);
+      updateRecord("toko", form.id, { ...form, ...produkFlags, tanggalMasuk, ...(statusHistory ? { statusHistory } : {}) });
     }
     setModal(null);
   }
