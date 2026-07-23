@@ -4,6 +4,7 @@ import { Dashboard } from "../../features/dashboard/Dashboard";
 import { TabKontrol } from "../../features/kontrol/TabKontrol";
 import { autoUpgradeBaruToAktif } from "../../features/toko/TabToko";
 import { fmt, fmtRp, naturalCompare } from "../../lib/format";
+import { SIKLUS_GAP_DAYS } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 
 export function TabRekap({ db, analytics, salesWilayahId }) {
@@ -56,9 +57,9 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
 
   // Deteksi otomatis rentang siklus TERAKHIR untuk wilayah terpilih: mundur
   // dari tanggal kontrol paling baru, selama jeda antar tanggal kontrol
-  // berurutan tidak lebih dari 10 hari (dianggap masih 1 putaran/siklus
-  // yang sama). Kalau jeda lebih dari itu, dianggap sudah siklus baru.
-  const SIKLUS_GAP_DAYS = 10;
+  // berurutan tidak lebih dari SIKLUS_GAP_DAYS hari (dianggap masih 1 putaran/
+  // siklus yang sama — konstanta ini sekarang dipakai bersama dengan
+  // TabKontrol.jsx lewat lib/dataHelpers.js, lihat komentar di sana).
   const siklusAutoRange = useMemo(() => {
     if (!filterSiklusWilayahs.length) return null;
     const dates = [...new Set(enrichKontrol.filter(k=>filterSiklusWilayahs.includes(k.wilayahId)).map(k=>k.tanggal))].sort();
