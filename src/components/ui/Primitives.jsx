@@ -107,6 +107,15 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
             <span title="Toko ini sudah ada entri kontrol pada tanggal yang dipilih" style={{ flexShrink:0, fontSize:10, fontWeight:700,
               color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px" }}>✅ Sudah</span>
           )}
+          {/* Badge generik kedua — dipakai untuk penanda lain di luar "sudah dikontrol
+              hari ini", mis. "belum pernah dikontrol periode ini" di Kontrol Bulanan.
+              Cuma tampil kalau sudahDikontrol tidak aktif, supaya tidak dobel badge
+              untuk toko yang sama. */}
+          {!selected?.sudahDikontrol && selected?.extraBadge && (
+            <span title={selected.extraBadge.title||""} style={{ flexShrink:0, fontSize:10, fontWeight:700,
+              color:selected.extraBadge.color, background:selected.extraBadge.bg,
+              border:`1px solid ${selected.extraBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{selected.extraBadge.label}</span>
+          )}
         </span>
         <span style={{ color:T.gray400, fontSize:11, flexShrink:0 }}>{open ? "▲" : "▼"}</span>
       </div>
@@ -134,6 +143,13 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
                 {o.sudahDikontrol && (
                   <span title="Sudah dikontrol pada tanggal ini" style={{ flexShrink:0, fontSize:10, fontWeight:700,
                     color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>✅ Sudah</span>
+                )}
+                {/* Badge kedua (generik) — hanya tampil kalau badge "Sudah" di atas tidak aktif,
+                    supaya tiap toko maksimal 1 badge saja di daftar (tidak berantakan) */}
+                {!o.sudahDikontrol && o.extraBadge && (
+                  <span title={o.extraBadge.title||""} style={{ flexShrink:0, fontSize:10, fontWeight:700,
+                    color:o.extraBadge.color, background:o.extraBadge.bg,
+                    border:`1px solid ${o.extraBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{o.extraBadge.label}</span>
                 )}
               </div>
             ))}
