@@ -4,7 +4,7 @@ import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
-import { SIKLUS_GAP_DAYS } from "../../lib/dataHelpers";
+import { SIKLUS_GAP_DAYS, appendStatusHistory } from "../../lib/dataHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 
@@ -26,7 +26,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     // ✅ Filter tambahan supaya lebih gampang ketemu kesalahan input:
     // status catatan kunjungan (Tutup/Tidak Terjual/Bermasalah/Isi Manual),
     // dan rentang jumlah penjualan (total pcs semua produk per entri).
-    catatanStatus:"", minJumlah:"", maxJumlah:"" });
+    catatanStatus:"", minJumlah:"", maxJumlah:"",
+    // ✅ Filter "Kunjungan Berulang": toko yang dikunjungi >1× dalam siklus
+    // yang sama (tutup/perlu diulang, dobel input, dsb).
+    kunjunganBerulang:false });
   const [viewMode, setViewMode] = useState("table"); // table | monthly
   // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
@@ -90,10 +93,20 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // Modal untuk mengubah status toko langsung dari kontrol (tarik/non-aktifkan toko)
   const [tokoStatusModal, setTokoStatusModal] = useState(null); // { toko, mode:"nonaktif"|"aktif" }
   const [stokPenarikan, setStokPenarikan] = useState({}); // stok saat penarikan { produkId: jumlah }
+  // ✅ Tanggal PASTI toko ditarik/dinonaktifkan (default hari ini, tapi bisa
+  // digeser mundur kalau pencatatannya baru dilakukan belakangan) — dipakai
+  // untuk riwayat status toko, supaya Rekap Siklus Wilayah bisa tahu persis
+  // toko ini ditarik pada tanggal berapa (bukan cuma "hari ini disimpan").
+  const [tanggalPenarikan, setTanggalPenarikan] = useState(() => new Date().toISOString().slice(0,10));
   // ✅ BARU: Modal Edit Status Toko — ubah Aktif/Baru/Non-Aktif langsung dari TabKontrol
   const [editStatusModal, setEditStatusModal] = useState(null); // { toko } | null
   const [editStatusValue, setEditStatusValue] = useState(""); // "Aktif" | "Baru" | "Non-Aktif"
   const [editStatusCatatan, setEditStatusCatatan] = useState("");
+  // ✅ Tanggal PASTI perubahan status (default hari ini, bisa digeser mundur
+  // kalau perubahannya baru dicatat belakangan) — dipakai untuk riwayat
+  // status toko, supaya Rekap Siklus Wilayah bisa merekonstruksi status
+  // toko secara akurat pada tanggal berapa pun di masa lalu.
+  const [editStatusTanggal, setEditStatusTanggal] = useState(() => new Date().toISOString().slice(0,10));
   // ✅ Modal Tambah Toko Cepat dari Kontrol
   const [tambahTokoModal, setTambahTokoModal] = useState(false);
   const [tambahTokoForm, setTambahTokoForm] = useState({ nama:"", ruteId:"", status:"Aktif", catatan:"" });
@@ -149,6 +162,52 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     });
   }, [db.rute, db.wilayah, filter.wilayahId]);
 
+  // ✅ Deteksi "Kunjungan Berulang": toko yang dikunjungi LEBIH DARI 1 KALI
+  // dalam siklus (putaran) yang SAMA — baik karena toko tutup saat kunjungan
+  // pertama sehingga harus diulang, maupun sebab lain (dobel input, dsb).
+  // Berbeda dengan siklusRangePerWilayah di bawah (yang cuma menghitung
+  // siklus TERAKHIR untuk badge modal), di sini SELURUH histori tanggal
+  // kontrol per wilayah dipecah jadi beberapa siklus (algoritma & konstanta
+  // sama: SIKLUS_GAP_DAYS), supaya kunjungan berulang di siklus-siklus lama
+  // pun tetap terdeteksi, bukan cuma yang sedang berjalan.
+  const siklusSegmentsPerWilayah = useMemo(() => {
+    const byWilayah = {};
+    enriched.forEach(k => {
+      if (!k.wilayahId || !k.tanggal) return;
+      (byWilayah[k.wilayahId] ||= new Set()).add(k.tanggal);
+    });
+    const map = {};
+    Object.entries(byWilayah).forEach(([wilayahId, dateSet]) => {
+      const dates = [...dateSet].sort();
+      const segments = [];
+      let segStart = dates[0], segEnd = dates[0];
+      for (let i = 1; i < dates.length; i++) {
+        const diffDays = (new Date(dates[i]) - new Date(segEnd)) / 86400000;
+        if (diffDays > SIKLUS_GAP_DAYS) { segments.push({ start: segStart, end: segEnd }); segStart = dates[i]; }
+        segEnd = dates[i];
+      }
+      segments.push({ start: segStart, end: segEnd });
+      map[wilayahId] = segments;
+    });
+    return map;
+  }, [enriched]);
+
+  // Set berisi id entri kontrol yang tokonya punya >1 kunjungan dalam siklus
+  // yang sama (dipakai filter "Kunjungan Berulang" di bawah).
+  const kunjunganBerulangIds = useMemo(() => {
+    const counter = {};
+    enriched.forEach(k => {
+      if (!k.tokoId || !k.wilayahId || !k.tanggal) return;
+      const segs = siklusSegmentsPerWilayah[k.wilayahId] || [];
+      const segIdx = segs.findIndex(s => k.tanggal >= s.start && k.tanggal <= s.end);
+      const key = `${k.tokoId}|||${segIdx}`;
+      (counter[key] ||= []).push(k.id);
+    });
+    const ids = new Set();
+    Object.values(counter).forEach(list => { if (list.length > 1) list.forEach(id => ids.add(id)); });
+    return ids;
+  }, [enriched, siklusSegmentsPerWilayah]);
+
   const data = useMemo(() => enriched.filter(k =>
     (!filter.wilayahId || k.wilayahId === filter.wilayahId) &&
     (!filter.ruteId    || k.ruteId    === filter.ruteId) &&
@@ -156,8 +215,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q))) &&
     (!filter.catatanStatus || (filter.catatanStatus==="manual" ? !k.catatanStatus || k.catatanStatus==="manual" : k.catatanStatus===filter.catatanStatus)) &&
     (filter.minJumlah==="" || filter.minJumlah==null || k.totalTerjual >= Number(filter.minJumlah)) &&
-    (filter.maxJumlah==="" || filter.maxJumlah==null || k.totalTerjual <= Number(filter.maxJumlah))
-  ), [enriched, filter]);
+    (filter.maxJumlah==="" || filter.maxJumlah==null || k.totalTerjual <= Number(filter.maxJumlah)) &&
+    (!filter.kunjunganBerulang || kunjunganBerulangIds.has(k.id))
+  ), [enriched, filter, kunjunganBerulangIds]);
 
   // ✅ Penjualan Luar Rute yang cocok dengan filter Wilayah/Rute/Bulan yang
   // sedang aktif di tab ini — dipakai supaya ringkasan Revenue, ringkasan
@@ -736,18 +796,27 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     const stokInit = {};
     produkAktif.forEach(p => { stokInit[p.id] = 0; });
     setStokPenarikan(stokInit);
+    setTanggalPenarikan(new Date().toISOString().slice(0,10));
     setTokoStatusModal({ toko });
   }
 
   function konfirmasiNonaktifkanToko() {
     if (!tokoStatusModal) return;
     const { toko } = tokoStatusModal;
+    // ✅ Tanggal PASTI penarikan (bisa digeser mundur oleh admin di modal),
+    // dipakai baik untuk Penyesuaian Stok maupun riwayat status toko —
+    // fallback ke hari ini kalau kosong.
+    const tanggalPasti = tanggalPenarikan || new Date().toISOString().slice(0,10);
     // Update status toko → Non-Aktif di master toko, sekaligus update stok saat penarikan
     // ✅ FIX: toko yang dinonaktifkan sudah tidak menjual produk apapun lagi —
     // kosongkan juga produkIds & ceklis produk_<id> di Master Toko (sebelumnya
     // dua field ini tidak ikut disentuh, jadi toko yang sudah Non-Aktif masih
     // tampak "menjual" produk lama dengan ceklis tercentang di tab Toko).
-    const tokoUpdates = { status: "Non-Aktif", produkIds: [], ...buildProdukFlagUpdates([]) };
+    // ✅ Riwayat status: catat tanggal PASTI toko ditarik — dipakai Rekap →
+    // Siklus Wilayah untuk menghitung "Toko Ditarik saat Siklus Berlangsung"
+    // secara akurat, bukan cuma status terkini.
+    const tokoUpdates = { status: "Non-Aktif", produkIds: [], ...buildProdukFlagUpdates([]),
+      statusHistory: appendStatusHistory(toko.statusHistory, "Non-Aktif", tanggalPasti, `Ditarik dari lapangan (Kontrol Bulanan) — toko "${toko.nama}"`) };
 
     // ✅ Catat selisih stok (sebelum vs sesudah penarikan) sebagai Penyesuaian
     // Stok otomatis — sebelumnya perubahan stok di sini langsung menimpa
@@ -755,7 +824,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     // (kontrol, penyesuaian manual) yang selalu punya riwayat. Kalau produk
     // campuran (sebagian naik, sebagian turun), dipisah jadi 2 catatan biar
     // arah (Tambah/Kurang) tetap benar per kelompok produk.
-    const today = new Date().toISOString().slice(0,10);
+    const today = tanggalPasti;
     const naik = {}, turun = {};
     let adaNaik = false, adaTurun = false;
     produkAktif.forEach(p => {
@@ -796,6 +865,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   function openEditStatusModal(toko) {
     setEditStatusValue(toko.status || "Aktif");
     setEditStatusCatatan("");
+    setEditStatusTanggal(new Date().toISOString().slice(0,10));
     setEditStatusModal({ toko });
   }
 
@@ -804,7 +874,11 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     if (!editStatusModal) return;
     const { toko } = editStatusModal;
     if (!editStatusValue) return alert("Pilih status toko terlebih dahulu.");
-    const updates = { status: editStatusValue };
+    const tanggalPasti = editStatusTanggal || new Date().toISOString().slice(0,10);
+    const updates = { status: editStatusValue,
+      // ✅ Riwayat status dengan tanggal PASTI yang dipilih admin — dipakai
+      // Rekap → Siklus Wilayah untuk merekonstruksi status toko secara akurat.
+      statusHistory: appendStatusHistory(toko.statusHistory, editStatusValue, tanggalPasti, editStatusCatatan || "Diubah lewat Edit Status Toko") };
     // Jika diubah ke Non-Aktif via jalur ini (bukan via "Tarik Toko"),
     // stok TIDAK diubah — tetap seperti semula di master toko.
     updateRecord("toko", toko.id, updates);
@@ -1127,6 +1201,14 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             </div>
           </div>
           <div style={{ marginBottom:16 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6 }}>📅 Tanggal Penarikan</div>
+            <div style={{ fontSize:12, color:"#6B7280", marginBottom:8 }}>
+              Tanggal PASTI toko ini ditarik/dinonaktifkan di lapangan — boleh digeser mundur kalau baru dicatat belakangan. Dipakai untuk riwayat status toko di Rekap Siklus Wilayah.
+            </div>
+            <input type="date" value={tanggalPenarikan} onChange={e=>setTanggalPenarikan(e.target.value)}
+              style={{ padding:"7px 10px", border:"1.5px solid #E5E7EB", borderRadius:7, fontSize:13, fontFamily:"inherit" }} />
+          </div>
+          <div style={{ marginBottom:16 }}>
             <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6 }}>📦 Stok Produk Saat Penarikan</div>
             <div style={{ fontSize:12, color:"#6B7280", marginBottom:10, lineHeight:1.5 }}>
               Isi stok produk yang dikembalikan ke gudang saat toko ini ditarik. Stok ini akan disimpan ke master toko sebagai referensi.<br/>
@@ -1239,6 +1321,18 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               <div style={{ background: T.orangeLt, border: `1px solid ${T.orange}55`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
                 ⚠️ <b>Catatan:</b> Mengubah status ke <b>Non-Aktif</b> via menu ini <b>tidak akan mengubah stok toko</b>.<br/>
                 Jika ingin mencatat pengembalian stok, gunakan tombol <b>🔴 Tarik Toko</b> di view per Rute.
+              </div>
+            )}
+
+            {/* ✅ Tanggal PASTI perubahan status + catatan opsional — dicatat
+                ke riwayat status toko (dipakai Rekap → Siklus Wilayah). */}
+            {changed && (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: T.gray600, marginBottom: 4 }}>📅 Tanggal Perubahan (boleh digeser mundur)</div>
+                <input type="date" value={editStatusTanggal} onChange={e=>setEditStatusTanggal(e.target.value)}
+                  style={{ padding: "7px 10px", border: `1.5px solid ${T.gray200}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", marginBottom: 10 }} />
+                <Input label="Catatan (opsional)" value={editStatusCatatan} onChange={v=>setEditStatusCatatan(v)}
+                  placeholder="cth: toko tutup permanen, pindah rute, dsb." />
               </div>
             )}
 
@@ -1799,7 +1893,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         else setFilter(p=>({...p,[k]:v}));
       }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:"",
         cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
-        catatanStatus:"", minJumlah:"", maxJumlah:""})} />
+        catatanStatus:"", minJumlah:"", maxJumlah:"", kunjunganBerulang:false})} />
 
       {/* Filter rentang Jumlah Penjualan (total pcs semua produk per entri)
           — membantu cari entri yang kelihatan janggal, mis. salah ketik
@@ -1820,6 +1914,16 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         {(filter.minJumlah!=="" || filter.maxJumlah!=="") && (
           <Btn variant="secondary" size="sm" onClick={()=>setFilter(p=>({...p, minJumlah:"", maxJumlah:""}))}>Reset Jumlah</Btn>
         )}
+        {/* ✅ Filter Kunjungan Berulang: toko yang dikunjungi >1× dalam
+            siklus yang sama — baik karena tutup (perlu diulang), dobel
+            input, maupun sebab lain. Memudahkan verifikasi/audit entri. */}
+        <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:T.gray700,
+          cursor:"pointer", padding:"7px 10px", border:`1.5px solid ${filter.kunjunganBerulang?T.orange:T.gray200}`,
+          borderRadius:7, background:filter.kunjunganBerulang?T.orangeLt:T.white }}>
+          <input type="checkbox" checked={!!filter.kunjunganBerulang}
+            onChange={e=>setFilter(p=>({...p, kunjunganBerulang:e.target.checked}))} />
+          🔁 Toko Dikunjungi &gt;1× (tutup/lainnya)
+        </label>
       </div>
 
       {/* Summary per Produk — ✅ Dirapikan supaya konsisten dengan gaya kartu
