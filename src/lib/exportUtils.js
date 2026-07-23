@@ -138,25 +138,43 @@ export async function exportPDF(data, columns, title, filename) {
       }));
 
       // Font dikecilkan otomatis kalau kolom banyak (tab Kontrol bisa punya
-      // puluhan kolom produk) — supaya lebih banyak kolom yang muat di SATU
-      // kelompok halaman, dan horizontalPageBreak (lanjutan kolom ke halaman
-      // berikutnya) hanya jadi jalan terakhir, bukan langsung kepakai untuk
-      // tabel yang sebetulnya masih bisa muat kalau fontnya lebih kecil.
+      // puluhan kolom produk) — supaya lebih banyak kolom yang muat dengan
+      // nyaman dalam SATU lebar halaman.
       const numColsNative = columns.length;
-      const nativeFontSize = numColsNative <= 6 ? 9 : numColsNative <= 10 ? 8 : numColsNative <= 16 ? 7 : numColsNative <= 24 ? 6 : 5;
+      const nativeFontSize = numColsNative <= 6 ? 9 : numColsNative <= 10 ? 8 : numColsNative <= 16 ? 7 : numColsNative <= 24 ? 6 : numColsNative <= 34 ? 5 : 4.5;
+
+      // PENTING: sebelumnya pakai horizontalPageBreak:true — ini yang
+      // menyebabkan kolom yang tidak muat "dilanjutkan" ke kelompok halaman
+      // berikutnya (header tabel diulang lagi dari awal), sehingga tabel
+      // dengan banyak kolom (mis. tab Kontrol) tercetak berlembar-lembar
+      // berkali lipat dan susah dibaca. Sekarang, sama seperti versi web
+      // (table-layout:fixed), lebar tiap kolom dipaksa proporsional supaya
+      // TOTAL selalu pas dalam satu lebar halaman — kolom menyempit dan
+      // teksnya boleh turun baris (word-wrap), tapi tabel tidak pernah
+      // meluber ke "halaman lanjutan kolom" lagi. Halaman baru hanya
+      // muncul kalau barisnya banyak (paginasi vertikal biasa), bukan
+      // karena kolom terpotong.
+      const availableWidth = pageW - 24 - 24; // dikurangi margin kiri+kanan
+      const rawWidths = columns.map((c, ci) => {
+        const headerLen = pdfSafe(c.label).length;
+        const maxBodyLen = rows.reduce((m, r) => Math.max(m, String(r[ci] ?? "").length), 0);
+        return Math.max(headerLen, maxBodyLen, 3);
+      });
+      const totalRaw = rawWidths.reduce((s, w) => s + w, 0) || 1;
+      const columnStyles = {};
+      rawWidths.forEach((w, ci) => {
+        columnStyles[ci] = { cellWidth: (w / totalRaw) * availableWidth };
+      });
 
       autoTable(doc, {
         head: [columns.map(c=>pdfSafe(c.label))],
         body: rows,
         startY: 62,
         theme: "striped",
-        // Kolom sering banyak (produk × stok/jual/bonus, dst), tidak selalu
-        // muat di 1 halaman — horizontalPageBreak melanjutkan kolom yang
-        // tidak muat ke halaman berikutnya (tetap utuh terbaca), bukan
-        // diam-diam terpotong hilang seperti sebelumnya.
-        horizontalPageBreak: true,
-        horizontalPageBreakRepeat: 0,
-        styles: { overflow: "linebreak" },
+        tableWidth: availableWidth,
+        horizontalPageBreak: false,
+        styles: { overflow: "linebreak", cellWidth: "wrap" },
+        columnStyles,
         headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: nativeFontSize },
         bodyStyles: { fontSize: nativeFontSize },
         alternateRowStyles: { fillColor: [248,250,248] },
