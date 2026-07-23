@@ -8,7 +8,44 @@ export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pen
 // kalender, karena siklus kunjungan tiap wilayah bisa maju-mundur tanggalnya.
 export const SIKLUS_GAP_DAYS = 10;
 
-// Konversi array → objek ber-key id, untuk ditulis ke Firebase per-record.
+// ✅ RIWAYAT STATUS TOKO (statusHistory): array {status, tanggal, catatan}
+// disimpan di record toko, ditambah setiap kali status toko BENAR-BENAR
+// berubah (dari Master Toko, "Tarik Toko", "Edit Status Toko", maupun
+// auto-upgrade Baru→Aktif). Dipakai untuk merekonstruksi status toko PADA
+// TANGGAL TERTENTU di masa lalu (mis. akhir sebuah siklus kontrol), bukan
+// cuma status TERKINI — supaya laporan histori (Rekap → Siklus Wilayah)
+// tetap akurat meski dibuka jauh setelah siklusnya lewat & status toko
+// sudah berubah lagi sesudahnya.
+
+// Status toko PADA tanggal tertentu, direkonstruksi dari statusHistory.
+// Kalau toko tidak punya riwayat sama sekali (data lama, sebelum fitur ini
+// ditambahkan) ATAU tanggal targetnya sebelum riwayat pertama tercatat,
+// fallback ke status TERKINI toko (pendekatan lama) — supaya tetap
+// kompatibel dengan data yang sudah ada sebelumnya.
+export function statusTokoPadaTanggal(toko, tanggal) {
+  const riwayat = toko?.statusHistory;
+  if (!Array.isArray(riwayat) || riwayat.length === 0) return toko?.status || "Aktif";
+  const terurut = riwayat.filter(r => r?.tanggal).sort((a, b) => a.tanggal.localeCompare(b.tanggal));
+  let hasil = null;
+  for (const r of terurut) {
+    if (r.tanggal <= tanggal) hasil = r.status;
+    else break;
+  }
+  return hasil ?? (toko?.status || "Aktif");
+}
+
+// Tambah 1 entri riwayat status. Dedup sederhana: kalau tanggal & status
+// persis sama dengan entri terakhir, tidak usah ditambah dobel (mis. toko
+// disimpan ulang tanpa status berubah).
+export function appendStatusHistory(existingHistory, status, tanggal, catatan) {
+  const list = Array.isArray(existingHistory) ? [...existingHistory] : [];
+  const last = list[list.length - 1];
+  if (last && last.status === status && last.tanggal === tanggal) return list;
+  list.push({ status, tanggal, catatan: catatan || "" });
+  return list;
+}
+
+
 export function arrToMap(arr) {
   const map = {};
   (arr||[]).forEach(r => { if (r && r.id != null) map[r.id] = r; });
