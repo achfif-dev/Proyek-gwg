@@ -189,8 +189,21 @@ export async function exportPDF(data, columns, title, filename) {
     return;
   }
 
-  // ── WEB: cara lama (buka jendela print) — terbukti bekerja baik di
-  //    browser desktop maupun mobile, jadi tidak diubah.
+  // ── WEB: buka jendela print) — dulu lebar kolom ditebak dari JUMLAH
+  //    KARAKTER (maxLen*7+16) lalu dipaksa jadi tabel table-layout:fixed
+  //    lebar 100%. Masalahnya: WebView/browser print di Android biasanya
+  //    me-layout halaman di lebar layar HP (bukan lebar kertas A4 lanskap
+  //    sungguhan) SEBELUM dicetak — jadi tabel 100% itu ikut mengecil ke
+  //    lebar layar HP, dan kolom yang tadinya "cukup" (mis. lebar untuk
+  //    "180") jadi jauh lebih sempit dari itu, sampai lebih kecil dari 1
+  //    karakter → browser terpaksa turun baris SETIAP HURUF/ANGKA (persis
+  //    seperti hasil PDF yang terlihat rusak). Perbaikannya: ukur lebar
+  //    teks SUNGGUHAN pakai canvas (sama seperti exportJPG di bawah, yang
+  //    hasilnya sudah rapi), kasih tiap kolom lebar tetap dalam PIXEL lewat
+  //    <colgroup> (bukan tebakan/persentase), lalu satu kali "zoom" seluruh
+  //    halaman supaya pas dalam satu lebar kertas — tidak pernah lebih
+  //    sempit dari yang dibutuhkan teksnya, dan tidak pernah kepotong ke
+  //    "halaman lanjutan kolom".
   const rows = data.map(row =>
     columns.map(c => {
       const val = row[c.key] ?? "—";
@@ -199,26 +212,47 @@ export async function exportPDF(data, columns, title, filename) {
     })
   );
 
-  const colWidths = columns.map((c, ci) => {
-    const maxLen = Math.max(c.label.length, ...rows.map(r => String(r[ci]||"").length));
-    return Math.min(Math.max(maxLen * 7 + 16, 60), 180);
-  });
-  const totalW = colWidths.reduce((s,w)=>s+w,0);
-  const pct = colWidths.map(w=>(w/totalW*100).toFixed(2)+"%");
-
   // Kolom sering sangat banyak (mis. tab Kontrol: 3 kolom/produk × jumlah
   // produk aktif), jadi ukuran font & padding dikecilkan otomatis mengikuti
-  // jumlah kolom — supaya tabel tetap muat 1 halaman lanskap tanpa terpotong,
-  // bukannya dipaksa nowrap yang bikin tabel melebar lalu dicetak berulang
-  // di halaman-halaman berikutnya.
+  // jumlah kolom — supaya tabel tetap kompak dalam satu halaman lanskap.
   const numCols = columns.length;
   const cellFontSize = numCols <= 6 ? 11 : numCols <= 10 ? 10 : numCols <= 16 ? 9 : numCols <= 24 ? 8 : 7;
   const headFontSize = cellFontSize;
   const cellPad = numCols <= 10 ? "6px 10px" : numCols <= 20 ? "5px 6px" : "3px 4px";
+  const padX = numCols <= 10 ? 10 : numCols <= 20 ? 6 : 4;
+
+  // Ukur lebar teks SUNGGUHAN (bukan tebak dari jumlah karakter) — sama
+  // persis prinsipnya dengan exportJPG, jadi hasil PDF konsisten dengan JPG.
+  const meas = document.createElement("canvas").getContext("2d");
+  function textWidth(text, font) {
+    meas.font = font;
+    return meas.measureText(String(text)).width;
+  }
+  const headFont = `bold ${headFontSize}px 'Segoe UI', Arial, sans-serif`;
+  const cellFontStr = `${cellFontSize}px 'Segoe UI', Arial, sans-serif`;
+  const MIN_COL = 30;   // lebar minimum tiap kolom (px) — cukup buat header/angka pendek
+  const MAX_COL = 220;  // lebar maksimum (px) — kolom teks panjang tetap boleh turun baris
+  const colWidths = columns.map((c, ci) => {
+    let w = textWidth(String(c.label).toUpperCase(), headFont);
+    rows.forEach(r => { w = Math.max(w, textWidth(r[ci], cellFontStr)); });
+    return Math.min(Math.max(Math.ceil(w) + padX * 2, MIN_COL), MAX_COL);
+  });
+  const tableWidth = colWidths.reduce((s, w) => s + w, 0);
+
+  // Lebar konten kertas A4 lanskap sungguhan (setelah margin @page di bawah),
+  // dikonversi ke px (96dpi) — target lebar cetak, TERLEPAS dari lebar layar HP.
+  const PAGE_CONTENT_PX = Math.round((297 - 24) * (96 / 25.4));
+  const bodyWidth = Math.max(tableWidth, 760); // biar header tetap enak dilihat kalau kolom sedikit
+  // "zoom" (bukan transform:scale) supaya layout ikut menyusut rapi tanpa
+  // perlu hitung ulang tinggi manual — didukung baik di Chrome/WebView
+  // Android, yaitu mesin yang dipakai fitur print/"simpan sbg PDF" di HP.
+  const fitScale = tableWidth > PAGE_CONTENT_PX ? +(PAGE_CONTENT_PX / tableWidth).toFixed(4) : 1;
+
+  const colgroup = `<colgroup>${colWidths.map(w => `<col style="width:${w}px">`).join("")}</colgroup>`;
 
   const tableRows = rows.map((row, i) => `
     <tr style="background:${i%2===0?"#fff":"#f8faf8"}">
-      ${row.map((cell, ci) => `<td style="padding:${cellPad};font-size:${cellFontSize}px;border-bottom:1px solid #e5e7eb;width:${pct[ci]};overflow-wrap:anywhere;word-break:break-word;">${cell}</td>`).join("")}
+      ${row.map((cell) => `<td style="padding:${cellPad};font-size:${cellFontSize}px;border-bottom:1px solid #e5e7eb;overflow-wrap:anywhere;word-break:break-word;">${cell}</td>`).join("")}
     </tr>`).join("");
 
   const html = `<!DOCTYPE html><html><head>
@@ -227,7 +261,8 @@ export async function exportPDF(data, columns, title, filename) {
   <style>
     @page { size: A4 landscape; margin: 15mm 12mm 15mm 12mm; }
     * { box-sizing: border-box; }
-    body { font-family: 'Segoe UI', Arial, sans-serif; margin:0; padding:0; color:#1F2937; }
+    html { width:${bodyWidth}px; }
+    body { font-family: 'Segoe UI', Arial, sans-serif; margin:0; padding:0; color:#1F2937; width:${bodyWidth}px; zoom:${fitScale}; }
     .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; border-bottom:3px solid #0F4C35; padding-bottom:10px; }
     .brand { display:flex; align-items:center; gap:10px; }
     .brand-text h1 { margin:0; font-size:16px; color:#0F4C35; font-weight:800; }
@@ -237,16 +272,13 @@ export async function exportPDF(data, columns, title, filename) {
     .summary-bar { display:flex; gap:16px; margin-bottom:14px; }
     .summary-item { background:#F0FDF4; border:1px solid #86EFAC; border-radius:6px; padding:6px 14px; font-size:11px; }
     .summary-item b { color:#0F4C35; display:block; font-size:13px; }
-    /* table-layout:fixed MEMAKSA lebar kolom mengikuti persentase yang sudah
-       dihitung (jumlahnya 100%) dan TIDAK PERNAH melebar mengikuti isi —
-       inilah kunci supaya tabel tidak pernah melebihi lebar kertas walau
-       kolomnya banyak (mis. tab Kontrol dengan puluhan kolom produk).
-       Sebelumnya thead th pakai white-space:nowrap yang memaksa header tetap
-       1 baris utuh, jadi tabel jadi lebih lebar dari kertas — kelebihannya
-       lalu dipotong browser dan dicetak ulang di halaman-halaman berikutnya
-       (menumpuk berkali lipat) walau sudah mode lanskap. Sekarang teks boleh
-       turun baris (word-break) sehingga tetap dalam batas lebar kolomnya. */
-    table { width:100%; table-layout:fixed; border-collapse:collapse; font-size:11px; }
+    /* Lebar tiap kolom sekarang datang dari <colgroup> (px sungguhan, hasil
+       ukur teks asli) — table-layout:fixed di sini cuma mengunci lebar itu
+       supaya browser tidak menghitung ulang otomatis, BUKAN sumber lebar
+       kolomnya. Tabel punya lebar aslinya sendiri (tableWidth), lalu satu
+       kali "zoom" di <body> yang menyesuaikan semuanya ke lebar kertas —
+       jadi kolom tidak akan pernah dipaksa lebih sempit dari isi kontennya. */
+    table { width:${tableWidth}px; table-layout:fixed; border-collapse:collapse; font-size:11px; }
     thead { display:table-header-group; }
     tfoot { display:table-footer-group; }
     thead tr { background:#0F4C35; }
@@ -277,7 +309,8 @@ export async function exportPDF(data, columns, title, filename) {
     <div class="summary-item"><b>${now.split(",")[0]}</b>Tanggal Ekspor</div>
   </div>
   <table>
-    <thead><tr>${columns.map((c,i)=>`<th style="width:${pct[i]};font-size:${headFontSize}px;">${c.label}</th>`).join("")}</tr></thead>
+    ${colgroup}
+    <thead><tr>${columns.map((c)=>`<th style="font-size:${headFontSize}px;">${c.label}</th>`).join("")}</tr></thead>
     <tbody>${tableRows}</tbody>
   </table>
   <div class="footer">
