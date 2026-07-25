@@ -137,34 +137,53 @@ export async function exportPDF(data, columns, title, filename) {
         return pdfSafe(str) || "—";
       }));
 
-      // Font dikecilkan otomatis kalau kolom banyak (tab Kontrol bisa punya
-      // puluhan kolom produk) — supaya lebih banyak kolom yang muat dengan
-      // nyaman dalam SATU lebar halaman.
+      // PENTING: sebelumnya lebar tiap kolom DITEBAK dari JUMLAH KARAKTER
+      // label/isi lalu dipaksa proporsional ke availableWidth — tanpa
+      // memperhatikan apakah teksnya benar-benar muat di font yang
+      // dipakai. Kalau kolomnya banyak (mis. Siklus Kontrol dengan 20
+      // kolom), proporsi kolom berangka pendek ("0", "180") jadi lebih
+      // sempit dari lebar 1 karakter di font itu → autoTable terpaksa
+      // menurunkan baris di SETIAP huruf/angka (persis hasil PDF yang
+      // berantakan di APK). Perbaikannya: ukur lebar teks SUNGGUHAN pakai
+      // doc.getTextWidth() (bukan tebak), dan kalau totalnya kelebihan,
+      // KECILKAN FONT-nya dulu (bukan cuma paksa kolomnya menyempit) —
+      // sama prinsipnya dengan exportJPG yang mengukur teks asli.
       const numColsNative = columns.length;
-      const nativeFontSize = numColsNative <= 6 ? 9 : numColsNative <= 10 ? 8 : numColsNative <= 16 ? 7 : numColsNative <= 24 ? 6 : numColsNative <= 34 ? 5 : 4.5;
-
-      // PENTING: sebelumnya pakai horizontalPageBreak:true — ini yang
-      // menyebabkan kolom yang tidak muat "dilanjutkan" ke kelompok halaman
-      // berikutnya (header tabel diulang lagi dari awal), sehingga tabel
-      // dengan banyak kolom (mis. tab Kontrol) tercetak berlembar-lembar
-      // berkali lipat dan susah dibaca. Sekarang, sama seperti versi web
-      // (table-layout:fixed), lebar tiap kolom dipaksa proporsional supaya
-      // TOTAL selalu pas dalam satu lebar halaman — kolom menyempit dan
-      // teksnya boleh turun baris (word-wrap), tapi tabel tidak pernah
-      // meluber ke "halaman lanjutan kolom" lagi. Halaman baru hanya
-      // muncul kalau barisnya banyak (paginasi vertikal biasa), bukan
-      // karena kolom terpotong.
       const availableWidth = pageW - 24 - 24; // dikurangi margin kiri+kanan
-      const rawWidths = columns.map((c, ci) => {
-        const headerLen = pdfSafe(c.label).length;
-        const maxBodyLen = rows.reduce((m, r) => Math.max(m, String(r[ci] ?? "").length), 0);
-        return Math.max(headerLen, maxBodyLen, 3);
-      });
-      const totalRaw = rawWidths.reduce((s, w) => s + w, 0) || 1;
+      const CELL_PAD = 4; // pt per sisi — harus sama dengan cellPadding di styles bawah
+      const MIN_FONT = 4.5;
+      let nativeFontSize = numColsNative <= 6 ? 9 : numColsNative <= 10 ? 8 : numColsNative <= 16 ? 7 : numColsNative <= 24 ? 6 : numColsNative <= 34 ? 5 : MIN_FONT;
+
+      function measuredWidths(fontSize) {
+        doc.setFont("helvetica", "bold"); doc.setFontSize(fontSize);
+        const headerW = columns.map(c => doc.getTextWidth(pdfSafe(c.label)));
+        doc.setFont("helvetica", "normal");
+        return columns.map((c, ci) => {
+          const bodyW = rows.reduce((m, r) => Math.max(m, doc.getTextWidth(String(r[ci] ?? ""))), 0);
+          return Math.max(headerW[ci], bodyW) + CELL_PAD * 2;
+        });
+      }
+
+      let colWidths = measuredWidths(nativeFontSize);
+      let totalMeasured = colWidths.reduce((s, w) => s + w, 0);
+      let guard = 0;
+      // Kalau teks di font saat ini lebih lebar dari 1 halaman, kecilkan
+      // font sedikit demi sedikit lalu ukur ulang, sampai muat (atau sampai
+      // batas minimum font yang masih layak dibaca).
+      while (totalMeasured > availableWidth && nativeFontSize > MIN_FONT && guard < 20) {
+        nativeFontSize = Math.max(MIN_FONT, +(nativeFontSize * 0.92).toFixed(2));
+        colWidths = measuredWidths(nativeFontSize);
+        totalMeasured = colWidths.reduce((s, w) => s + w, 0);
+        guard++;
+      }
+      // Sesudah pas (atau sedekat mungkin), regangkan/susutkan semua kolom
+      // secara PROPORSIONAL (bukan tebak ulang) supaya totalnya persis
+      // selebar halaman — kolom tetap sebanding dengan kebutuhan isinya.
+      const fitFactor = totalMeasured > 0 ? availableWidth / totalMeasured : 1;
+      colWidths = colWidths.map(w => w * fitFactor);
+
       const columnStyles = {};
-      rawWidths.forEach((w, ci) => {
-        columnStyles[ci] = { cellWidth: (w / totalRaw) * availableWidth };
-      });
+      colWidths.forEach((w, ci) => { columnStyles[ci] = { cellWidth: w }; });
 
       autoTable(doc, {
         head: [columns.map(c=>pdfSafe(c.label))],
@@ -173,7 +192,7 @@ export async function exportPDF(data, columns, title, filename) {
         theme: "striped",
         tableWidth: availableWidth,
         horizontalPageBreak: false,
-        styles: { overflow: "linebreak", cellWidth: "wrap" },
+        styles: { overflow: "linebreak", cellWidth: "wrap", cellPadding: CELL_PAD },
         columnStyles,
         headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: nativeFontSize },
         bodyStyles: { fontSize: nativeFontSize },
