@@ -254,6 +254,21 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       });
   }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, filter.q, isSalesRestricted, salesWilayahId]);
 
+  // ✅ FIX SINKRONISASI: Penjualan Luar Rute tidak punya konsep "Status
+  // Kunjungan" (Toko Tutup/Tidak Terjual/Bermasalah/Isi Manual), rentang
+  // Jumlah Terjual per entri, atau "Kunjungan Berulang" — filter-filter itu
+  // murni menyaring ENTRI KONTROL BULANAN yang tokonya benar-benar
+  // dikunjungi. Sebelumnya luarRuteData tetap ikut dijumlahkan ke Total
+  // Revenue/Bonus header, ringkasan per Produk, dan Ekspor walau salah satu
+  // filter itu aktif — akibatnya, misalnya memfilter "🔵 Toko Tutup" (yang
+  // seharusnya tidak ada penjualan produk sama sekali) tetap menampilkan
+  // beberapa pcs terjual, karena itu sebenarnya penjualan luar rute yang
+  // tidak ada hubungannya dengan status kunjungan toko. Saat salah satu
+  // filter audit ini aktif, entri Luar Rute dikosongkan di sini supaya
+  // semua ringkasan yang bergantung padanya tetap sinkron dengan filter.
+  const adaFilterAuditKunjungan = !!filter.catatanStatus || filter.minJumlah !== "" || filter.maxJumlah !== "" || !!filter.kunjunganBerulang;
+  const luarRuteDataForSummary = adaFilterAuditKunjungan ? [] : luarRuteData;
+
   // ✅ DIAGNOSTIK CAKUPAN KONTROL — dibuat permanen di dalam app (bukan cek
   // manual sekali-sekali lewat file backup) supaya Admin/Manajer bisa
   // memantau kapan saja:
@@ -1115,8 +1130,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // Rute yang cocok dengan filter aktif — sebelumnya hanya menghitung entri
   // Kontrol Bulanan, jadi tidak konsisten dengan Rekap yang sudah menyertakan
   // kontribusi luar rute per rute.
-  const totalRevData = data.reduce((s,k)=>s+k.totalRev,0) + luarRuteData.reduce((s,k)=>s+k.totalRev,0);
-  const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteData.reduce((s,k)=>s+k.totalBonus,0);
+  const totalRevData = data.reduce((s,k)=>s+k.totalRev,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalRev,0);
+  const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalBonus,0);
   const catatanSt = form.catatanStatus||"";
 
   const cols = [
@@ -1362,7 +1377,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
         <div style={{ fontSize:12, color:T.gray400, marginBottom:12 }}>
           {data.length} entri
-          {luarRuteData.length>0 && <span> · 🛣️ +{luarRuteData.length} luar rute</span>}
+          {luarRuteDataForSummary.length>0 && <span> · 🛣️ +{luarRuteDataForSummary.length} luar rute</span>}
           {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
           {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
         </div>
@@ -1615,7 +1630,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               // export ini cuma berisi entri Kontrol Bulanan, jadi kontribusi
               // luar rute (revenue & pcs) tidak pernah muncul di sini sama
               // sekali, hanya di Rekap.
-              ...luarRuteData.map(pl => ({
+              ...luarRuteDataForSummary.map(pl => ({
                 ...pl,
                 id: pl.id,
                 tokoNama: `🛣️ Penjualan Luar Rute${pl.ruteNama ? " — "+pl.ruteNama : ""}`,
@@ -1632,13 +1647,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 wilayahNama:"", ruteNama:"", tanggal:"",
                 totalRevFmt: fmtRp(totalRevData),
                 totalBonus: totalBonusData,
-                statusLabel:`${data.length} entri${luarRuteData.length ? ` + ${luarRuteData.length} luar rute` : ""}`, catatan:"" },
+                statusLabel:`${data.length} entri${luarRuteDataForSummary.length ? ` + ${luarRuteDataForSummary.length} luar rute` : ""}`, catatan:"" },
               // Baris kosong
               { id:"", tokoNama:"", wilayahNama:"", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
               // Ringkasan
               { id:"", tokoNama:"📊 RINGKASAN",        wilayahNama:"",                          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Entri Kontrol",  wilayahNama:String(data.length),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
-              { id:"", tokoNama:"Total Entri Luar Rute", wilayahNama:String(luarRuteData.length), ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Total Entri Luar Rute", wilayahNama:String(luarRuteDataForSummary.length), ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Revenue",         wilayahNama:fmtRp(totalRevData),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Bonus (pcs)",     wilayahNama:String(totalBonusData),       ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Revenue Rata-rata",     wilayahNama:data.length ? fmtRp(Math.round(totalRevData/data.length)) : "Rp 0", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
@@ -1926,24 +1941,25 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         </label>
       </div>
 
-      {/* Summary per Produk — ✅ Dirapikan supaya konsisten dengan gaya kartu
-          di tab Rekap Penjualan (StatCard: ikon, label kapital berwarna,
-          angka besar), disusun dalam SATU KOLOM PENUH (bukan grid/flex-wrap
-          2 kolom seperti sebelumnya) supaya rapi & mudah dibaca di layar HP. */}
-      {produkAktif.length > 0 && (data.length > 0 || luarRuteData.length > 0) && (
-        <div style={{ display:"flex", flexDirection:"column", gap:10, marginBottom:14 }}>
+      {/* Summary per Produk — ✅ Diminimalkan jadi GRID 2 KOLOM KESAMPING
+          (sama seperti gaya kartu StatCard di Tab Dashboard), bukan satu
+          kolom penuh seperti sebelumnya, supaya lebih ringkas di layar HP.
+          ✅ FIX SINKRON: memakai luarRuteDataForSummary (bukan luarRuteData
+          mentah) — sehingga saat filter Status Kunjungan "🔵 Toko Tutup",
+          "🟡 Tidak Terjual", atau "🔴 Bermasalah" aktif, kartu ini tidak lagi
+          ikut menampilkan pcs terjual dari Penjualan Luar Rute yang memang
+          tidak relevan dengan status kunjungan tsb. */}
+      {produkAktif.length > 0 && (data.length > 0 || luarRuteDataForSummary.length > 0) && (
+        <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
           {produkAktif.map(p => {
-            // ✅ Pcs terjual & bonus kini ikut menjumlahkan Penjualan Luar
-            // Rute yang cocok filter — sebelumnya cuma dari entri Kontrol
-            // Bulanan, jadi angkanya beda dengan yang tampil di Rekap.
             const totalTerjual = data.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0)
-              + luarRuteData.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
+              + luarRuteDataForSummary.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
             const bonusTotal = data.reduce((s,k)=>s+(k[`bonusInput_${p.id}`]!==undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0)),0)
-              + luarRuteData.reduce((s,k)=>s+Number(k[`bonusInput_${p.id}`]||0),0);
+              + luarRuteDataForSummary.reduce((s,k)=>s+Number(k[`bonusInput_${p.id}`]||0),0);
             return (
               <StatCard key={p.id}
                 label={p.nama}
-                value={`${fmt(totalTerjual)} pcs terjual`}
+                value={`${fmt(totalTerjual)} pcs`}
                 sub={`Bonus: ${fmt(bonusTotal)} pcs`}
                 icon="🧴" color={T.gold} />
             );
