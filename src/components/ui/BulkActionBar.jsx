@@ -1,7 +1,7 @@
 import { T } from "../../theme/tokens";
 import { Btn } from "./Primitives";
 
-export function BulkActionBar({ selectedIds, total, onSelectAll, onClearAll, onDeleteSelected, label="item" }) {
+export function BulkActionBar({ selectedIds, total, onSelectAll, onClearAll, onDeleteSelected, label="item", extraActions }) {
   if (selectedIds.length === 0) return null;
   const allSelected = selectedIds.length >= total;
   return (
@@ -17,6 +17,10 @@ export function BulkActionBar({ selectedIds, total, onSelectAll, onClearAll, onD
         onClick={allSelected ? onClearAll : onSelectAll}>
         {allSelected ? "✗ Batal Pilih Semua" : `☑ Pilih Semua (${total})`}
       </Btn>
+      {/* ✅ Slot aksi massal tambahan (mis. Pindah Rute Massal di Master
+          Toko) — dirender di antara aksi bawaan supaya bisa dipakai lintas
+          tab tanpa mengubah signature onDeleteSelected. */}
+      {extraActions}
       {selectedIds.length > 0 && (
         <Btn variant="danger" size="sm" icon="🗑"
           onClick={onDeleteSelected}>
