@@ -37,6 +37,12 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
   const [stokFilter, setStokFilter] = useState({ q:"", ruteId:"", wilayahId:"", produkId:"" });
   const [showStokPanel, setShowStokPanel] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
+  // ✅ Pindah Rute Massal: migrasi banyak toko sekaligus ke rute lain lewat
+  // ceklis (mis. saat rute lama dipecah/digabung, atau toko-toko dipindah
+  // ke sales/rute baru) — sebelumnya cuma bisa satu-satu lewat Edit Toko.
+  const [pindahRuteModal, setPindahRuteModal] = useState(false);
+  const [pindahRuteWilayahId, setPindahRuteWilayahId] = useState(""); // filter wilayah di modal
+  const [pindahRuteTarget, setPindahRuteTarget] = useState("");
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
   function toggleSelect(id) {
@@ -49,6 +55,22 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
   function deleteSelected() {
     if (!confirm(`Hapus ${selectedIds.length} toko terpilih? Tindakan ini permanen.`)) return;
     selectedIds.forEach(id => deleteRecord("toko", id));
+    setSelectedIds([]);
+  }
+  function openPindahRuteMassal() {
+    setPindahRuteWilayahId("");
+    setPindahRuteTarget("");
+    setPindahRuteModal(true);
+  }
+  function submitPindahRuteMassal() {
+    if (!pindahRuteTarget) return alert("Pilih rute tujuan terlebih dahulu");
+    const ruteTujuan = (db.rute||[]).find(r=>r.id===pindahRuteTarget);
+    if (!confirm(`Pindahkan ${selectedIds.length} toko terpilih ke rute "${ruteTujuan?.nama||""}"?`)) return;
+    const newToko = (db.toko||[]).map(t =>
+      selectedIds.includes(t.id) ? { ...t, ruteId: pindahRuteTarget } : t
+    );
+    save({ ...db, toko: newToko });
+    setPindahRuteModal(false);
     setSelectedIds([]);
   }
 
@@ -349,7 +371,12 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
         selectedIds={selectedIds} total={data.length}
         onSelectAll={()=>toggleSelectAll(data, false)}
         onClearAll={()=>setSelectedIds([])}
-        onDeleteSelected={deleteSelected} label="toko" />
+        onDeleteSelected={deleteSelected} label="toko"
+        extraActions={!isSalesRestricted && (
+          <Btn variant="secondary" size="sm" icon="🔀" onClick={openPindahRuteMassal}>
+            Pindah Rute {selectedIds.length} Toko
+          </Btn>
+        )} />
       <Card padding={0}>
         {/* ✅ FIX SINKRONISASI/HAK AKSES: sebelumnya onEdit di sini TIDAK
             dibatasi sama sekali (beda dengan onDelete di bawah yang sudah
@@ -583,6 +610,30 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setStokModal(false)}>Batal</Btn>
             <Btn onClick={submitStok}>Simpan Stok</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {pindahRuteModal && (
+        <Modal title={`🔀 Pindah Rute Massal — ${selectedIds.length} Toko Terpilih`} onClose={()=>setPindahRuteModal(false)}>
+          <div style={{ fontSize:13, color:T.gray600, marginBottom:16 }}>
+            Semua toko yang dicentang akan dipindahkan ke rute tujuan yang dipilih di bawah ini.
+            Berguna untuk migrasi banyak toko sekaligus (mis. rute dipecah/digabung, atau
+            toko-toko dialihkan ke sales/rute baru).
+          </div>
+          <SearchableSelect label="Filter Wilayah (opsional)" value={pindahRuteWilayahId}
+            onChange={v=>{ setPindahRuteWilayahId(v); setPindahRuteTarget(""); }}
+            options={wilayahOpts} placeholder="Pilih wilayah untuk mempersempit daftar rute..." />
+          <SearchableSelect label="Rute Tujuan" value={pindahRuteTarget}
+            onChange={setPindahRuteTarget}
+            options={pindahRuteWilayahId ? ruteOpts.filter(r=>r.wilayahId===pindahRuteWilayahId) : ruteOpts}
+            required placeholder="Cari rute / wilayah..." />
+          <div style={{ background:T.gray50, borderRadius:8, padding:"10px 14px", marginTop:4, marginBottom:8, fontSize:12, color:T.gray600 }}>
+            Toko terpilih: <b>{selectedIds.length}</b>
+          </div>
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
+            <Btn variant="secondary" onClick={()=>setPindahRuteModal(false)}>Batal</Btn>
+            <Btn onClick={submitPindahRuteMassal}>Pindahkan {selectedIds.length} Toko</Btn>
           </div>
         </Modal>
       )}
