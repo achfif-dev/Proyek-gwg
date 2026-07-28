@@ -838,7 +838,8 @@ export default function GWGSuperApp() {
         )}
         {canAccessTab("rekap",    { isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="rekap" ? "block" : "none" }}>
-            <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />
+            <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
+              addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} />
           </div>
         )}
         {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (
