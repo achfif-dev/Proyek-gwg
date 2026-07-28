@@ -8,7 +8,7 @@ import { SIKLUS_GAP_DAYS, appendStatusHistory } from "../../lib/dataHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 
-export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears }) {
+export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
@@ -18,7 +18,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // tampilkan toko yang punya badge 🔴/🟠 (belum ada kontrol berhasil di
   // siklus berjalan) — mempermudah menyisir toko yang masih perlu dikunjungi.
   const [hanyaBelumKontrol, setHanyaBelumKontrol] = useState(false);
-  const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:"",
+  const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:initialQuery||"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
@@ -655,6 +655,15 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     setModalFilter({ wilayahId: isSalesRestricted ? salesWilayahId : (filter.wilayahId||""), ruteId: filter.ruteId||"" });
     setModal("add");
   }
+
+  // ✅ Saat komponen ini ditanam di tempat lain (mis. panel "Cari Toko" di Tab
+  // Rekap) dan induknya mengirim initialQuery yang berubah-ubah seiring user
+  // mengetik, filter.q di sini ikut disinkronkan supaya hasil pencarian &
+  // tombol ubah entrinya langsung update tanpa perlu ketik ulang di sini.
+  useEffect(() => {
+    if (initialQuery !== undefined) setFilter(p => ({ ...p, q: initialQuery }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialQuery]);
 
   function openEdit(row) {
     const initial = { ...row, catatanStatus: row.catatanStatus||"" };
