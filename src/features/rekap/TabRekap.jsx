@@ -7,8 +7,13 @@ import { fmt, fmtRp, naturalCompare } from "../../lib/format";
 import { SIKLUS_GAP_DAYS, statusTokoPadaTanggal } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 
-export function TabRekap({ db, analytics, salesWilayahId }) {
+export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer }) {
   const isSalesRestricted = !!salesWilayahId;
+  // ✅ Cari Toko: cek cepat kalau curiga ada kesalahan input kontrol, lalu
+  // langsung koreksi tanpa pindah ke Tab Kontrol — cukup ketik nama/kode toko
+  // di sini, panel akan menampilkan Tab Kontrol (fitur & hak akses yang sama
+  // persis) yang sudah otomatis tersaring ke toko tsb.
+  const [cariTokoQuery, setCariTokoQuery] = useState("");
   const [mode, setMode] = useState("bulanan"); // harian | bulanan | kuartal | tahunan
   const [filterWilayah, setFilterWilayah] = useState(salesWilayahId||""); // "" = semua
   const [filterBulan, setFilterBulan] = useState(() => new Date().toISOString().slice(0,7));
@@ -1209,6 +1214,47 @@ export function TabRekap({ db, analytics, salesWilayahId }) {
             />
           );
         })()}
+      </div>
+
+      {/* ✅ Cari Toko: cek cepat kalau curiga ada kesalahan input kontrol
+          (mis. stok/terjual kelihatan janggal) — ketik nama/kode toko di
+          sini, lalu di bawah langsung muncul Tab Kontrol (fitur & hak akses
+          SAMA PERSIS seperti tab aslinya) yang sudah tersaring ke toko
+          tersebut, sehingga entrinya bisa langsung diperiksa & diubah tanpa
+          pindah tab. */}
+      <div style={{ background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10,
+        padding:"14px 16px", marginBottom:16 }}>
+        <div style={{ fontSize:13, fontWeight:800, color:T.gray800, marginBottom:2 }}>🔍 Cari Toko (cek & ubah entri kontrol)</div>
+        <div style={{ fontSize:11.5, color:T.gray400, marginBottom:10 }}>
+          Curiga ada salah input kontrol? Cari nama/kode tokonya di sini — daftar entrinya akan muncul di bawah dan bisa langsung diubah, sama seperti di Tab Kontrol.
+        </div>
+        <div style={{ position:"relative" }}>
+          <input
+            value={cariTokoQuery}
+            onChange={e=>setCariTokoQuery(e.target.value)}
+            placeholder="Ketik nama atau kode toko..."
+            style={{ width:"100%", padding:"9px 34px 9px 12px", border:`1.5px solid ${cariTokoQuery?T.green:T.gray200}`,
+              borderRadius:8, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+          {cariTokoQuery && (
+            <button onClick={()=>setCariTokoQuery("")} title="Hapus pencarian"
+              style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)",
+                border:"none", background:"transparent", color:T.gray400, fontSize:16, cursor:"pointer", padding:4 }}>✕</button>
+          )}
+        </div>
+        {cariTokoQuery.trim() && (
+          <div style={{ marginTop:14, paddingTop:14, borderTop:`1px dashed ${T.gray200}` }}>
+            <TabKontrol
+              db={db}
+              addRecord={addRecord}
+              updateRecord={updateRecord}
+              deleteRecord={deleteRecord}
+              save={save}
+              salesWilayahId={salesWilayahId}
+              isManajer={isManajer}
+              initialQuery={cariTokoQuery}
+            />
+          </div>
+        )}
       </div>
 
       {/* Mode Tabs — pakai CSS grid (bukan flex:1 tanpa wrap) supaya di
