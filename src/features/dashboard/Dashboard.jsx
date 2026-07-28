@@ -14,7 +14,7 @@ export function MiniBar({ value, max, color }) {
   );
 }
 
-export function Dashboard({ db, analytics, salesWilayahId }) {
+export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId;
   // Filter analytics data berdasarkan wilayah Sales (jika berlaku)
   const { totalRev: allRev, labaBersih: allLaba, marginPctGlobal, produkStats, bagiHasil } = analytics;
@@ -125,11 +125,15 @@ export function Dashboard({ db, analytics, salesWilayahId }) {
       <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
         <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon="🏪" color={T.green} />
         <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon="📍" color={T.teal} />
-        <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon="💰" color={T.gold} />
-        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon="📊" color={T.green} />
+        <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon="💰" color={T.gold}
+          pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Pendapatan bisa masih bertambah" />
+        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon="📊" color={T.green}
+          pending={dataStillSyncing} pendingTitle="Dihitung dari Total Pendapatan yang masih disinkronkan" />
         <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon="🧴" color={T.purple} />
-        <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon="📋" color={T.blue} />
-        <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon="🎁" color={T.orange} />
+        <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon="📋" color={T.blue}
+          pending={dataStillSyncing} pendingTitle="Jumlah entri kontrol masih bertambah, data sedang disinkronkan" />
+        <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon="🎁" color={T.orange}
+          pending={dataStillSyncing} pendingTitle="Dihitung dari data kontrol yang masih disinkronkan" />
         <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon="👤" color={T.gray600} />
       </div>
 

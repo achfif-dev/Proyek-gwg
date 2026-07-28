@@ -6,37 +6,54 @@ import { autoUpgradeBaruToAktif } from "../../features/toko/TabToko";
 import { fmt, fmtRp, naturalCompare } from "../../lib/format";
 import { SIKLUS_GAP_DAYS, statusTokoPadaTanggal } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
-export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer }) {
+export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId;
   // ✅ Cari Toko: cek cepat kalau curiga ada kesalahan input kontrol, lalu
   // langsung koreksi tanpa pindah ke Tab Kontrol — cukup ketik nama/kode toko
   // di sini, panel akan menampilkan Tab Kontrol (fitur & hak akses yang sama
   // persis) yang sudah otomatis tersaring ke toko tsb.
-  const [cariTokoQuery, setCariTokoQuery] = useState("");
-  const [mode, setMode] = useState("bulanan"); // harian | bulanan | kuartal | tahunan
-  const [filterWilayah, setFilterWilayah] = useState(salesWilayahId||""); // "" = semua
-  const [filterBulan, setFilterBulan] = useState(() => new Date().toISOString().slice(0,7));
-  const [filterTahun, setFilterTahun] = useState(() => String(new Date().getFullYear()));
-  const [filterKuartal, setFilterKuartal] = useState("1"); // "1"|"2"|"3"|"4"
-  const [filterTanggal, setFilterTanggal] = useState(() => new Date().toISOString().slice(0,10));
-  const [filterRute, setFilterRute] = useState(""); // untuk harian
-  const [rankingScope, setRankingScope] = useState("semua"); // 3bulan | 6bulan | tahunIni | semua
-  const [rankingSortBy, setRankingSortBy] = useState("terjual"); // terjual | revenue
+  // ✅ PERSISTEN: semua filter/pencarian & sub-mode di bawah ini disimpan ke
+  // localStorage supaya tetap sama setelah refresh / app dibuka ulang.
+  const [cariTokoQuery, setCariTokoQuery] = usePersistedState("rekap.cariTokoQuery", "");
+  const [mode, setMode] = usePersistedState("rekap.mode", "bulanan"); // harian | bulanan | kuartal | tahunan
+  const [filterWilayah, setFilterWilayah] = usePersistedState("rekap.filterWilayah", salesWilayahId||""); // "" = semua
+  const [filterBulan, setFilterBulan] = usePersistedState("rekap.filterBulan", () => new Date().toISOString().slice(0,7));
+  const [filterTahun, setFilterTahun] = usePersistedState("rekap.filterTahun", () => String(new Date().getFullYear()));
+  const [filterKuartal, setFilterKuartal] = usePersistedState("rekap.filterKuartal", "1"); // "1"|"2"|"3"|"4"
+  const [filterTanggal, setFilterTanggal] = usePersistedState("rekap.filterTanggal", () => new Date().toISOString().slice(0,10));
+  const [filterRute, setFilterRute] = usePersistedState("rekap.filterRute", ""); // untuk harian
+  const [rankingScope, setRankingScope] = usePersistedState("rekap.rankingScope", "semua"); // 3bulan | 6bulan | tahunIni | semua
+  const [rankingSortBy, setRankingSortBy] = usePersistedState("rekap.rankingSortBy", "terjual"); // terjual | revenue
 
   // ─── Rekap Siklus per Wilayah ───
   // Untuk kasus kontrol yang mulai pertengahan bulan & berakhir awal bulan
   // berikutnya (tidak pas batas kalender), supaya progres 1 wilayah tetap
   // bisa dipantau utuh dari rute pertama sampai rute terakhir dalam 1
   // putaran, bukan terpotong batas bulan.
-  const [filterSiklusWilayahs, setFilterSiklusWilayahs] = useState(salesWilayahId?[salesWilayahId]:[]);
-  const [filterSiklusStart, setFilterSiklusStart] = useState("");
-  const [filterSiklusEnd, setFilterSiklusEnd] = useState("");
+  const [filterSiklusWilayahs, setFilterSiklusWilayahs] = usePersistedState("rekap.filterSiklusWilayahs", salesWilayahId?[salesWilayahId]:[]);
+  const [filterSiklusStart, setFilterSiklusStart] = usePersistedState("rekap.filterSiklusStart", "");
+  const [filterSiklusEnd, setFilterSiklusEnd] = usePersistedState("rekap.filterSiklusEnd", "");
 
   // ─── Perputaran Stok (Terjual ÷ Stok Beredar saat ini) ───
   // Pakai ulang filterBulan/filterKuartal/filterTahun yang sama dengan mode
   // Bulanan/Kuartal/Tahunan — tinggal pilih tipe periodenya di sini.
-  const [perputaranPeriodeType, setPerputaranPeriodeType] = useState("bulanan"); // bulanan|kuartal|tahunan
+  const [perputaranPeriodeType, setPerputaranPeriodeType] = usePersistedState("rekap.perputaranPeriodeType", "bulanan"); // bulanan|kuartal|tahunan
+
+  // ✅ Kunci ulang filter wilayah ke wilayah Sales kalau status pembatasan
+  // berubah — sama alasannya seperti di TabKontrol: nilai yang dipulihkan
+  // dari localStorage bisa saja "sisa" dari sesi Admin di perangkat yang
+  // sama, jadi wilayahId tidak boleh dipercaya mentah-mentah untuk akun
+  // Sales yang seharusnya terkunci ke satu wilayah.
+  useEffect(() => {
+    if (!isSalesRestricted) return;
+    if (filterWilayah !== salesWilayahId) setFilterWilayah(salesWilayahId);
+    if (!(filterSiklusWilayahs.length === 1 && filterSiklusWilayahs[0] === salesWilayahId)) {
+      setFilterSiklusWilayahs([salesWilayahId]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSalesRestricted, salesWilayahId]);
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
@@ -1252,6 +1269,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
               salesWilayahId={salesWilayahId}
               isManajer={isManajer}
               initialQuery={cariTokoQuery}
+              dataStillSyncing={dataStillSyncing}
             />
           </div>
         )}
@@ -1469,10 +1487,14 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
 
       {/* Summary Cards */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
-        <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon="💰" color={T.green} />
-        <StatCard label={`Laba Est. (${marginPctRekap}%)`} value={fmtRp(totalRevAll*(marginPctRekap/100))} icon="📊" color={T.gold} />
-        <StatCard label={mode==="harian"?"Toko":"Kunjungan"} value={totalKunjungan} icon="🏪" color={T.blue} />
-        <StatCard label="Total Bonus" value={`${fmt(totalBonusAll)} pcs`} icon="🎁" color={T.orange} />
+        <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon="💰" color={T.green}
+          pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Revenue bisa masih bertambah" />
+        <StatCard label={`Laba Est. (${marginPctRekap}%)`} value={fmtRp(totalRevAll*(marginPctRekap/100))} icon="📊" color={T.gold}
+          pending={dataStillSyncing} pendingTitle="Dihitung dari Total Revenue yang masih disinkronkan" />
+        <StatCard label={mode==="harian"?"Toko":"Kunjungan"} value={totalKunjungan} icon="🏪" color={T.blue}
+          pending={dataStillSyncing} />
+        <StatCard label="Total Bonus" value={`${fmt(totalBonusAll)} pcs`} icon="🎁" color={T.orange}
+          pending={dataStillSyncing} />
         {produkAktif.map(p => (
           <StatCard key={p.id}
             label={`Jual ${p.nama}`}

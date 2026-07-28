@@ -2,11 +2,13 @@ import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, Table } from "../../components/ui";
 import { genId, normTxt, sortByNama } from "../../lib/format";
 import { T } from "../../theme/tokens";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
 export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", deskripsi:"" });
-  const [filter, setFilter] = useState({ q:"" });
+  // ✅ PERSISTEN: filter tetap sama setelah refresh / app dibuka ulang.
+  const [filter, setFilter] = usePersistedState("wilayah.filter", { q:"" });
   const [selectedIds, setSelectedIds] = useState([]);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 

@@ -38,6 +38,30 @@ export function useDB(user) {
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [syncError, setSyncError] = useState(null);
+  // ✅ BARU: dataStillSyncing — BEDA dari `syncing` di atas. `syncing` cuma
+  // menandai periode SEBELUM batch pertama tiap tabel "settle" (jeda 900ms
+  // tanpa data baru) — begitu itu terjadi, `syncing` langsung jadi false
+  // walau tabel besar (kontrol/toko) masih terus menerima record baru
+  // secara perlahan di jaringan lambat (trickle). Akibatnya: banner
+  // "sedang sinkronisasi" hilang duluan, padahal data (terutama kontrol —
+  // sumber revenue utama) masih jauh dari lengkap, sehingga Dashboard/
+  // Kontrol/Rekap sempat menampilkan Total Revenue yang HANYA berisi
+  // penjualan luar rute (tabel kecil, sudah termuat penuh lewat onValue)
+  // karena kontrol (tabel besar, listener per-child) belum selesai —
+  // pengguna mengiranya angka final, padahal masih akan terus bertambah.
+  // `dataStillSyncing` tetap true selama masih ada aktivitas child_added/
+  // changed/removed pada tabel besar, dan baru jadi false setelah jeda
+  // tenang (tidak ada record baru) selama SYNC_ACTIVITY_QUIET_MS — dipakai
+  // UI untuk tetap menampilkan peringatan & menahan diri menganggap angka
+  // revenue sudah final selama itu.
+  const SYNC_ACTIVITY_QUIET_MS = 2500;
+  const [dataStillSyncing, setDataStillSyncing] = useState(false);
+  const syncActivityTimerRef = useRef(null);
+  const markSyncActivity = useCallback(() => {
+    setDataStillSyncing(true);
+    if (syncActivityTimerRef.current) clearTimeout(syncActivityTimerRef.current);
+    syncActivityTimerRef.current = setTimeout(() => setDataStillSyncing(false), SYNC_ACTIVITY_QUIET_MS);
+  }, []);
   // ✅ BARU: khusus menampung penolakan TULIS oleh security rules (bukan
   // gagal baca seperti syncError, dan bukan sekadar offline). Array berisi
   // { path, message, at } — setiap kali Firebase menolak satu perubahan
@@ -228,10 +252,11 @@ export function useDB(user) {
             };
             const uAdd = onChildAdded(yr, snap => {
               kontrolByYearRef.current[year][snap.key] = snap.val();
+              markSyncActivity();
               if (!firstBatchDone) settle(); else recomputeDebounced();
             }, (err) => { setSyncError(err.message); if (countTowardBoot) markLoadedAndFlush("kontrol"); });
-            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recomputeDebounced(); });
-            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recomputeDebounced(); });
+            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
+            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
             // ✅ Diperpanjang (dari 3 detik) — sama alasannya seperti tabel
             // toko: di jaringan sangat lambat, record pertama yang memang
             // ada tapi belum sempat tiba jangan sampai dikira "tahun ini
@@ -305,17 +330,20 @@ export function useDB(user) {
 
           const unsubAdd = onChildAdded(r, snap => {
             localMap[snap.key] = snap.val();
+            markSyncActivity();
             if (!firstBatchDone) scheduleSettle();
             else flushToStateDebounced();
           }, (err) => { setSyncError(err.message); markLoadedAndFlush(key); });
 
           const unsubChg = onChildChanged(r, snap => {
             localMap[snap.key] = snap.val();
+            markSyncActivity();
             if (firstBatchDone) flushToStateDebounced();
           });
 
           const unsubRem = onChildRemoved(r, snap => {
             delete localMap[snap.key];
+            markSyncActivity();
             if (firstBatchDone) flushToStateDebounced();
           });
 
@@ -361,6 +389,7 @@ export function useDB(user) {
       unsubs.forEach(fn => fn());
       basePathRef.current = null;
       remoteRef.current = {};
+      if (syncActivityTimerRef.current) clearTimeout(syncActivityTimerRef.current);
     };
   }, [user]);
 
@@ -404,9 +433,9 @@ export function useDB(user) {
         setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
       }, 900);
     };
-    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (!firstBatchDone) settle(); else recomputeDebounced(); });
-    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); if (firstBatchDone) recomputeDebounced(); });
-    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; if (firstBatchDone) recomputeDebounced(); });
+    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity(); if (!firstBatchDone) settle(); else recomputeDebounced(); });
+    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
+    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
     setTimeout(() => { if (!firstBatchDone) { firstBatchDone = true; recompute(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); } }, 12000);
     kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); };
   }, [user]);
@@ -1082,7 +1111,7 @@ export function useDB(user) {
     } catch {}
   }, []);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear };
 }
 
 

@@ -5,6 +5,7 @@ import { useAnalytics } from "../../hooks/useAnalytics";
 import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp } from "../../lib/format";
 import { T } from "../../theme/tokens";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
 export function TabBagiHasil({ db, analytics, save }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
@@ -26,11 +27,12 @@ export function TabBagiHasil({ db, analytics, save }) {
 
   const [editConfig, setEditConfig] = useState(false);
   const [cfgDraft, setCfgDraft] = useState(config);
-  const [filterBulan, setFilterBulan] = useState(() => new Date().toISOString().slice(0,7));
-  const [filterTahun, setFilterTahun] = useState(() => String(new Date().getFullYear()));
-  const [periodeMode, setPeriodeMode] = useState("bulanan"); // bulanan | tahunan | kustom
-  const [filterStart, setFilterStart] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10));
-  const [filterEnd, setFilterEnd] = useState(() => new Date().toISOString().slice(0,10));
+  // ✅ PERSISTEN: filter periode tetap sama setelah refresh / app dibuka ulang.
+  const [filterBulan, setFilterBulan] = usePersistedState("bagihasil.filterBulan", () => new Date().toISOString().slice(0,7));
+  const [filterTahun, setFilterTahun] = usePersistedState("bagihasil.filterTahun", () => String(new Date().getFullYear()));
+  const [periodeMode, setPeriodeMode] = usePersistedState("bagihasil.periodeMode", "bulanan"); // bulanan | tahunan | kustom
+  const [filterStart, setFilterStart] = usePersistedState("bagihasil.filterStart", () => new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString().slice(0,10));
+  const [filterEnd, setFilterEnd] = usePersistedState("bagihasil.filterEnd", () => new Date().toISOString().slice(0,10));
   const [showDetail, setShowDetail] = useState(false);
   const [modalPihak, setModalPihak] = useState(null);
   const [formPihak, setFormPihak] = useState({});

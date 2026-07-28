@@ -7,8 +7,9 @@ import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt } from "../../l
 import { SIKLUS_GAP_DAYS, appendStatusHistory } from "../../lib/dataHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
-export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery }) {
+export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
@@ -17,8 +18,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // Filter tambahan di dropdown Toko modal Kontrol: kalau aktif, cuma
   // tampilkan toko yang punya badge 🔴/🟠 (belum ada kontrol berhasil di
   // siklus berjalan) — mempermudah menyisir toko yang masih perlu dikunjungi.
-  const [hanyaBelumKontrol, setHanyaBelumKontrol] = useState(false);
-  const [filter, setFilter] = useState({ wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:initialQuery||"",
+  // ✅ PERSISTEN: filter & pencarian tab ini disimpan ke localStorage supaya
+  // tetap sama setelah refresh / app dibuka ulang, bukan balik ke default.
+  const [hanyaBelumKontrol, setHanyaBelumKontrol] = usePersistedState("kontrol.hanyaBelumKontrol", false);
+  const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:initialQuery||"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
@@ -30,24 +33,37 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     // ✅ Filter "Kunjungan Berulang": toko yang dikunjungi >1× dalam siklus
     // yang sama (tutup/perlu diulang, dobel input, dsb).
     kunjunganBerulang:false });
-  const [viewMode, setViewMode] = useState("table"); // table | monthly
+  const [viewMode, setViewMode] = usePersistedState("kontrol.viewMode", "table"); // table | monthly
   // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
   const [diagnostikOpen, setDiagnostikOpen] = useState(false);
   const [diagnostikShowList, setDiagnostikShowList] = useState(false);
-  const [diagnostikGroupBy, setDiagnostikGroupBy] = useState("wilayah"); // "wilayah" | "rute"
+  const [diagnostikGroupBy, setDiagnostikGroupBy] = usePersistedState("kontrol.diagnostikGroupBy", "wilayah"); // "wilayah" | "rute"
   // ✅ Filter khusus daftar/ekspor di kartu Diagnostik Cakupan Kontrol — terpisah
   // dari filter utama tab, supaya bisa saring per Wilayah/Rute + cari nama/kode
   // toko sebelum kirim daftar "belum dikontrol" ke sales tertentu.
-  const [diagnostikFilterWilayahId, setDiagnostikFilterWilayahId] = useState("");
-  const [diagnostikFilterRuteId, setDiagnostikFilterRuteId] = useState("");
-  const [diagnostikSearchQ, setDiagnostikSearchQ] = useState("");
+  const [diagnostikFilterWilayahId, setDiagnostikFilterWilayahId] = usePersistedState("kontrol.diagnostikFilterWilayahId", "");
+  const [diagnostikFilterRuteId, setDiagnostikFilterRuteId] = usePersistedState("kontrol.diagnostikFilterRuteId", "");
+  const [diagnostikSearchQ, setDiagnostikSearchQ] = usePersistedState("kontrol.diagnostikSearchQ", "");
   // ✅ Mode "Rentang Waktu": selain "belum pernah SAMA SEKALI", tambahkan opsi
   // "tidak dikontrol dalam N hari terakhir" — menangkap toko yang PERNAH
   // dikontrol tapi sudah lama tidak dikunjungi lagi (kasus ini tidak kena
   // filter "belum pernah" karena secara historis pernah ada entrinya).
-  const [diagnostikMode, setDiagnostikMode] = useState("never"); // "never" | "rentang"
-  const [diagnostikRentangHari, setDiagnostikRentangHari] = useState(30);
+  const [diagnostikMode, setDiagnostikMode] = usePersistedState("kontrol.diagnostikMode", "never"); // "never" | "rentang"
+  const [diagnostikRentangHari, setDiagnostikRentangHari] = usePersistedState("kontrol.diagnostikRentangHari", 30);
+
+  // ✅ Kunci ulang wilayahId filter ke wilayah Sales setiap kali status
+  // pembatasan berubah (mis. filter tersimpan dari sesi login Admin
+  // sebelumnya di perangkat yang sama) — mencegah nilai wilayahId yang
+  // tersimpan di localStorage "membocorkan" pilihan lintas wilayah untuk
+  // akun Sales yang seharusnya terkunci ke satu wilayah saja.
+  useEffect(() => {
+    if (!isSalesRestricted) return;
+    if (filter.wilayahId !== salesWilayahId) setFilter(f => ({ ...f, wilayahId: salesWilayahId }));
+    if (diagnostikFilterWilayahId && diagnostikFilterWilayahId !== salesWilayahId) setDiagnostikFilterWilayahId(salesWilayahId);
+    if (modalFilter.wilayahId !== salesWilayahId) setModalFilter(f => ({ ...f, wilayahId: salesWilayahId }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSalesRestricted, salesWilayahId]);
   // ✅ Edit nama toko langsung dari modal Tambah/Edit Kontrol — untuk kasus
   // nama toko ternyata salah ketik dan baru ketahuan saat kunjungan berikutnya.
   // Cuma Manajer/Admin (field master toko, bukan operasional seperti Sales).
@@ -1389,6 +1405,11 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           {luarRuteDataForSummary.length>0 && <span> · 🛣️ +{luarRuteDataForSummary.length} luar rute</span>}
           {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
           {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
+          {dataStillSyncing && (
+            <span title="Data kontrol masih disinkronkan di latar belakang — angka Rev/Bonus di atas bisa masih bertambah" style={{ marginLeft:6, color:T.gold, fontWeight:700 }}>
+              🔄 masih memuat…
+            </span>
+          )}
         </div>
 
         {/* ✅ Kartu Diagnostik Cakupan Kontrol — khusus Admin/Manajer, supaya

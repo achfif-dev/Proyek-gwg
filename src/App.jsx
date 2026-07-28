@@ -168,7 +168,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
@@ -223,6 +223,10 @@ export default function GWGSuperApp() {
          memastikan halaman tetap tidak bisa digeser ke samping sehingga
          kontennya tidak pernah terpotong/hilang di sisi kiri layar. */
       html, body { max-width: 100vw; overflow-x: hidden; }
+
+      /* ✅ Titik kecil berkedip dipakai di header (Rev:) & StatCard untuk
+         menandai angka yang masih disinkronkan di latar belakang. */
+      @keyframes gw-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.35; transform:scale(1.3); } }
 
       /* Header dibuat "cair" (fluid) memakai clamp() supaya ukurannya
          menyesuaikan lebar layar secara halus/dinamis, bukan cuma loncat
@@ -617,12 +621,14 @@ export default function GWGSuperApp() {
               </div>
             </div>
             <div className="gw-header-actions" style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div className="gw-header-revenue" style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}>
+              <div className="gw-header-revenue" style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}
+                title={dataStillSyncing ? "Data kontrol masih disinkronkan di latar belakang — angka ini bisa masih bertambah" : undefined}>
                 💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(
                   (!isManajer && currentUserRecord?.wilayahId)
                     ? analytics.perWilayah.filter(w=>w.id===currentUserRecord.wilayahId).reduce((s,w)=>s+w.rev,0)
                     : analytics.totalRev
                 )}
+                {dataStillSyncing && <span style={{ marginLeft:5, display:"inline-block", width:6, height:6, borderRadius:"50%", background:"#FCD34D", animation:"gw-pulse 1.2s ease-in-out infinite" }} />}
               </div>
 
               {/* Tombol refresh manual — pengganti "tarik ke bawah untuk
@@ -748,6 +754,22 @@ export default function GWGSuperApp() {
             </div>
           )}
 
+          {/* ✅ BARU: Banner lanjutan setelah pemuatan awal "selesai" tapi
+              data kontrol/toko (tabel besar, disinkron per-record) TERNYATA
+              masih terus menerima record baru di jaringan lambat. Tanpa ini,
+              begitu jeda alami >900ms sempat terjadi di tengah aliran data,
+              banner di atas hilang dan pengguna mengira sinkronisasi sudah
+              tuntas — padahal baru sebagian data kontrol yang termuat,
+              sehingga Total Revenue & rekap sempat tampak jauh lebih kecil
+              dari seharusnya (mis. cuma mencerminkan penjualan luar rute
+              yang tabelnya kecil & sudah termuat penuh sejak awal). */}
+          {user && firebaseDB && !syncing && cloudLoaded && dataStillSyncing && (
+            <div style={{ background:"rgba(59,130,246,.2)", border:"1px solid rgba(59,130,246,.4)", borderRadius:8, padding:"8px 14px",
+              marginBottom:12, fontSize:12, color:"#DBEAFE", display:"flex", alignItems:"center", gap:8 }}>
+              🔄 <span><b>Masih menerima data kontrol/toko di latar belakang</b> (jaringan lambat) — Total Revenue &amp; rekap penjualan masih akan bertambah, belum final.</span>
+            </div>
+          )}
+
         </div>
       </div>
 
@@ -808,7 +830,7 @@ export default function GWGSuperApp() {
             mengingat tab mana yang aktif lintas refresh, yang ini menjaga
             state DI DALAM tiap tab tetap utuh saat pindah-pindah tab. */}
         <div style={{ display: activeTab==="dashboard" ? "block" : "none" }}>
-          <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} />
+          <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} dataStillSyncing={dataStillSyncing} />
         </div>
         {canAccessTab("wilayah",  { isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="wilayah" ? "block" : "none" }}>
@@ -833,13 +855,13 @@ export default function GWGSuperApp() {
         {canAccessTab("kontrol",  { isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="kontrol" ? "block" : "none" }}>
             <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
-              isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} />
+              isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} dataStillSyncing={dataStillSyncing} />
           </div>
         )}
         {canAccessTab("rekap",    { isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="rekap" ? "block" : "none" }}>
             <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
-              addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} />
+              addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} dataStillSyncing={dataStillSyncing} />
           </div>
         )}
         {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (

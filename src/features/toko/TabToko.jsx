@@ -4,6 +4,7 @@ import { fmt, fmtRp, genId, naturalCompare, normTxt, sortByNama } from "../../li
 import { downloadTokoTemplate } from "../../lib/importUtils";
 import { appendStatusHistory } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
 export function autoUpgradeBaruToAktif(db, updateRecord) {
   const today = new Date();
@@ -32,9 +33,21 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
   const [form, setForm] = useState({ nama:"", ruteId:"", status:"Aktif", produkIds:[], catatan:"" });
   const [formWilayahId, setFormWilayahId] = useState(""); // wilayah filter di form toko
   const [stokForm, setStokForm] = useState({});
-  const [filter, setFilter] = useState({ q:"", ruteId:"", wilayahId:"", status:"", produkId:"" });
+  // ✅ PERSISTEN: filter tetap sama setelah refresh / app dibuka ulang.
+  const [filter, setFilter] = usePersistedState("toko.filter", { q:"", ruteId:"", wilayahId:"", status:"", produkId:"" });
   // Filter untuk panel Daftar Stok Produk
-  const [stokFilter, setStokFilter] = useState({ q:"", ruteId:"", wilayahId:"", produkId:"" });
+  const [stokFilter, setStokFilter] = usePersistedState("toko.stokFilter", { q:"", ruteId:"", wilayahId:"", produkId:"" });
+  // ✅ Nilai wilayahId yang tersimpan bisa saja "sisa" dari sesi Admin
+  // sebelumnya di perangkat yang sama — untuk Sales, kosongkan filter
+  // wilayah supaya dropdown tidak menampilkan pilihan yang sebenarnya
+  // tidak relevan (data intinya sudah aman terkunci di query `filtered`
+  // di bawah, ini murni supaya tampilan filter tidak membingungkan).
+  React.useEffect(() => {
+    if (!isSalesRestricted) return;
+    if (filter.wilayahId && filter.wilayahId !== salesWilayahId) setFilter(f => ({ ...f, wilayahId: "" }));
+    if (stokFilter.wilayahId && stokFilter.wilayahId !== salesWilayahId) setStokFilter(f => ({ ...f, wilayahId: "" }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSalesRestricted, salesWilayahId]);
   const [showStokPanel, setShowStokPanel] = useState(false);
   const [selectedIds, setSelectedIds] = useState([]);
   // ✅ Pindah Rute Massal: migrasi banyak toko sekaligus ke rute lain lewat

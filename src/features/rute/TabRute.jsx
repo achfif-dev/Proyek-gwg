@@ -2,11 +2,13 @@ import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, SearchableSelect, Table } from "../../components/ui";
 import { genId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
 import { T } from "../../theme/tokens";
+import { usePersistedState } from "../../hooks/usePersistedState";
 
 export function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", wilayahId:"", keterangan:"" });
-  const [filter, setFilter] = useState({ q:"", wilayahId:"" });
+  // ✅ PERSISTEN: filter tetap sama setelah refresh / app dibuka ulang.
+  const [filter, setFilter] = usePersistedState("rute.filter", { q:"", wilayahId:"" });
   const [selectedIds, setSelectedIds] = useState([]);
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
