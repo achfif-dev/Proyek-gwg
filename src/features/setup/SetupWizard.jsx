@@ -71,8 +71,26 @@ export function SetupWizard({ onDone, onCancel }) {
   const previewLogo = brand.logoDataUrl || null;
 
   return (
-    <div style={{ minHeight:"100vh", background:T.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:20 }}>
-      <div style={{ maxWidth:560, width:"100%" }}>
+    <div style={{ minHeight:"100vh", background:T.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:20, overflowX:"hidden", boxSizing:"border-box", width:"100%" }}>
+      {/* ✅ FIX TAMPILAN MOBILE: SetupWizard bisa dirender SEBELUM App.jsx
+          sempat memasang reset CSS global-nya (mis. saat LoginPage
+          menampilkannya otomatis untuk instalasi baru — belum ada elemen
+          App.jsx sama sekali di halaman). Tanpa `box-sizing:border-box`,
+          elemen dengan padding (seperti Card & input di bawah) dihitung
+          browser dengan lebar TOTAL = lebar konten + padding + border,
+          bukan padding "dimakan" dari dalam — di layar kecil ini gampang
+          bikin elemen melebar sedikit demi sedikit sampai ada yang
+          terdorong keluar layar. Discope pakai className supaya tidak
+          bocor mempengaruhi styling di luar wizard ini. */}
+      <style>{`
+        .gw-setup-wizard, .gw-setup-wizard *, .gw-setup-wizard *::before, .gw-setup-wizard *::after {
+          box-sizing: border-box;
+        }
+        .gw-setup-wizard input, .gw-setup-wizard textarea {
+          max-width: 100%;
+        }
+      `}</style>
+      <div className="gw-setup-wizard" style={{ maxWidth:560, width:"100%" }}>
         <div style={{ textAlign:"center", marginBottom:18 }}>
           <div style={{ fontSize:22, fontWeight:800, color:T.gray800 }}>🚀 Setup Aplikasi (White Label)</div>
           <div style={{ fontSize:12, color:T.gray400, marginTop:4 }}>
@@ -83,9 +101,9 @@ export function SetupWizard({ onDone, onCancel }) {
         {/* Progress */}
         <div style={{ display:"flex", gap:6, marginBottom:16 }}>
           {STEP_LABELS.map((label, i) => (
-            <div key={label} style={{ flex:1, textAlign:"center" }}>
+            <div key={label} style={{ flex:1, textAlign:"center", minWidth:0 }}>
               <div style={{ height:5, borderRadius:99, background:(i+1)<=step ? T.green : T.gray200, marginBottom:5 }} />
-              <div style={{ fontSize:10, fontWeight:700, color:(i+1)<=step ? T.green : T.gray400 }}>{label}</div>
+              <div style={{ fontSize:10, fontWeight:700, color:(i+1)<=step ? T.green : T.gray400, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{label}</div>
             </div>
           ))}
         </div>
@@ -99,37 +117,46 @@ export function SetupWizard({ onDone, onCancel }) {
               <Input label="Tagline" value={brand.tagline} onChange={v=>bset("tagline", v)} placeholder="cth: Super App · Sistem Manajemen Konsinyasi" />
               <Input label="Teks Footer" value={brand.footerText} onChange={v=>bset("footerText", v)} placeholder="cth: Aroma Nusantara Group · Kota Anda" />
 
-              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:14 }}>
-                <div>
+              {/* ⚡ FIX: root cause overflow di layar kecil — grid 2 kolom ini
+                  sebelumnya tanpa `minWidth:0` di setiap sel. Perilaku default
+                  CSS Grid: lebar minimum sebuah sel = lebar konten TERBESAR di
+                  dalamnya (bukan menyusut mengikuti `1fr`), jadi kalau input
+                  hex-nya "maunya" lebih lebar dari jatah kolom, seluruh grid
+                  (dan halaman) ikut terdorong melebar ke kanan sampai keluar
+                  layar — persis yang terlihat di screenshot ("Warna Aksen"
+                  terpotong di tepi layar). `minWidth:0` mengizinkan sel grid
+                  benar-benar menyusut sesuai jatahnya. */}
+              <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+                <div style={{ minWidth:0 }}>
                   <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:6 }}>Warna Utama</div>
-                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <div style={{ display:"flex", gap:6, alignItems:"center", minWidth:0 }}>
                     <input type="color" value={brand.primaryColor} onChange={e=>bset("primaryColor", e.target.value)}
-                      style={{ width:42, height:36, border:`1.5px solid ${T.gray200}`, borderRadius:8, cursor:"pointer", padding:2 }} />
+                      style={{ width:34, height:34, flexShrink:0, border:`1.5px solid ${T.gray200}`, borderRadius:8, cursor:"pointer", padding:2 }} />
                     <input value={brand.primaryColor} onChange={e=>bset("primaryColor", e.target.value)}
-                      style={{ flex:1, padding:"8px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit" }} />
+                      style={{ flex:1, minWidth:0, width:"100%", padding:"8px 6px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:11, fontFamily:"inherit" }} />
                   </div>
                 </div>
-                <div>
+                <div style={{ minWidth:0 }}>
                   <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:6 }}>Warna Aksen</div>
-                  <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <div style={{ display:"flex", gap:6, alignItems:"center", minWidth:0 }}>
                     <input type="color" value={brand.accentColor} onChange={e=>bset("accentColor", e.target.value)}
-                      style={{ width:42, height:36, border:`1.5px solid ${T.gray200}`, borderRadius:8, cursor:"pointer", padding:2 }} />
+                      style={{ width:34, height:34, flexShrink:0, border:`1.5px solid ${T.gray200}`, borderRadius:8, cursor:"pointer", padding:2 }} />
                     <input value={brand.accentColor} onChange={e=>bset("accentColor", e.target.value)}
-                      style={{ flex:1, padding:"8px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit" }} />
+                      style={{ flex:1, minWidth:0, width:"100%", padding:"8px 6px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:11, fontFamily:"inherit" }} />
                   </div>
                 </div>
               </div>
 
               <div style={{ marginBottom:6 }}>
                 <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:6 }}>Logo (opsional)</div>
-                <div style={{ display:"flex", alignItems:"center", gap:14 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
                   <div style={{ width:64, height:64, borderRadius:"50%", background:T.gray100, border:`1.5px solid ${T.gray200}`,
                     display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden", flexShrink:0 }}>
                     {previewLogo
                       ? <img src={previewLogo} alt="Preview logo" style={{ width:"100%", height:"100%", objectFit:"contain" }} />
                       : <span style={{ fontSize:22 }}>🌿</span>}
                   </div>
-                  <div>
+                  <div style={{ minWidth:0 }}>
                     <Btn variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}>Unggah Logo</Btn>
                     {brand.logoDataUrl && (
                       <Btn variant="secondary" size="sm" onClick={()=>bset("logoDataUrl","")} style={{ marginLeft:8 }}>Hapus</Btn>
