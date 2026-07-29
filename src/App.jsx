@@ -2,7 +2,8 @@ import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } fr
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { T } from "./theme/tokens";
-import { GWG_LOGO_B64 } from "./theme/logo";
+import { loadAppConfig, getBrandLogo } from "./config/appConfig";
+import { SetupWizard } from "./features/setup/SetupWizard";
 import { DB_EMPTY } from "./config/dbEmpty";
 import { FIREBASE_CONFIGURED } from "./firebase/config";
 import { firebaseDB } from "./firebase/init";
@@ -90,6 +91,15 @@ export default function GWGSuperApp() {
   const [deleteArchiveConfirmYear, setDeleteArchiveConfirmYear] = useState(null);
   const [deleteArchiveConfirmText, setDeleteArchiveConfirmText] = useState("");
   const [loginError, setLoginError] = useState("");
+  // ✅ WHITE LABEL: konfigurasi brand (nama/logo/warna) dibaca sekali dari
+  // localStorage — kalau ada perubahan lewat wizard, halaman di-reload penuh
+  // (lihat SetupWizard.finish()), jadi tidak perlu re-read reaktif di sini.
+  const brand = useMemo(() => loadAppConfig().brand, []);
+  const brandLogo = useMemo(() => getBrandLogo(), []);
+  const [showSetupWizard, setShowSetupWizard] = useState(false);
+  useEffect(() => {
+    document.title = `${brand.appName} — ${brand.companyName}`;
+  }, [brand]);
   const [showActiveUsers, setShowActiveUsers] = useState(false);
   // Ref tombol "Pengguna Aktif" + posisi panel yang selalu di-clamp di dalam
   // viewport (pakai hook yang sama dengan HeaderMenu) supaya di HP tidak
@@ -269,7 +279,7 @@ export default function GWGSuperApp() {
       link.rel = "icon";
       document.head.appendChild(link);
     }
-    link.href = GWG_LOGO_B64;
+    link.href = brandLogo;
     link.type = "image/png";
   }, []);
 
@@ -548,8 +558,8 @@ export default function GWGSuperApp() {
   if (loading) {
     return (
       <div style={{ minHeight:"100vh", background:T.bg, display:"flex", alignItems:"center", justifyContent:"center", flexDirection:"column", gap:16 }}>
-        <img src={GWG_LOGO_B64} alt="GWG" style={{ width:64, height:64, borderRadius:"50%", objectFit:"contain", background:"#fff", padding:6, boxShadow:"0 4px 16px rgba(0,0,0,.1)" }} />
-        <div style={{ fontSize:16, color:T.gray600, fontWeight:600 }}>Memuat Generasi Wangi Group...</div>
+        <img src={brandLogo} alt={brand.companyName} style={{ width:64, height:64, borderRadius:"50%", objectFit:"contain", background:"#fff", padding:6, boxShadow:"0 4px 16px rgba(0,0,0,.1)" }} />
+        <div style={{ fontSize:16, color:T.gray600, fontWeight:600 }}>Memuat {brand.companyName}...</div>
       </div>
     );
   }
@@ -558,6 +568,14 @@ export default function GWGSuperApp() {
   // (baik Firebase sudah dikonfigurasi maupun belum)
   if (!user) {
     return <LoginPage onLoginGoogle={handleLoginGoogle} fbReady={fbReady} error={loginError} />;
+  }
+
+  // ✅ WHITE LABEL: wizard untuk mengubah branding/Firebase/Super Admin yang
+  // SUDAH berjalan — hanya bisa dibuka Admin yang sudah login (lihat menu
+  // ⚙️ di bawah), beda dari SetupWizard di LoginPage yang tampil otomatis
+  // sebelum login (instalasi baru, belum ada Firebase sama sekali).
+  if (showSetupWizard) {
+    return <SetupWizard onCancel={()=>setShowSetupWizard(false)} />;
   }
 
   // Semua tab navigasi + tombol Keluar + menu khusus Admin digabung jadi
@@ -572,6 +590,7 @@ export default function GWGSuperApp() {
     { label: "🚪 Keluar", danger: true, onClick: logout },
     ...(isAdmin ? [
       { divider: true },
+      { label: "⚙️ Setup Aplikasi (White Label)", onClick: ()=>setShowSetupWizard(true) },
       {
         label: "💾⚡ Backup Cepat (unduh sekarang)",
         onClick: async () => {
@@ -601,13 +620,13 @@ export default function GWGSuperApp() {
         <div style={{ maxWidth:1400, margin:"0 auto", padding:"0 20px" }}>
           <div className="gw-header-top" style={{ display:"flex", alignItems:"center", justifyContent:"space-between", paddingTop:16, paddingBottom:16 }}>
             <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-              <img src={GWG_LOGO_B64} alt="GWG Logo" className="gw-header-logo"
+              <img src={brandLogo} alt={`${brand.companyName} Logo`} className="gw-header-logo"
                 style={{ width:46, height:46, borderRadius:"50%", background:"#fff",
                   padding:3, boxShadow:"0 2px 8px rgba(0,0,0,.2)", objectFit:"contain" }} />
               <div>
-                <div className="gw-header-title" style={{ fontSize:20, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>Generasi Wangi Group</div>
+                <div className="gw-header-title" style={{ fontSize:20, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>{brand.companyName}</div>
                 <div className="gw-header-subtitle" style={{ fontSize:11, color:"rgba(255,255,255,.7)", letterSpacing:"0.08em", textTransform:"uppercase" }}>
-                  Super App · Sistem Manajemen Konsinyasi
+                  {brand.tagline}
                   {!isOnline ? (
                     <span style={{ marginLeft:8, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
                       📴 Offline{pendingSync > 0 ? ` · ${pendingSync} tersimpan` : ""}

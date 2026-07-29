@@ -1,6 +1,11 @@
 import { encodeEmailKey } from "../lib/dataHelpers";
+import { loadAppConfig } from "./appConfig";
 
-export const SUPER_ADMIN_EMAIL = "achfif@gmail.com"; // TODO: ganti dengan email Anda
+// ✅ WHITE LABEL: email Super Admin sekarang dibaca dari appConfig
+// (localStorage, diisi lewat Setup Wizard) — bukan lagi hardcode di source
+// code. Perusahaan lain yang memakai aplikasi ini tinggal mengisi email
+// akun Google mereka sendiri lewat wizard, tanpa perlu fork/edit kode.
+export const SUPER_ADMIN_EMAIL = loadAppConfig().superAdminEmail || "";
 export const isSuperAdminEmail = (email) =>
   !!SUPER_ADMIN_EMAIL && email?.toLowerCase() === SUPER_ADMIN_EMAIL.toLowerCase();
 // ID "resmi" baris Super Admin — dibuat deterministik dari email (sama seperti

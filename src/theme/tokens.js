@@ -1,9 +1,20 @@
+import { loadAppConfig, lighten } from "../config/appConfig";
+
+// ✅ WHITE LABEL: warna utama (green) & aksen (gold) dipetakan dari
+// konfigurasi brand yang diisi lewat Setup Wizard (localStorage) — kalau
+// belum pernah diisi, tetap pakai warna hijau/emas bawaan GWG seperti
+// sebelumnya. Varian terang/gelap ("Lt"/"Mid") dihitung otomatis dari SATU
+// warna utama yang dipilih, supaya wizard cukup minta 2 warna saja.
+const _brand = loadAppConfig().brand;
+const _primary = _brand.primaryColor || "#0F4C35";
+const _accent = _brand.accentColor || "#C49A1A";
+
 export const T = {
-  green: "#0F4C35",
-  greenMid: "#1A6B4A",
-  greenLt: "#E6F4ED",
-  gold: "#C49A1A",
-  goldLt: "#FBF3D9",
+  green: _primary,
+  greenMid: lighten(_primary, 0.28),
+  greenLt: lighten(_primary, 0.92),
+  gold: _accent,
+  goldLt: lighten(_accent, 0.9),
   bg: "#F7F8FA",
   white: "#FFFFFF",
   gray50: "#F9FAFB",
