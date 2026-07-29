@@ -1,11 +1,14 @@
-# 🌿 Generasi Wangi Group — Super App
+# 🌿 GWG Super App — Sistem Manajemen Konsinyasi (White Label)
 
 **Sistem Manajemen Konsinyasi** untuk mengelola wilayah, rute, toko, produk, kontrol kunjungan bulanan, stok, laporan, dan bagi hasil — dalam satu aplikasi web yang bisa diakses dari HP maupun komputer, bisa diinstall seperti aplikasi native, dan tetap berfungsi walau sinyal lemah/offline.
+
+Aplikasi ini **white label** — instance bawaan sudah dikonfigurasi untuk **Generasi Wangi Group (GWG)**, tapi bisa dipakai perusahaan konsinyasi lain dengan identitas & database Firebase sendiri, cukup lewat wizard, **tanpa perlu edit/fork kode sama sekali**. Lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode) kalau Anda perusahaan lain yang ingin memakai aplikasi ini.
 
 ![Node](https://img.shields.io/badge/node-%3E%3D18.0.0-339933?logo=node.js&logoColor=white)
 ![React](https://img.shields.io/badge/react-18.2-61DAFB?logo=react&logoColor=white)
 ![Vite](https://img.shields.io/badge/vite-5-646CFF?logo=vite&logoColor=white)
 ![PWA](https://img.shields.io/badge/PWA-installable-5A0FC8?logo=pwa&logoColor=white)
+![White Label](https://img.shields.io/badge/white--label-ready-C49A1A)
 ![License](https://img.shields.io/badge/license-private-lightgrey)
 
 ---
@@ -17,6 +20,8 @@
 3. [Cara Kerja & Alur Data](#3-cara-kerja--alur-data)
 4. [Login & Peran Pengguna (Role)](#4-login--peran-pengguna-role)
 5. [Setup Awal Aplikasi](#5-setup-awal-aplikasi)
+   - [5.A Untuk Instance GWG yang Sudah Berjalan](#5a-untuk-instance-gwg-yang-sudah-berjalan)
+   - [5.B Untuk Perusahaan Lain: Setup White Label (Tanpa Edit Kode)](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode)
 6. [Panduan Tiap Menu (Tab)](#6-panduan-tiap-menu-tab)
 7. [Import & Ekspor Data](#7-import--ekspor-data)
 8. [Backup, Restore & Reset Database](#8-backup-restore--reset-database)
@@ -49,6 +54,7 @@ GWG Super App adalah aplikasi web (Progressive Web App) yang menangani seluruh p
 - **Bekerja penuh walau offline/sinyal lemah** — perubahan tersimpan aman di perangkat dan otomatis sinkron begitu online lagi.
 - **Arsip data lama** ke Google Drive (15GB gratis, tanpa perlu upgrade paket Firebase) supaya kuota database gratis tidak cepat penuh, tanpa kehilangan data histori.
 - **Bisa diinstall** langsung dari browser (Android/iOS/Desktop) seperti aplikasi native, bahkan bisa dibungkus jadi file `.apk`.
+- **White Label** — nama perusahaan, logo, warna, database Firebase, dan akun Super Admin bisa dikustomisasi lewat wizard tanpa edit kode, sehingga perusahaan konsinyasi lain bisa memakai aplikasi yang sama dengan identitas & data masing-masing.
 
 Aplikasi bisa berjalan dalam dua mode:
 - **Mode Cloud** — data tersinkron real-time lewat Firebase, bisa diakses banyak pengguna & perangkat sekaligus.
@@ -60,16 +66,17 @@ Aplikasi bisa berjalan dalam dua mode:
 
 | Bagian | Teknologi |
 |---|---|
-| Framework UI | **React 18** (single-file component utama: `src/GWG_SuperApp.jsx`) |
+| Framework UI | **React 18** — disusun modular per fitur di `src/features/*` (lihat [§16](#16-struktur-proyek)), bukan lagi satu file besar |
 | Build tool | **Vite 5** |
 | PWA / offline | **vite-plugin-pwa** (Workbox) — auto-generate service worker & manifest |
-| Backend / database | **Firebase Realtime Database** (data aktif, real-time) |
+| Backend / database | **Firebase Realtime Database** (data aktif, real-time) — per-instance, dikonfigurasi lewat `.env` atau Setup Wizard |
 | Autentikasi | **Firebase Authentication** (Login Google) |
+| Branding & white label | **`src/config/appConfig.js`** — konfigurasi identitas/warna/logo/Firebase/Super Admin tersimpan di `localStorage`, diisi lewat **Setup Wizard** (`src/features/setup/SetupWizard.jsx`) |
 | Arsip data lama | **Google Drive** via Drive REST API (file JSON per tahun, 15GB gratis) |
 | Cache & antrean offline | **IndexedDB** (native browser API) + `localStorage` (fallback) |
 | Ekspor data | **SheetJS (xlsx)**, serta generator CSV/PDF/HTML/JPG buatan sendiri |
 | Hosting | **Netlify** (juga kompatibel dengan Vercel) |
-| Pembungkus APK Android | **PWABuilder** (pwabuilder.com) — tanpa perlu menulis kode native |
+| Pembungkus APK Android | **Capacitor** — build otomatis lewat GitHub Actions (`.github/workflows/android-build.yml`), appId & nama APK ikut mengikuti `.env` |
 
 Aplikasi ini sengaja dibuat **tanpa backend server sendiri** — semua logika bisnis berjalan di sisi client (browser), dan Firebase hanya dipakai sebagai database + autentikasi + penyimpanan file. Ini membuatnya bisa di-deploy sebagai situs statis (cocok untuk Netlify/Vercel gratis).
 
@@ -121,20 +128,60 @@ Struktur data disusun berjenjang (hierarkis), dan **wajib diisi berurutan dari a
 
 ## 5. Setup Awal Aplikasi
 
-### A. Konfigurasi Firebase (opsional, untuk mode cloud/multi-perangkat)
-1. Buka [Firebase Console](https://console.firebase.google.com).
-2. Buat proyek baru → aktifkan **Realtime Database** dan **Authentication (Google)**.
-3. Ambil konfigurasi SDK Web (Project Settings → SDK Config).
-4. Buka file `src/GWG_SuperApp.jsx`, isi variabel `FIREBASE_CONFIG` di bagian atas file dengan konfigurasi tersebut.
-5. Jika belum dikonfigurasi, aplikasi tetap berjalan dalam **Mode Lokal** (data tersimpan di browser saja, tanpa login).
-6. *(Opsional, hanya untuk fitur "Upload ke Google Drive" & "Arsip Kontrol")* — di [Google Cloud Console](https://console.cloud.google.com) untuk project yang sama, aktifkan **Google Drive API**, lalu tambahkan scope `https://www.googleapis.com/auth/drive.file` ke OAuth consent screen.
+Ada **dua skenario** tergantung siapa yang memakai aplikasi ini — pilih sesuai kondisi Anda.
 
-### B. Login Pertama Kali
+### 5.A Untuk Instance GWG yang Sudah Berjalan
+
+Kalau Anda mengelola instance **Generasi Wangi Group** yang sudah aktif (repo `main`), **tidak perlu melakukan apa pun** — file `.env` di repo sudah berisi kredensial Firebase & branding GWG, jadi build & deploy berjalan seperti biasa tanpa setup tambahan. Langsung lanjut ke bagian *Login Pertama Kali* di bawah.
+
+### 5.B Untuk Perusahaan Lain: Setup White Label (Tanpa Edit Kode)
+
+Aplikasi ini bisa dipakai perusahaan konsinyasi lain dengan identitas & database Firebase sendiri, **tanpa fork/edit satu baris kode pun** — cukup lewat **Setup Wizard** bawaan aplikasi. Alurnya:
+
+**Langkah 1 — Deploy dulu apa adanya**
+Deploy repo ini ke Netlify/Vercel seperti biasa (lihat [§14](#14-build-production--deploy)) — **tidak perlu ubah apa pun dulu**, cukup hubungkan repo dan biarkan proses build berjalan dengan nilai bawaan.
+
+**Langkah 2 — Kosongkan kredensial Firebase bawaan**
+Supaya Setup Wizard otomatis muncul (bukan langsung memakai database GWG), buka file `.env` di root project, lalu **kosongkan** (jangan hapus barisnya, cukup kosongkan nilainya) baris-baris `VITE_FIREBASE_*`:
+```bash
+VITE_FIREBASE_API_KEY=
+VITE_FIREBASE_AUTH_DOMAIN=
+VITE_FIREBASE_DATABASE_URL=
+VITE_FIREBASE_PROJECT_ID=
+VITE_FIREBASE_STORAGE_BUCKET=
+VITE_FIREBASE_MESSAGING_SENDER_ID=
+VITE_FIREBASE_APP_ID=
+```
+Boleh juga sekalian isi `VITE_APP_NAME`, `VITE_APP_TITLE`, dll di `.env` yang sama supaya judul tab browser & nama APK ikut benar sejak awal (opsional — bisa juga diatur belakangan lewat wizard, lihat Langkah 4).
+
+Commit & push perubahan ini — Netlify/Vercel akan otomatis build ulang.
+
+**Langkah 3 — Buat project Firebase sendiri**
+1. Buka [Firebase Console](https://console.firebase.google.com) → **Buat project baru** (gratis).
+2. Di project baru itu, aktifkan **Realtime Database** (mode production, region terdekat) dan **Authentication → Sign-in method → Google**.
+3. Buka **Project Settings → Your apps → tambah app Web (</>)** → salin kode konfigurasi SDK yang muncul (blok `const firebaseConfig = {...}`).
+4. *(Opsional, hanya untuk fitur Arsip/Upload ke Google Drive)* — di [Google Cloud Console](https://console.cloud.google.com) untuk project yang sama, aktifkan **Google Drive API** dan tambahkan scope `drive.file` ke OAuth consent screen. Detail lengkap di [§12](#12-arsip-data-lama-google-drive).
+
+**Langkah 4 — Isi Setup Wizard**
+Buka situs yang sudah di-deploy tadi. Karena `.env` sudah dikosongkan, halaman Login otomatis menampilkan **🚀 Setup Aplikasi (White Label)**. Ikuti 4 langkahnya:
+1. **Branding** — nama perusahaan, nama aplikasi, tagline, teks footer, warna utama/aksen, logo (opsional, maks ±900 KB).
+2. **Firebase** — tempel apa adanya kode `firebaseConfig` dari Langkah 3 ke kotak "Tempel Kode Konfigurasi Firebase", klik **🔍 Ambil Otomatis dari Teks** (field di bawahnya terisi otomatis), atau isi manual satu-satu.
+3. **Super Admin** — email akun Google yang akan **selalu** punya akses Admin penuh apa pun yang tercatat di tabel Pengguna (boleh dikosongkan; akun Google pertama yang login otomatis jadi Admin selama tabel Pengguna masih kosong).
+4. **Ringkasan** — cek sekali lagi, lalu klik **💾 Simpan & Muat Ulang**.
+
+Aplikasi akan reload otomatis dan langsung memakai identitas & database baru tersebut — halaman Login berikutnya sudah menampilkan branding perusahaan Anda.
+
+> 💡 Setup Wizard yang sama juga bisa dibuka kapan saja lewat menu **☰ → ⚙️ Setup Aplikasi (White Label)** (khusus Admin yang sudah login) kalau suatu saat ingin mengubah branding/Firebase/Super Admin instance yang sudah jalan. Buka **Panduan Setup White Label** (`PANDUAN-SETUP-WHITE-LABEL.md`) di root repo untuk versi lebih lengkap + FAQ.
+
+**Langkah 5 (opsional) — Build APK dengan identitas sendiri**
+Kalau ingin APK Android dengan nama & Package ID sendiri (bukan `com.gwg.superapp`), isi juga `VITE_APP_ID` dan `VITE_APP_NAME` di `.env` sebelum push — GitHub Actions (`.github/workflows/android-build.yml`) otomatis membaca nilai ini saat build APK. Lihat [§15](#15-install-sebagai-aplikasi-pwa--membuat-apk-android).
+
+### C. Login Pertama Kali
 1. Buka aplikasi, klik **"Masuk dengan Google"**.
 2. Akun pertama yang login otomatis menjadi **Admin**.
 3. Mulai isi data secara berurutan: **Wilayah → Rute → Toko → Produk**.
 
-### C. Menambahkan Pengguna Lain
+### D. Menambahkan Pengguna Lain
 1. Minta rekan kerja login sekali dengan akun Google mereka (otomatis masuk sebagai Viewer).
 2. Admin membuka tab **Pengguna**, cari akun tersebut, klik **Edit**, lalu ubah **Role** (Admin/Manajer/Sales/Viewer) dan **Wilayah Tugas** (khusus Sales) sesuai kebutuhan.
 
@@ -307,7 +354,7 @@ Jika Anda menemukan data duplikat yang **sudah terlanjur tersimpan** (misalnya d
 | Backup cloud | ❌ Tidak ada | ✅ Otomatis harian + manual |
 | Status "Pengguna Aktif" | ❌ Tidak ada | ✅ Ada (indikator online real-time) |
 
-Jika `FIREBASE_CONFIG` belum diisi di kode, aplikasi otomatis berjalan di **Mode Lokal** dan menampilkan banner peringatan kuning di bagian atas halaman.
+Jika kredensial Firebase belum dikonfigurasi (`.env` kosong dan Setup Wizard belum diisi/dibatalkan), aplikasi otomatis berjalan di **Mode Lokal** dan menampilkan banner peringatan kuning di bagian atas halaman. Lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode) untuk cara mengaktifkan Mode Cloud dengan Firebase sendiri.
 
 ---
 
@@ -375,7 +422,7 @@ npm run dev
 ```
 Aplikasi akan terbuka otomatis di `http://localhost:5173` (atau port lain jika 5173 terpakai). Perubahan kode langsung ter-reload otomatis (hot reload).
 
-> 💡 Kalau `FIREBASE_CONFIG` di `src/GWG_SuperApp.jsx` belum diisi, aplikasi tetap bisa dijalankan & dicoba dalam **Mode Lokal** tanpa perlu setup Firebase dulu.
+> 💡 Kalau kredensial Firebase di `.env` belum diisi (dan Setup Wizard belum dijalankan), aplikasi tetap bisa dijalankan & dicoba dalam **Mode Lokal** tanpa perlu setup Firebase dulu.
 
 ---
 
@@ -426,14 +473,17 @@ Karena project ini sudah dikonfigurasi sebagai **PWA** lengkap (manifest + servi
 
 Setelah diinstall, aplikasi berjalan fullscreen tanpa address bar, punya ikon sendiri, dan tetap bisa dibuka offline (berkat service worker + cache yang sudah dijelaskan di [§11](#11-mode-offline--sinkronisasi-otomatis)).
 
-### B. Membuat file .apk (untuk dibagikan/upload ke Play Store)
-Gunakan **[PWABuilder](https://www.pwabuilder.com)** (gratis, dari Microsoft):
-1. Masukkan URL situs yang sudah di-deploy, klik **Start**.
-2. Klik **Package for stores** → pilih **Android**.
-3. Isi Package ID (mis. `com.gwg.superapp`), App name, dan pilih **"Generate new signing key"** — **simpan file `.keystore`-nya baik-baik**, dibutuhkan untuk update APK di kemudian hari.
-4. Klik **Generate** → **Download**. Hasilnya berisi:
-   - `app-release-signed.apk` → langsung diinstall di HP Android.
-   - `app-release-bundle.aab` → untuk upload ke Google Play Store.
+### B. Membuat file .apk (otomatis lewat GitHub Actions)
+Project ini sudah dikonfigurasi dengan **Capacitor** + workflow GitHub Actions (`.github/workflows/android-build.yml`) yang membungkus hasil build web jadi APK Android secara otomatis — **tidak perlu tools eksternal** seperti PWABuilder.
+
+1. **Push ke branch `main`** (atau buka tab **Actions** di GitHub → pilih workflow **"Build Android APK"** → **Run workflow** untuk memicu manual).
+2. Workflow otomatis: build web app → baca `VITE_APP_ID`/`VITE_APP_SHORT_NAME` dari `.env` → generate `capacitor.config.json` dengan Package ID & nama sesuai white label Anda → sync platform Android → **build APK debug** → jalankan sekali di emulator untuk cek ada crash atau tidak.
+3. Setelah selesai (beberapa menit), buka run tersebut di tab **Actions**, scroll ke bagian **Artifacts**, unduh **`gwg-superapp-debug-apk`** — itu file `.apk` yang bisa langsung diinstall di HP Android (aktifkan dulu "Install dari sumber tidak dikenal" di pengaturan HP).
+4. Artifact **`crash-log`**, **`network-log`**, dan **`full-log`** juga ikut diunggah — berguna untuk debug kalau APK-nya nge-hang/crash saat pertama dibuka.
+
+> ⚠️ APK yang dihasilkan adalah **build debug** (untuk instalasi manual/internal testing), bukan `.aab` production yang sudah ditandatangani untuk Google Play Store. Untuk rilis ke Play Store, perlu langkah signing key tambahan (`./gradlew bundleRelease` dengan keystore sendiri) yang belum termasuk di workflow bawaan ini.
+> 
+> 💡 Ingin Package ID/nama APK yang berbeda dari `com.gwg.superapp`? Isi `VITE_APP_ID` dan `VITE_APP_SHORT_NAME` di `.env` sebelum push — lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode) langkah 5.
 
 ---
 
@@ -441,21 +491,47 @@ Gunakan **[PWABuilder](https://www.pwabuilder.com)** (gratis, dari Microsoft):
 
 ```
 Proyek-gwg-main/
-├── index.html                  # Entry point HTML
-├── package.json                 # Dependency & script (dev/build/preview)
-├── vite.config.js               # Konfigurasi Vite + vite-plugin-pwa (manifest, service worker)
-├── netlify.toml                 # Konfigurasi build & redirect untuk Netlify
-├── vercel.json                  # Konfigurasi alternatif untuk Vercel
+├── index.html                     # Entry point HTML (judul/theme-color dari .env saat build)
+├── .env                            # Kredensial Firebase & branding build-time (aman di-commit, lihat §5.B)
+├── package.json                    # Dependency & script (dev/build/preview)
+├── vite.config.js                  # Konfigurasi Vite + vite-plugin-pwa (manifest, service worker)
+├── netlify.toml                    # Konfigurasi build & redirect untuk Netlify
+├── vercel.json                     # Konfigurasi alternatif untuk Vercel
+├── capacitor.config.json           # Konfigurasi APK Android (di-generate ulang dari .env saat CI build)
+├── PANDUAN-SETUP-WHITE-LABEL.md    # Panduan lengkap + FAQ untuk perusahaan lain (pelengkap §5.B)
+├── .github/workflows/
+│   └── android-build.yml           # CI: build APK Android otomatis (lihat §15.B)
 ├── src/
-│   ├── main.jsx                 # Bootstrap React + registrasi service worker (registerSW)
-│   └── GWG_SuperApp.jsx         # Seluruh logika & UI aplikasi (single-file component)
+│   ├── main.jsx                    # Bootstrap React + registrasi service worker (registerSW)
+│   ├── App.jsx                     # Layout utama, header, menu, routing antar tab
+│   ├── config/
+│   │   ├── appConfig.js            # Baca/tulis konfigurasi white label (localStorage)
+│   │   ├── superAdmin.js           # Resolusi akun Super Admin (dari appConfig)
+│   │   └── dbEmpty.js              # Skema database kosong (struktur awal Firebase)
+│   ├── features/setup/
+│   │   └── SetupWizard.jsx         # Wizard 4 langkah: Branding → Firebase → Super Admin → Selesai
+│   ├── features/                   # Satu folder per tab/menu utama
+│   │   ├── dashboard/  kontrol/  rekap/  toko/  rute/
+│   │   └── wilayah/  produk/  pengguna/  bagihasil/
+│   ├── hooks/
+│   │   ├── useDB.js                # Sinkronisasi Firebase + cache lokal + antrean offline
+│   │   ├── useAnalytics.js         # Kalkulasi revenue/rekap/statistik (dipakai Dashboard & Rekap)
+│   │   └── usePersistedState.js    # Filter/pencarian yang tersimpan otomatis lintas refresh
+│   ├── firebase/
+│   │   ├── config.js               # Baca kredensial Firebase (dari appConfig/.env)
+│   │   └── init.js                 # Inisialisasi Firebase App/Auth/Database
+│   ├── lib/                        # Helper murni: format, export (Excel/PDF/JPG), import, dsb
+│   ├── theme/
+│   │   ├── tokens.js                # Palet warna (dari brand config, fallback hijau/emas GWG)
+│   │   └── logo.js                  # Logo bawaan (base64, fallback kalau belum upload logo custom)
+│   └── components/                 # Komponen UI reusable (Table, Modal, StatCard, FilterBar, dst)
 └── public/
-    ├── logo.png                 # Logo aplikasi
-    ├── icons/                   # Ikon PWA (192px, 512px, apple-touch-icon)
+    ├── logo.png                    # Logo aplikasi (fallback bawaan)
+    ├── icons/                      # Ikon PWA (192px, 512px, apple-touch-icon)
     └── restore-tool-proyek-gwg.html  # Alat pemulihan darurat manual (di luar app utama)
 ```
 
-> Aplikasi ini sengaja disusun sebagai **single large component** (`GWG_SuperApp.jsx`) alih-alih dipecah ke banyak file kecil, supaya seluruh logika bisnis (validasi, kalkulasi stok, role, dll) mudah ditelusuri dalam satu tempat tanpa harus lompat-lompat antar file saat debugging.
+> Aplikasi disusun **modular per fitur** (satu folder per tab di `src/features/`) supaya mudah ditelusuri per area bisnis tanpa harus menggulir satu file raksasa. Logika sinkronisasi/state global dipusatkan di `src/hooks/useDB.js`, sementara identitas/branding dipisah total ke `src/config/appConfig.js` — inilah yang memungkinkan aplikasi yang sama dipakai banyak perusahaan tanpa fork kode (lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode)).
 
 ---
 
@@ -485,4 +561,4 @@ Proyek-gwg-main/
 
 ---
 
-*Dokumen ini dibuat berdasarkan struktur & logika kode `src/GWG_SuperApp.jsx`. Jika ada fitur baru yang ditambahkan ke aplikasi, perbarui juga bagian terkait di README ini.*
+*Dokumen ini dibuat berdasarkan struktur & logika kode di `src/`. Jika ada fitur baru yang ditambahkan ke aplikasi, perbarui juga bagian terkait di README ini.*
