@@ -1,10 +1,11 @@
-export const FIREBASE_CONFIG = {
-  apiKey: "AIzaSyBBAWDbCtCde8mgRgASZ7nl36bfEwZaPM4",
-  authDomain: "proyek-gwg.firebaseapp.com",
-  databaseURL: "https://proyek-gwg-default-rtdb.asia-southeast1.firebasedatabase.app",
-  projectId: "proyek-gwg",
-  storageBucket: "proyek-gwg.firebasestorage.app",
-  messagingSenderId: "481668966064",
-  appId: "1:481668966064:web:8b1bbc7a1c1eac71bb3d75",
-};
-export const FIREBASE_CONFIGURED = !FIREBASE_CONFIG.apiKey.includes("XXXXX");
+// ✅ WHITE LABEL: Firebase config sekarang dibaca dari appConfig (localStorage,
+// diisi lewat Setup Wizard) — bukan lagi konstanta tetap di source code.
+// Ini yang memungkinkan aplikasi yang sama dipakai perusahaan lain, cukup
+// isi Firebase project MEREKA SENDIRI lewat wizard, tanpa perlu fork/edit
+// source code sama sekali. Kalau wizard belum pernah diisi, tetap jatuh
+// balik ke project GWG bawaan (supaya instance yang sudah berjalan tidak
+// berubah).
+import { loadAppConfig, isFirebaseConfigured } from "../config/appConfig";
+
+export const FIREBASE_CONFIG = loadAppConfig().firebase;
+export const FIREBASE_CONFIGURED = isFirebaseConfigured();

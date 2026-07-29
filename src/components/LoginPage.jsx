@@ -1,41 +1,41 @@
 import React from "react";
 import { FIREBASE_CONFIGURED } from "../firebase/config";
-import { GWG_LOGO_B64 } from "../theme/logo";
+import { getBrandLogo, loadAppConfig } from "../config/appConfig";
+import { SetupWizard } from "../features/setup/SetupWizard";
 import { T } from "../theme/tokens";
 
 export function LoginPage({ onLoginGoogle, fbReady, error }) {
+  const brand = loadAppConfig().brand;
+
+  // ✅ WHITE LABEL: kalau Firebase belum dikonfigurasi (instalasi baru untuk
+  // perusahaan lain), tampilkan Setup Wizard langsung — bukan lagi instruksi
+  // "edit file config.js manual" yang mengharuskan buka source code. Wizard
+  // untuk MENGUBAH pengaturan yang sudah berjalan sengaja TIDAK diletakkan
+  // di halaman login ini (belum ada autentikasi) — itu hanya bisa diakses
+  // dari menu ⚙️ khusus Admin setelah login, lihat App.jsx.
+  if (!FIREBASE_CONFIGURED) {
+    return <SetupWizard />;
+  }
+
   return (
     <div style={{ minHeight:"100vh", background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 60%, #0A3526 100%)`,
       display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}>
       <div style={{ background:T.white, borderRadius:20, padding:"40px 36px", maxWidth:400, width:"100%",
         boxShadow:"0 20px 60px rgba(0,0,0,.25)", textAlign:"center" }}>
-        
+
         {/* Logo */}
-        <img src={GWG_LOGO_B64} alt="GWG Logo"
+        <img src={getBrandLogo()} alt={`${brand.companyName} Logo`}
           style={{ width:90, height:90, borderRadius:"50%", objectFit:"contain",
             background:T.greenLt, padding:8, marginBottom:20, border:`3px solid ${T.greenMid}` }} />
 
         <h1 style={{ fontSize:22, fontWeight:800, color:T.green, margin:"0 0 4px" }}>
-          Generasi Wangi Group
+          {brand.companyName}
         </h1>
         <p style={{ fontSize:13, color:T.gray400, marginBottom:32, letterSpacing:"0.06em", textTransform:"uppercase" }}>
-          Super App · Manajemen Konsinyasi
+          {brand.tagline}
         </p>
 
-        {!FIREBASE_CONFIGURED ? (
-          /* Firebase belum dikonfigurasi → tampilkan pesan setup */
-          <div style={{ padding:"16px", background:T.yellowLt, borderRadius:12,
-            border:`1px solid #FDE047`, textAlign:"left" }}>
-            <p style={{ fontSize:14, fontWeight:700, color:T.yellow, margin:"0 0 8px" }}>
-              ⚠️ Firebase Belum Dikonfigurasi
-            </p>
-            <p style={{ fontSize:12, color:T.gray600, margin:0, lineHeight:1.6 }}>
-              Untuk mengaktifkan login, buka file <code>src/firebase/config.js</code> dan isi
-              <code> FIREBASE_CONFIG</code> dengan konfigurasi proyek Firebase Anda.<br/><br/>
-              <b>Langkah:</b> Firebase Console → Project Settings → Web App → SDK Config
-            </p>
-          </div>
-        ) : fbReady ? (
+        {fbReady ? (
           /* Firebase siap → tampilkan tombol login */
           <>
             <button onClick={onLoginGoogle}
@@ -79,7 +79,7 @@ export function LoginPage({ onLoginGoogle, fbReady, error }) {
 
         <div style={{ marginTop:32, paddingTop:20, borderTop:`1px solid ${T.gray100}`,
           fontSize:11, color:T.gray400 }}>
-          © {new Date().getFullYear()} Generasi Wangi Group · Sampang, Jawa Timur
+          © {new Date().getFullYear()} {brand.footerText}
         </div>
       </div>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>

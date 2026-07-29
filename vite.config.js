@@ -1,21 +1,32 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
-export default defineConfig({
+// ✅ WHITE LABEL: nama/deskripsi/warna manifest PWA dibaca dari .env (lihat
+// file .env di root — sudah ada nilai bawaan GWG di sana) supaya perusahaan
+// lain yang mem-fork aplikasi ini cukup ganti .env lalu build ulang, tanpa
+// perlu edit file konfigurasi ini.
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const appTitle = env.VITE_APP_TITLE || 'GWG Super App — Generasi Wangi Group'
+  const shortName = env.VITE_APP_SHORT_NAME || 'GWG App'
+  const description = env.VITE_APP_DESCRIPTION || 'Aplikasi manajemen Generasi Wangi Group'
+  const themeColor = env.VITE_THEME_COLOR || '#000000'
+
+  return {
   plugins: [
     react(),
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png', 'logo.png'],
       manifest: {
-        name: 'GWG Super App — Generasi Wangi Group',
-        short_name: 'GWG App',
-        description: 'Aplikasi manajemen Generasi Wangi Group',
+        name: appTitle,
+        short_name: shortName,
+        description: description,
         start_url: '/',
         display: 'standalone',
         background_color: '#ffffff',
-        theme_color: '#000000',
+        theme_color: themeColor,
         orientation: 'portrait',
         icons: [
           { src: 'icons/icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
@@ -60,4 +71,5 @@ export default defineConfig({
   server: {
     historyApiFallback: true,
   },
+  }
 })

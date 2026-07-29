@@ -3,14 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1" />
-    <meta name="theme-color" content="#000000" />
-    <title>GWG Super App — Generasi Wangi Group</title>
+    <!-- ✅ WHITE LABEL: judul tab, warna status bar, dan nama di homescreen
+         (PWA/APK) tidak bisa diambil dari localStorage (baru terbaca setelah
+         JS jalan) — nilai-nilai ini dibakar saat BUILD, lewat file .env di
+         root project. Vite otomatis mengganti %NAMA_VAR% di HTML ini dengan
+         isi variabel dari .env. Kalau belum diisi, tetap pakai nilai bawaan
+         GWG di bawah. -->
+    <meta name="theme-color" content="%VITE_THEME_COLOR%" />
+    <title>%VITE_APP_TITLE%</title>
     <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🌿</text></svg>" />
 
     <!-- iOS PWA support -->
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="GWG App" />
+    <meta name="apple-mobile-web-app-title" content="%VITE_APP_SHORT_NAME%" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <style>
       * { margin: 0; padding: 0; box-sizing: border-box; }

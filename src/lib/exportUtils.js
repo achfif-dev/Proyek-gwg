@@ -3,6 +3,16 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { saveOrShareBlob, saveWorkbookNative } from "./fileSave";
 import { GWG_LOGO_B64, GWG_EXPORT_LOGO_B64 } from "../theme/logo";
+import { loadAppConfig } from "../config/appConfig";
+
+// ✅ WHITE LABEL: nama & logo di semua ekspor (Excel/PDF/Print/Gambar)
+// memakai identitas brand yang diisi lewat Setup Wizard — jatuh balik ke
+// logo bawaan GWG kalau belum pernah diisi logo custom.
+const _brand = loadAppConfig().brand;
+const BRAND_NAME = _brand.companyName;
+const BRAND_TAGLINE = _brand.tagline;
+const BRAND_LOGO = _brand.logoDataUrl || GWG_EXPORT_LOGO_B64;
+const BRAND_LOGO_FALLBACK = _brand.logoDataUrl || GWG_LOGO_B64;
 
 export function autoColumns(records) {
   const keys = new Set();
@@ -58,7 +68,7 @@ export async function exportExcel(data, columns, title, filename) {
 
     // Tambah sheet info
     const infoWs = XLSX.utils.aoa_to_sheet([
-      ["Generasi Wangi Group - Super App"],
+      [`${BRAND_NAME} - Super App`],
       ["Judul Laporan:", title],
       ["Diekspor:", new Date().toLocaleString("id-ID")],
       ["Total Data:", data.length + " baris"],
@@ -114,7 +124,7 @@ export async function exportPDF(data, columns, title, filename) {
         doc.ellipse(logoCx, logoCy, logoR, logoR, null);
         doc.clip();
         doc.discardPath();
-        doc.addImage(GWG_EXPORT_LOGO_B64, "PNG", 24, 8, 34, 34);
+        doc.addImage(BRAND_LOGO, "PNG", 24, 8, 34, 34);
         doc.restoreGraphicsState();
       } catch {}
       // Border hijau tipis di sekeliling badge logo, menyamai tampilan JPG.
@@ -123,7 +133,7 @@ export async function exportPDF(data, columns, title, filename) {
       doc.circle(logoCx, logoCy, logoR, "S");
       doc.setTextColor(255,255,255);
       doc.setFont("helvetica","bold"); doc.setFontSize(13);
-      doc.text(pdfSafe("Generasi Wangi Group"), 68, 22);
+      doc.text(pdfSafe(BRAND_NAME), 68, 22);
       doc.setFont("helvetica","normal"); doc.setFontSize(8);
       doc.text(pdfSafe("SUPER APP · SISTEM MANAJEMEN KONSINYASI"), 68, 33);
       doc.setFontSize(10);
@@ -310,10 +320,10 @@ export async function exportPDF(data, columns, title, filename) {
   </head><body>
   <div class="header">
     <div class="brand">
-      <img src="${GWG_EXPORT_LOGO_B64}" alt="GWG" style="width:40px;height:40px;border-radius:50%;background:#fff;padding:3px;object-fit:contain;border:2px solid #0F4C35;" onerror="this.onerror=null;this.src='${GWG_LOGO_B64}';" />
+      <img src="${BRAND_LOGO}" alt="${BRAND_NAME}" style="width:40px;height:40px;border-radius:50%;background:#fff;padding:3px;object-fit:contain;border:2px solid #0F4C35;" onerror="this.onerror=null;this.src='${BRAND_LOGO_FALLBACK}';" />
       <div class="brand-text">
-        <h1>Generasi Wangi Group</h1>
-        <p>Super App · Sistem Manajemen Konsinyasi</p>
+        <h1>${BRAND_NAME}</h1>
+        <p>${BRAND_TAGLINE}</p>
       </div>
     </div>
     <div class="meta">
@@ -333,7 +343,7 @@ export async function exportPDF(data, columns, title, filename) {
     <tbody>${tableRows}</tbody>
   </table>
   <div class="footer">
-    <span>Generasi Wangi Group · Super App</span>
+    <span>${BRAND_NAME} · Super App</span>
     <span>${title} · ${now}</span>
     <span>GWG-${new Date().getFullYear()}</span>
   </div>
@@ -427,10 +437,10 @@ export async function exportJPG(data, columns, title, filename) {
       drawLogoBadge(logoImg);
       ctx.fillStyle = "#ffffff";
       ctx.font = "bold 17px 'Segoe UI', Arial, sans-serif";
-      ctx.fillText("Generasi Wangi Group", MARGIN + 52, 34);
+      ctx.fillText(BRAND_NAME, MARGIN + 52, 34);
       ctx.font = "10px 'Segoe UI', Arial, sans-serif";
       ctx.fillStyle = "#D9F0E6";
-      ctx.fillText("SUPER APP · SISTEM MANAJEMEN KONSINYASI", MARGIN + 52, 52);
+      ctx.fillText(BRAND_TAGLINE.toUpperCase(), MARGIN + 52, 52);
 
       ctx.textAlign = "right";
       ctx.fillStyle = "#ffffff";
@@ -497,7 +507,7 @@ export async function exportJPG(data, columns, title, filename) {
       ctx.fillStyle = "#9CA3AF";
       ctx.font = "9px 'Segoe UI', Arial, sans-serif";
       ctx.textAlign = "left";
-      ctx.fillText("Generasi Wangi Group · Super App", MARGIN, y + 24);
+      ctx.fillText(`${BRAND_NAME} · Super App`, MARGIN, y + 24);
       ctx.textAlign = "right";
       ctx.fillText(`${title} · ${now}`, MARGIN + tableWidth, y + 24);
       ctx.textAlign = "left";
@@ -515,7 +525,7 @@ export async function exportJPG(data, columns, title, filename) {
     // fallback ke onload/onerror) baru gambar tabelnya, di web maupun .apk.
     async function loadLogoImage() {
       const img = new Image();
-      img.src = GWG_EXPORT_LOGO_B64;
+      img.src = BRAND_LOGO;
       try {
         if (img.decode) {
           await img.decode();

@@ -1,6 +1,9 @@
 import * as XLSX from "xlsx";
 import { saveWorkbookNative } from "./fileSave";
 import { CATATAN_STATUS } from "../theme/tokens";
+import { loadAppConfig } from "../config/appConfig";
+
+const BRAND_NAME = loadAppConfig().brand.companyName;
 
 export async function downloadTokoTemplate(db) {
   try {
@@ -18,7 +21,7 @@ export async function downloadTokoTemplate(db) {
       return [r.nama, w?.nama||"—"];
     });
     const infoWs = XLSX.utils.aoa_to_sheet([
-      ["Generasi Wangi Group - Super App"],
+      [`${BRAND_NAME} - Super App`],
       ["PETUNJUK IMPORT DATA TOKO"],
       ["1. Kolom bertanda * wajib diisi."],
       ["2. Kolom 'Rute' harus sama persis (tidak case-sensitive) dengan nama rute yang sudah ada di Master Rute."],
@@ -60,7 +63,7 @@ export async function downloadKontrolTemplate(db) {
     });
     const statusOpts = Object.values(CATATAN_STATUS).map(c=>c.label);
     const infoWs = XLSX.utils.aoa_to_sheet([
-      ["Generasi Wangi Group - Super App"],
+      [`${BRAND_NAME} - Super App`],
       ["PETUNJUK IMPORT KONTROL BULANAN"],
       ["1. Kolom bertanda * wajib diisi."],
       ["2. Kolom 'Toko' harus sama persis (tidak case-sensitive) dengan Nama Toko di Master Toko."],
