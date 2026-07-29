@@ -55,13 +55,55 @@ export function useDB(user) {
   // UI untuk tetap menampilkan peringatan & menahan diri menganggap angka
   // revenue sudah final selama itu.
   const SYNC_ACTIVITY_QUIET_MS = 2500;
+  // ✅ FIX v1 (setelah laporan "input kontrol jadi terasa stuck"): versi
+  // paling awal langsung menyalakan `dataStillSyncing=true` di EVENT
+  // PERTAMA apa pun — termasuk saat admin sendiri menulis 1 entri kontrol
+  // baru, karena Firebase langsung meng-echo tulisan lokal itu balik ke
+  // listener (onChildAdded/Changed). Setiap kali flag ini berubah, App.jsx
+  // re-render, dan karena Dashboard/TabKontrol/TabRekap semuanya tetap
+  // ter-mount (cuma disembunyikan via display:none, bukan di-unmount,
+  // supaya state tab lain tidak hilang) dan tidak di-memo, SEMUANYA ikut
+  // re-render — termasuk TabKontrol (2700+ baris) & TabRekap (1600+ baris)
+  // yang sedang tersembunyi.
+  //
+  // ❌ FIX v2 (ambang "≥5 event beruntun"): ternyata TIDAK CUKUP — kalau
+  // admin input kontrol cepat (mengejar backlog laporan sales dari grup
+  // WA), 5+ entri beruntun dalam waktu singkat itu WAJAR terjadi, dan tetap
+  // salah kena anggap "sinkronisasi besar" walau itu murni tulisan lokal.
+  //
+  // ✅ FIX v3 (final, dipakai sekarang): daripada menghitung jumlah event,
+  // kita tandai LANGSUNG setiap key yang baru saja DITULIS SENDIRI oleh
+  // device ini (lewat addRecord/updateRecord/deleteRecord/save — lihat
+  // markLocalWrite di bawah). Saat listener Firebase meng-echo balik
+  // tulisan itu, kita cek: kalau key-nya ada di daftar "baru saja ditulis
+  // sendiri", event itu DIABAIKAN SAMA SEKALI — tidak dihitung sebagai
+  // aktivitas sinkronisasi, seberapa pun cepat/banyak admin menulis.
+  // `dataStillSyncing` sekarang HANYA bereaksi terhadap data yang benar-
+  // benar datang dari luar (pemuatan awal dari cloud, atau tulisan dari
+  // sales/device lain) — bukan echo dari tulisan device ini sendiri.
+  const LOCAL_WRITE_TTL_MS = 15000; // seberapa lama sebuah key dianggap "baru saja ditulis sendiri"
+  const localWriteKeysRef = useRef(new Map()); // "table:id" -> waktu kedaluwarsa (ms epoch)
+  const markLocalWrite = useCallback((table, id) => {
+    if (!id) return;
+    localWriteKeysRef.current.set(`${table}:${id}`, Date.now() + LOCAL_WRITE_TTL_MS);
+  }, []);
+  const isRecentLocalWrite = useCallback((table, id) => {
+    const key = `${table}:${id}`;
+    const exp = localWriteKeysRef.current.get(key);
+    if (exp === undefined) return false;
+    if (Date.now() > exp) { localWriteKeysRef.current.delete(key); return false; }
+    return true;
+  }, []);
   const [dataStillSyncing, setDataStillSyncing] = useState(false);
   const syncActivityTimerRef = useRef(null);
-  const markSyncActivity = useCallback(() => {
+  const markSyncActivity = useCallback((table, id) => {
+    if (table && isRecentLocalWrite(table, id)) return; // echo dari tulisan lokal sendiri — abaikan total
     setDataStillSyncing(true);
     if (syncActivityTimerRef.current) clearTimeout(syncActivityTimerRef.current);
-    syncActivityTimerRef.current = setTimeout(() => setDataStillSyncing(false), SYNC_ACTIVITY_QUIET_MS);
-  }, []);
+    syncActivityTimerRef.current = setTimeout(() => {
+      setDataStillSyncing(false);
+    }, SYNC_ACTIVITY_QUIET_MS);
+  }, [isRecentLocalWrite]);
   // ✅ BARU: khusus menampung penolakan TULIS oleh security rules (bukan
   // gagal baca seperti syncError, dan bukan sekadar offline). Array berisi
   // { path, message, at } — setiap kali Firebase menolak satu perubahan
@@ -252,11 +294,11 @@ export function useDB(user) {
             };
             const uAdd = onChildAdded(yr, snap => {
               kontrolByYearRef.current[year][snap.key] = snap.val();
-              markSyncActivity();
+              markSyncActivity("kontrol", snap.key);
               if (!firstBatchDone) settle(); else recomputeDebounced();
             }, (err) => { setSyncError(err.message); if (countTowardBoot) markLoadedAndFlush("kontrol"); });
-            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
-            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
+            onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity("kontrol", snap.key); if (firstBatchDone) recomputeDebounced(); });
+            onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity("kontrol", snap.key); if (firstBatchDone) recomputeDebounced(); });
             // ✅ Diperpanjang (dari 3 detik) — sama alasannya seperti tabel
             // toko: di jaringan sangat lambat, record pertama yang memang
             // ada tapi belum sempat tiba jangan sampai dikira "tahun ini
@@ -330,20 +372,20 @@ export function useDB(user) {
 
           const unsubAdd = onChildAdded(r, snap => {
             localMap[snap.key] = snap.val();
-            markSyncActivity();
+            markSyncActivity(key, snap.key);
             if (!firstBatchDone) scheduleSettle();
             else flushToStateDebounced();
           }, (err) => { setSyncError(err.message); markLoadedAndFlush(key); });
 
           const unsubChg = onChildChanged(r, snap => {
             localMap[snap.key] = snap.val();
-            markSyncActivity();
+            markSyncActivity(key, snap.key);
             if (firstBatchDone) flushToStateDebounced();
           });
 
           const unsubRem = onChildRemoved(r, snap => {
             delete localMap[snap.key];
-            markSyncActivity();
+            markSyncActivity(key, snap.key);
             if (firstBatchDone) flushToStateDebounced();
           });
 
@@ -433,9 +475,9 @@ export function useDB(user) {
         setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
       }, 900);
     };
-    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity(); if (!firstBatchDone) settle(); else recomputeDebounced(); });
-    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
-    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity(); if (firstBatchDone) recomputeDebounced(); });
+    onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity("kontrol", snap.key); if (!firstBatchDone) settle(); else recomputeDebounced(); });
+    onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity("kontrol", snap.key); if (firstBatchDone) recomputeDebounced(); });
+    onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity("kontrol", snap.key); if (firstBatchDone) recomputeDebounced(); });
     setTimeout(() => { if (!firstBatchDone) { firstBatchDone = true; recompute(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); } }, 12000);
     kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); };
   }, [user]);
@@ -603,11 +645,21 @@ export function useDB(user) {
           const touchedYears = new Set([...Object.keys(byYear), ...prevYears]);
           touchedYears.forEach(y => {
             updates[`kontrol/${y}`] = byYear[y] || null; // null = tahun itu jadi kosong
-            if (byYear[y]) updates[`kontrolYearsIndex/${y}`] = true;
+            if (byYear[y]) {
+              updates[`kontrolYearsIndex/${y}`] = true;
+              // ✅ Tandai semua record di tahun yang ditulis ulang ini sebagai
+              // "baru saja ditulis sendiri" — save() bulk (mis. batch stok,
+              // import Excel) menulis ulang seluruh blob tahun tsb, jadi
+              // semua id di dalamnya akan di-echo balik oleh Firebase; tanpa
+              // ini, save() bulk yang menyentuh banyak record akan salah
+              // kena anggap "sinkronisasi besar dari luar".
+              Object.keys(byYear[y]).forEach(id => markLocalWrite("kontrol", id));
+            }
           });
           return;
         }
         updates[key] = arrToMap(newDB[key]);
+        if (key === "toko") (newDB.toko||[]).forEach(rec => markLocalWrite("toko", rec.id));
       });
       if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
       if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
@@ -615,14 +667,17 @@ export function useDB(user) {
       saveLocalDB(newDB);
       return newDB;
     });
-  }, [pushUpdates]);
-
-  // addRecord/updateRecord/deleteRecord ditulis ulang agar masing-masing
+  }, [pushUpdates, markLocalWrite]);
   // HANYA mengirim 1 record (path "table/id"), bukan seluruh tabel —
   // jauh lebih hemat bandwidth saat toko sudah ribuan & kontrol terus bertambah.
   // Untuk tabel "kontrol" khusus, path ditulis sebagai "kontrol/{tahun}/{id}"
   // (partisi tahun) alih-alih "kontrol/{id}".
   const addRecord = useCallback((table, record) => {
+    // ✅ Tandai key ini "baru saja ditulis sendiri" SEBELUM push ke Firebase,
+    // supaya begitu echo-nya sampai lewat listener (bisa dalam hitungan
+    // milidetik di jaringan cepat), sudah langsung dikenali dan diabaikan
+    // oleh markSyncActivity — secepat apa pun admin input berturut-turut.
+    markLocalWrite(table, record.id);
     setDB(prevDB => {
       const nextArr = [...(prevDB[table]||[]), record];
       const next = { ...prevDB, [table]: nextArr };
@@ -635,9 +690,10 @@ export function useDB(user) {
       }
       return next;
     });
-  }, [pushUpdates]);
+  }, [pushUpdates, markLocalWrite]);
 
   const updateRecord = useCallback((table, id, updated) => {
+    markLocalWrite(table, id);
     setDB(prevDB => {
       let oldRecord = null, mergedRecord = null;
       const nextArr = (prevDB[table]||[]).map(r => {
@@ -668,9 +724,10 @@ export function useDB(user) {
       }
       return next;
     });
-  }, [pushUpdates]);
+  }, [pushUpdates, markLocalWrite]);
 
   const deleteRecord = useCallback((table, id) => {
+    markLocalWrite(table, id);
     setDB(prevDB => {
       const targetRecord = table === "kontrol" ? (prevDB[table]||[]).find(r => r.id === id) : null;
       const nextArr = (prevDB[table]||[]).filter(r => r.id !== id);
@@ -709,9 +766,10 @@ export function useDB(user) {
       }
       return next;
     });
-  }, [pushUpdates]);
+  }, [pushUpdates, markLocalWrite]);
 
   const updateStokToko = useCallback((tokoId, produkId, jumlah) => {
+    markLocalWrite("toko", tokoId);
     setDB(prevDB => {
       let mergedRecord = null;
       const nextArr = prevDB.toko.map(t => {
@@ -724,7 +782,7 @@ export function useDB(user) {
       if (mergedRecord) pushUpdates({ [`toko/${tokoId}`]: mergedRecord });
       return next;
     });
-  }, [pushUpdates]);
+  }, [pushUpdates, markLocalWrite]);
 
   const resetDB = useCallback(() => {
     // PENGAMAN TAMBAHAN: selalu backup snapshot SEBELUM data dihapus, supaya
