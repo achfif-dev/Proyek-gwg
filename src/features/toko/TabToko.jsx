@@ -87,11 +87,21 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     setSelectedIds([]);
   }
 
+  // ⚡ OPTIMISASI PERFORMA (data toko ~5.000 baris): versi sebelumnya
+  // memakai `.find()` di dalam `.map()` untuk mencari rute/wilayah TIAP
+  // baris toko — O(toko × rute), dan dependensi `[db]` berarti hitung ulang
+  // SEMUA 5.000 baris ini setiap kali TABEL APA PUN berubah (bukan cuma
+  // toko/rute/wilayah — edit 1 produk pun ikut memicu). Sama seperti bug
+  // yang sudah diperbaiki di useAnalytics.js & TabKontrol.jsx, diganti ke
+  // Map lookup O(1) + dependensi dipersempit ke tabel yang benar-benar
+  // dipakai di sini.
+  const ruteByIdToko = useMemo(() => new Map((db.rute||[]).map(r => [r.id, r])), [db.rute]);
+  const wilayahByIdToko = useMemo(() => new Map((db.wilayah||[]).map(w => [w.id, w])), [db.wilayah]);
   const enriched = useMemo(() => (db.toko||[]).map(t => {
-    const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
-    const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
+    const rute = ruteByIdToko.get(t.ruteId) || null;
+    const wilayah = rute ? (wilayahByIdToko.get(rute.wilayahId) || null) : null;
     return { ...t, ruteNama:rute?.nama||"—", wilayahNama:wilayah?.nama||"—", wilayahId:wilayah?.id||"" };
-  }), [db]);
+  }), [db.toko, ruteByIdToko, wilayahByIdToko]);
 
   // Urutkan Master Toko berdasarkan abjad Nama Toko sebagai default,
   // agar lebih mudah dicari/diinput meski data terus bertambah.

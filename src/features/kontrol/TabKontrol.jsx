@@ -143,10 +143,28 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
 
+  // ⚡ OPTIMISASI PERFORMA (setelah laporan "input kontrol masih stuck"):
+  // versi sebelumnya memakai `.find()` di dalam `.map()` untuk toko/rute/
+  // wilayah tiap baris kontrol (O(kontrol × toko)) — SAMA seperti bug yang
+  // sudah diperbaiki di useAnalytics.js. Di sini juga diganti ke Map lookup
+  // O(1). Dependensi useMemo juga dipersempit dari `[db, produkAktif]`
+  // (recompute setiap tabel APA PUN berubah — produk, pengguna, dll — bukan
+  // cuma kontrol) jadi hanya tabel yang benar-benar dipakai di sini, supaya
+  // tidak ada kerja ulang percuma saat admin mengedit tabel lain.
+  //
+  // CATATAN: sengaja TIDAK diganti pakai `analytics.kontrol` dari
+  // useAnalytics walau perhitungannya mirip, karena totalRev/Bonus/Terjual
+  // di sini SENGAJA cuma menghitung produk yang masih aktif (produkAktif),
+  // sedangkan analytics.kontrol menghitung SEMUA produk termasuk yang sudah
+  // dinonaktifkan — beda makna, jadi tidak boleh disatukan tanpa mengubah
+  // perilaku tampilan Kontrol yang sudah ada.
+  const tokoByIdKontrol = useMemo(() => new Map((db.toko||[]).map(t => [t.id, t])), [db.toko]);
+  const ruteByIdKontrol = useMemo(() => new Map((db.rute||[]).map(r => [r.id, r])), [db.rute]);
+  const wilayahByIdKontrol = useMemo(() => new Map((db.wilayah||[]).map(w => [w.id, w])), [db.wilayah]);
   const enriched = useMemo(() => (db.kontrol||[]).map(k => {
-    const toko = (db.toko||[]).find(t=>t.id===k.tokoId);
-    const rute = toko ? (db.rute||[]).find(r=>r.id===toko.ruteId) : null;
-    const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
+    const toko = tokoByIdKontrol.get(k.tokoId) || null;
+    const rute = toko ? (ruteByIdKontrol.get(toko.ruteId) || null) : null;
+    const wilayah = rute ? (wilayahByIdKontrol.get(rute.wilayahId) || null) : null;
     let totalRev = 0, totalBonus = 0, totalTerjual = 0;
     produkAktif.forEach(p => {
       const terjual = k[`terjual_${p.id}`]||0;
@@ -159,7 +177,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     return { ...k, tokoNama:toko?.nama||"?", ruteNama:rute?.nama||"?",
       wilayahNama:wilayah?.nama||"?", ruteId:rute?.id||"", wilayahId:wilayah?.id||"",
       totalRev, totalBonus, totalTerjual, toko, rute, wilayah };
-  }), [db, produkAktif]);
+  }), [db.kontrol, tokoByIdKontrol, ruteByIdKontrol, wilayahByIdKontrol, produkAktif]);
 
   // Filter: wilayah → rute cascade.
   // Diurutkan per Wilayah (abjad) dahulu, lalu Nama Rute (natural sort) —
@@ -996,6 +1014,26 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     return map;
   }, [enriched, form.tanggal, form.tokoId, db.toko, db.rute, modalFilter.wilayahId]);
 
+  // ⚡ OPTIMISASI PERFORMA (dengan toko ~5000 & kontrol yang terus bertambah
+  // per siklus): versi sebelumnya, untuk SETIAP toko di dropdown, men-scan
+  // ULANG SELURUH array db.kontrol dua kali (`sudahDikontrol` pakai
+  // `.some()`, `entriSiklusIni` pakai `.filter()`) plus `.find()` rute per
+  // toko — O(toko × kontrol). Ini dropdown yang paling sering dibuka admin
+  // (tiap kali mau input kontrol baru), jadi paling terasa "stuck"-nya.
+  // Fix: kelompokkan kontrol per tokoId SEKALI (`kontrolByTokoMap`), dan
+  // buat Map rute by id — supaya tiap toko cuma perlu cek kontrol miliknya
+  // sendiri (biasanya cuma beberapa entri per bulan), bukan scan semua.
+  const kontrolByTokoMap = useMemo(() => {
+    const m = new Map();
+    (db.kontrol||[]).forEach(k => {
+      if (!k.tokoId) return;
+      if (!m.has(k.tokoId)) m.set(k.tokoId, []);
+      m.get(k.tokoId).push(k);
+    });
+    return m;
+  }, [db.kontrol]);
+  const ruteByIdForModal = useMemo(() => new Map((db.rute||[]).map(r => [r.id, r])), [db.rute]);
+
   const modalTokoOpts = useMemo(() => {
     // Tampilkan toko Aktif DAN Baru di dropdown kontrol (jangan tampilkan Non-Aktif)
     // Label disertai badge status supaya petugas langsung tahu statusnya tanpa buka tab Toko
@@ -1017,16 +1055,17 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     const tglCek = form.tanggal;
     return list.map(t => {
       const statusBadge = t.status === "Baru" ? " 🆕 [BARU]" : t.status === "Aktif" ? "" : ` [${t.status}]`;
-      const sudahDikontrol = !!tglCek && (db.kontrol||[]).some(k =>
-        k.tokoId === t.id && k.tanggal === tglCek && !(modal==="edit" && k.id===form.id)
+      const kontrolToko = kontrolByTokoMap.get(t.id) || []; // sudah dipersempit ke toko ini saja
+      const sudahDikontrol = !!tglCek && kontrolToko.some(k =>
+        k.tanggal === tglCek && !(modal==="edit" && k.id===form.id)
       );
       let extraBadge = null;
       if (!sudahDikontrol) {
-        const ruteToko = (db.rute||[]).find(r=>r.id===t.ruteId);
+        const ruteToko = ruteByIdForModal.get(t.ruteId) || null;
         const siklus = ruteToko ? siklusRangePerWilayah[ruteToko.wilayahId] : null;
         if (siklus) {
-          const entriSiklusIni = (db.kontrol||[]).filter(k =>
-            k.tokoId === t.id && k.tanggal >= siklus.start && k.tanggal <= siklus.end && !(modal==="edit" && k.id===form.id)
+          const entriSiklusIni = kontrolToko.filter(k =>
+            k.tanggal >= siklus.start && k.tanggal <= siklus.end && !(modal==="edit" && k.id===form.id)
           );
           if (entriSiklusIni.length === 0) {
             extraBadge = { label: "🔴 Belum Kontrol", title: `Belum ada entri kontrol untuk toko ini di siklus berjalan (${siklus.start} s/d ${siklus.end})`, color: T.red, bg: T.redLt };
@@ -1037,7 +1076,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       }
       return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol, extraBadge };
     });
-  }, [db.toko, db.rute, db.kontrol, modalFilter, form.tanggal, form.id, modal, isSalesRestricted, salesWilayahId, siklusRangePerWilayah]);
+  }, [db.toko, db.rute, kontrolByTokoMap, ruteByIdForModal, modalFilter, form.tanggal, form.id, modal, isSalesRestricted, salesWilayahId, siklusRangePerWilayah]);
 
   // ✅ Flag toko yang sedang dipilih di form: apakah SUDAH ada entri kontrol
   // untuk tanggal yang sama (dipakai untuk banner peringatan di modal)
@@ -1054,11 +1093,11 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       .filter(t => t.status === "Aktif" || t.status === "Baru")
       .filter(t => {
         if (!isSalesRestricted) return true;
-        const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+        const rute = ruteByIdForModal.get(t.ruteId) || null;
         return rute?.wilayahId === salesWilayahId; // Sales cuma boleh pilih toko wilayahnya sendiri
       })
       .map(t => ({ value:t.id, label: `${t.nama}${t.kode?` (${t.kode})`:""}` }));
-  }, [db.toko, db.rute, isSalesRestricted, salesWilayahId]);
+  }, [db.toko, ruteByIdForModal, isSalesRestricted, salesWilayahId]);
 
   // Import Kontrol Bulanan dari Excel
   function importKontrolFromRows(rows) {

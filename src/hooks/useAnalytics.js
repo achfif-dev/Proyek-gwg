@@ -1,17 +1,57 @@
 import { useMemo } from "react";
 import { naturalCompare } from "../lib/format";
 
+// ─────────────────────────────────────────────────────────────────────────
+// ⚡ OPTIMISASI PERFORMA (setelah laporan "input kontrol masih terasa stuck"
+// walau internet sudah bagus): versi sebelumnya memakai `.find()` DI DALAM
+// `.map()` untuk mencari toko/rute/wilayah tiap baris kontrol — artinya
+// SETIAP kontrol men-scan ulang SELURUH tabel toko/rute/wilayah dari awal.
+// Ini kompleksitas O(kontrol × toko), bukan O(kontrol). Untuk toko/rute
+// yang jumlahnya ratusan dan kontrol yang terus menumpuk (tidak pernah
+// berkurang, bertambah tiap hari), ini jadi jutaan perbandingan setiap kali
+// recompute jalan — kerja CPU murni di HP, TIDAK ADA hubungannya dengan
+// kecepatan internet, dan makin lambat seiring data historis menumpuk.
+// Pola yang sama (nested find/filter) juga terjadi di perWilayah, perRute,
+// dan produkStats.
+//
+// Fix: bangun Map id→record SEKALI di awal (O(1) lookup), dan hitung
+// agregat per-wilayah/per-rute/per-produk dengan SATU KALI scan atas
+// kontrol (bukan scan kontrol berulang per wilayah/rute/produk). Total
+// kompleksitas turun dari O(n×m) jadi O(n+m).
+// ─────────────────────────────────────────────────────────────────────────
 export function useAnalytics(db) {
   return useMemo(() => {
-    const harga = {};
-    (db.produk||[]).forEach(p => { harga[p.id] = p.harga; });
+    const produkArr = db.produk||[];
+    const tokoArr = db.toko||[];
+    const ruteArr = db.rute||[];
+    const wilayahArr = db.wilayah||[];
+    const kontrolArr = db.kontrol||[];
+    const luarArr = db.penjualanLuar||[];
 
-    const enrichKontrol = (db.kontrol||[]).map(k => {
-      let totalRev = 0;
-      let totalTerjual = 0;
-      let totalStok = 0;
-      let totalBonus = 0;
-      (db.produk||[]).forEach(p => {
+    const harga = {};
+    produkArr.forEach(p => { harga[p.id] = p.harga; });
+
+    // Map id→record, dibangun sekali (bukan .find() berulang per baris kontrol)
+    const tokoById = new Map(tokoArr.map(t => [t.id, t]));
+    const ruteById = new Map(ruteArr.map(r => [r.id, r]));
+    const wilayahById = new Map(wilayahArr.map(w => [w.id, w]));
+
+    // Akumulator per-wilayah/per-rute/per-produk, diisi SAMBIL scan kontrol
+    // 1x (bukan enrichKontrol.filter(...) yang diulang per wilayah/rute).
+    const wilayahAgg = new Map(); // id -> { rev, terjual }
+    const ruteAgg = new Map();    // id -> { rev, terjual, luarRuteCount }
+    const produkAgg = new Map();  // id -> { terjual, rev }
+    produkArr.forEach(p => produkAgg.set(p.id, { terjual: 0, rev: 0 }));
+    const bump = (map, id, revD, terjualD) => {
+      if (!id) return;
+      const cur = map.get(id) || { rev: 0, terjual: 0, luarRuteCount: 0 };
+      cur.rev += revD; cur.terjual += terjualD;
+      map.set(id, cur);
+    };
+
+    const enrichKontrol = kontrolArr.map(k => {
+      let totalRev = 0, totalTerjual = 0, totalStok = 0, totalBonus = 0;
+      produkArr.forEach(p => {
         const terjual = k[`terjual_${p.id}`] || 0;
         const stok = k[`stok_${p.id}`] || 0;
         // ⚠️ FIX BUG: dulu totalBonus tidak pernah dihitung di sini, jadi
@@ -24,6 +64,9 @@ export function useAnalytics(db) {
         totalTerjual += terjual;
         totalStok += stok;
         totalBonus += bonusPcs;
+        // Akumulasi produkStats sambil jalan (1x scan kontrol total, bukan per-produk)
+        const pAgg = produkAgg.get(p.id);
+        if (pAgg) { pAgg.terjual += terjual; pAgg.rev += terjual * (p.harga||0); }
       });
       let status = "⚪ Kosong";
       if (totalStok > 0) {
@@ -31,9 +74,11 @@ export function useAnalytics(db) {
         else if (totalTerjual === 0) status = "🔴 Belum Laku";
         else status = "🟢 Laku Sebagian";
       }
-      const toko = (db.toko||[]).find(t => t.id === k.tokoId);
-      const rute = toko ? (db.rute||[]).find(r => r.id === toko.ruteId) : null;
-      const wilayah = rute ? (db.wilayah||[]).find(w => w.id === rute.wilayahId) : null;
+      const toko = tokoById.get(k.tokoId) || null;
+      const rute = toko ? (ruteById.get(toko.ruteId) || null) : null;
+      const wilayah = rute ? (wilayahById.get(rute.wilayahId) || null) : null;
+      if (wilayah) bump(wilayahAgg, wilayah.id, totalRev, totalTerjual);
+      if (rute) bump(ruteAgg, rute.id, totalRev, totalTerjual);
       return { ...k, totalRev, totalTerjual, totalStok, totalBonus, status, toko, rute, wilayah,
         tokoNama: toko?.nama||"?", ruteNama: rute?.nama||"?", wilayahNama: wilayah?.nama||"?",
         ruteId: rute?.id||"", wilayahId: wilayah?.id||"" };
@@ -43,27 +88,36 @@ export function useAnalytics(db) {
     // (rute lain saat itu, atau penjualan perorangan) di mana sales tidak
     // tahu/lupa nama toko & rutenya. Tidak terikat ke toko manapun, tapi
     // tetap dihitung sebagai pendapatan & laba perusahaan.
-    const enrichLuarRute = (db.penjualanLuar||[]).map(pl => {
+    const enrichLuarRute = luarArr.map(pl => {
       let totalRev = 0, totalTerjual = 0, totalBonus = 0;
-      (db.produk||[]).forEach(p => {
+      produkArr.forEach(p => {
         const terjual = pl[`terjual_${p.id}`] || 0;
         totalRev += terjual * (p.harga || 0);
         totalTerjual += terjual;
         totalBonus += Number(pl[`bonusInput_${p.id}`]||0);
+        const pAgg = produkAgg.get(p.id);
+        if (pAgg) { pAgg.terjual += terjual; pAgg.rev += terjual * (p.harga||0); }
       });
       // ✅ wilayahNama: supaya penjualan luar rute bisa dikaitkan & ditampilkan
       // per wilayah (mis. di Rekap Siklus), bukan cuma catatan yang mengambang.
       // ✅ ruteNama: opsional — jika sales mengisi rute saat mencatat penjualan
       // luar rute, penjualan ini juga bisa dikaitkan & ditampilkan per rute
       // (Revenue per Rute), bukan cuma ikut total wilayah saja.
-      const wilayah = (db.wilayah||[]).find(w => w.id === pl.wilayahId);
-      const rute = (db.rute||[]).find(r => r.id === pl.ruteId);
+      const wilayah = wilayahById.get(pl.wilayahId) || null;
+      const rute = ruteById.get(pl.ruteId) || null;
+      if (pl.wilayahId) bump(wilayahAgg, pl.wilayahId, totalRev, totalTerjual);
+      if (pl.ruteId) {
+        const cur = ruteAgg.get(pl.ruteId) || { rev: 0, terjual: 0, luarRuteCount: 0 };
+        cur.luarRuteCount += 1;
+        ruteAgg.set(pl.ruteId, cur);
+        bump(ruteAgg, pl.ruteId, totalRev, totalTerjual);
+      }
       return { ...pl, totalRev, totalTerjual, totalBonus, wilayahNama: wilayah?.nama||"", ruteNama: rute?.nama||"" };
     });
     const totalRevLuarRute = enrichLuarRute.reduce((s,k) => s + k.totalRev, 0);
 
     const totalRev = enrichKontrol.reduce((s,k) => s + k.totalRev, 0) + totalRevLuarRute;
-    const tokoAktif = (db.toko||[]).filter(t => t.status==="Aktif").length;
+    const tokoAktif = tokoArr.filter(t => t.status==="Aktif").length;
     // ✅ FIX SINKRONISASI: marginPct sebelumnya hardcoded 70% di sini,
     // terpisah dari konfigurasi yang bisa diedit user di Tab Bagi Hasil
     // (db.bagiHasilConfig.marginLaba). Sekarang keduanya membaca sumber
@@ -72,38 +126,26 @@ export function useAnalytics(db) {
     const marginPctGlobal = Number(db.bagiHasilConfig?.marginLaba) || 70;
     const labaBersih = totalRev * (marginPctGlobal/100);
 
-    const perWilayah = (db.wilayah||[]).map(w => {
-      const rows = enrichKontrol.filter(k => k.wilayah?.id === w.id);
-      // ✅ Penjualan luar rute yang wilayahnya cocok ikut dijumlahkan, supaya
-      // total per wilayah konsisten dengan totalRev keseluruhan (yang sudah
-      // memasukkan totalRevLuarRute).
-      const luarRows = enrichLuarRute.filter(pl => pl.wilayahId === w.id);
-      return {
-        ...w,
-        rev: rows.reduce((s,k) => s + k.totalRev, 0) + luarRows.reduce((s,k) => s + k.totalRev, 0),
-        terjual: rows.reduce((s,k) => s + k.totalTerjual, 0) + luarRows.reduce((s,k) => s + k.totalTerjual, 0),
-        tokoCount: (db.toko||[]).filter(t => {
-          const rute = (db.rute||[]).find(r => r.id === t.ruteId);
-          return rute?.wilayahId === w.id;
-        }).length,
-      };
+    // Jumlah toko per rute & per wilayah — dihitung 1x scan toko (bukan
+    // filter toko berulang per wilayah seperti sebelumnya).
+    const tokoCountByRute = new Map();
+    tokoArr.forEach(t => { if (t.ruteId) tokoCountByRute.set(t.ruteId, (tokoCountByRute.get(t.ruteId)||0)+1); });
+    const tokoCountByWilayah = new Map();
+    ruteArr.forEach(r => {
+      const n = tokoCountByRute.get(r.id) || 0;
+      if (n && r.wilayahId) tokoCountByWilayah.set(r.wilayahId, (tokoCountByWilayah.get(r.wilayahId)||0)+n);
     });
 
-    const perRute = (db.rute||[]).map(r => {
-      const wil = (db.wilayah||[]).find(w => w.id === r.wilayahId);
-      const rows = enrichKontrol.filter(k => k.rute?.id === r.id);
-      // ✅ Penjualan luar rute yang sudah dikaitkan ke rute ini (ruteId diisi
-      // sales saat mencatat) ikut masuk ke revenue & pcs terjual rute
-      // tersebut — sebelumnya penjualan luar rute tidak pernah tampil di
-      // breakdown per rute sama sekali, hanya nyangkut di level wilayah.
-      const luarRows = enrichLuarRute.filter(pl => pl.ruteId === r.id);
-      return {
-        ...r, wilayahNama: wil?.nama||"-",
-        rev: rows.reduce((s,k) => s + k.totalRev, 0) + luarRows.reduce((s,k) => s + k.totalRev, 0),
-        terjual: rows.reduce((s,k) => s + k.totalTerjual, 0) + luarRows.reduce((s,k) => s + k.totalTerjual, 0),
-        luarRuteCount: luarRows.length,
-        tokoCount: (db.toko||[]).filter(t => t.ruteId === r.id).length,
-      };
+    const perWilayah = wilayahArr.map(w => {
+      const agg = wilayahAgg.get(w.id) || { rev:0, terjual:0 };
+      return { ...w, rev: agg.rev, terjual: agg.terjual, tokoCount: tokoCountByWilayah.get(w.id) || 0 };
+    });
+
+    const perRute = ruteArr.map(r => {
+      const wil = wilayahById.get(r.wilayahId) || null;
+      const agg = ruteAgg.get(r.id) || { rev:0, terjual:0, luarRuteCount:0 };
+      return { ...r, wilayahNama: wil?.nama||"-", rev: agg.rev, terjual: agg.terjual,
+        luarRuteCount: agg.luarRuteCount, tokoCount: tokoCountByRute.get(r.id) || 0 };
     })
       // Urutkan sama seperti Master Rute: per Wilayah (abjad) dulu, lalu
       // Nama Rute dengan natural sort — supaya daftar "Rute Aktif" di
@@ -114,13 +156,10 @@ export function useAnalytics(db) {
         return naturalCompare(a.nama||"", b.nama||"");
       });
 
-    const produkStats = (db.produk||[]).map(p => ({
-      ...p,
-      terjual: enrichKontrol.reduce((s,k) => s + (k[`terjual_${p.id}`]||0), 0)
-        + enrichLuarRute.reduce((s,k) => s + (k[`terjual_${p.id}`]||0), 0),
-      rev: enrichKontrol.reduce((s,k) => s + (k[`terjual_${p.id}`]||0) * p.harga, 0)
-        + enrichLuarRute.reduce((s,k) => s + (k[`terjual_${p.id}`]||0) * p.harga, 0),
-    }));
+    const produkStats = produkArr.map(p => {
+      const agg = produkAgg.get(p.id) || { terjual:0, rev:0 };
+      return { ...p, terjual: agg.terjual, rev: agg.rev };
+    });
 
     // ✅ FIX SINKRONISASI: daftar pihak & persentase sebelumnya hardcoded
     // (60/20/10/10) di sini, terpisah dari daftar pihak yang bisa

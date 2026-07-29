@@ -86,9 +86,20 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
   }, []);
 
   const selected = options.find(o => o.value === value);
-  const filtered = q
+  const filteredAll = q
     ? options.filter(o => o.label.toLowerCase().includes(q.toLowerCase()))
     : options;
+  // ⚡ OPTIMISASI PERFORMA (relevan dengan skala ~5000 toko): sebelumnya
+  // dropdown ini merender SEMUA hasil `filtered` sebagai elemen DOM
+  // sekaligus — kalau belum ketik apa-apa (q="") dan optionsnya ribuan
+  // (mis. dropdown "Semua Toko" tanpa filter wilayah/rute dulu), buka
+  // dropdown = ribuan <div> dibuat sekaligus = macet sesaat, khusus di HP.
+  // Fix: batasi jumlah yang benar-benar dirender, dengan pesan kalau ada
+  // sisa yang tidak ditampilkan supaya pengguna tahu harus mengetik untuk
+  // mempersempit (bukan diam-diam terpotong tanpa penjelasan).
+  const RENDER_LIMIT = 150;
+  const filtered = filteredAll.slice(0, RENDER_LIMIT);
+  const hiddenCount = filteredAll.length - filtered.length;
 
   const s = { width:"100%", padding:"9px 12px", border:`1.5px solid ${T.gray200}`,
     borderRadius:8, fontSize:13, fontFamily:"inherit", outline:"none",
@@ -153,6 +164,11 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
                 )}
               </div>
             ))}
+            {hiddenCount > 0 && (
+              <div style={{ padding:"8px 12px", fontSize:11, color:T.gray400, textAlign:"center", borderTop:`1px solid ${T.gray100}` }}>
+                +{hiddenCount} lainnya — ketik untuk mempersempit pencarian
+              </div>
+            )}
           </div>
         </div>
       )}
