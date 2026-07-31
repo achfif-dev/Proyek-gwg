@@ -79,8 +79,32 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
       ? `akumulasi tahun ${tahunKontrolTermuat[0]}`
       : `akumulasi ${tahunKontrolTermuat[0]}–${tahunKontrolTermuat[tahunKontrolTermuat.length-1]}`;
 
+  // ✅ FIX SINKRONISASI: Entri Kontrol, Total Bonus, dan Performa Produk
+  // sebelumnya SELALU dihitung dari `db.kontrol`/`analytics.kontrol`/
+  // `analytics.produkStats` TANPA filter wilayah — jadi Sales yang wilayahnya
+  // di-restrict tetap melihat angka gabungan SEMUA wilayah (bukan cuma
+  // wilayahnya sendiri), padahal StatCard lain (Toko Aktif, Revenue, dsb)
+  // sudah di-scope. Sekarang ketiganya dihitung dari `kontrolUntukRentang`
+  // (kontrol yang sudah di-filter ke salesWilayahId) supaya konsisten.
+  const produkStatsScoped = isSalesRestricted
+    ? (() => {
+        const produkArr = db.produk||[];
+        const map = new Map(produkArr.map(p => [p.id, { ...p, terjual:0, rev:0 }]));
+        const luarScoped = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId === salesWilayahId);
+        [...kontrolUntukRentang, ...luarScoped].forEach(k => {
+          produkArr.forEach(p => {
+            const terjual = k[`terjual_${p.id}`] || 0;
+            if (!terjual) return;
+            const agg = map.get(p.id);
+            if (agg) { agg.terjual += terjual; agg.rev += terjual * (p.harga||0); }
+          });
+        });
+        return Array.from(map.values());
+      })()
+    : produkStats;
+
   // ✅ Ekspor Dashboard — tiga kolom (Kategori, Metrik, Nilai) agar lebih rapi & terkelompok
-  const _totalBonus = analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0);
+  const _totalBonus = kontrolUntukRentang.reduce((s,k)=>s+(k.totalBonus||0),0);
   const dashboardExportRows = [
     // ── Keuangan ──
     { kategori:"💰 KEUANGAN",      metrik:"Total Revenue",          nilai:fmtRp(totalRev) },
@@ -94,7 +118,7 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
     { kategori:"",                  metrik:"Pengguna Terdaftar",     nilai:(db.pengguna||[]).length },
     { kategori:"",                  metrik:"",                       nilai:"" },
     // ── Aktivitas ──
-    { kategori:"📋 AKTIVITAS",     metrik:"Entri Kontrol",          nilai:(db.kontrol||[]).length },
+    { kategori:"📋 AKTIVITAS",     metrik:"Entri Kontrol",          nilai:kontrolUntukRentang.length },
     { kategori:"",                  metrik:"Total Bonus (pcs)",      nilai:fmt(_totalBonus) },
     { kategori:"",                  metrik:"",                       nilai:"" },
     // ── Revenue per Wilayah ──
@@ -131,9 +155,9 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
         <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon={Icon.rekap} color={T.green}
           pending={dataStillSyncing} pendingTitle="Dihitung dari Total Pendapatan yang masih disinkronkan" />
         <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon={Icon.produk} color={T.purple} />
-        <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon={Icon.kontrol} color={T.blue}
+        <StatCard label="Entri Kontrol"   value={kontrolUntukRentang.length} sub="total transaksi"                  icon={Icon.kontrol} color={T.blue}
           pending={dataStillSyncing} pendingTitle="Jumlah entri kontrol masih bertambah, data sedang disinkronkan" />
-        <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon={Icon.gift} color={T.orange}
+        <StatCard label="Total Bonus"     value={`${fmt(_totalBonus)} pcs`} sub="diberikan ke toko" icon={Icon.gift} color={T.orange}
           pending={dataStillSyncing} pendingTitle="Dihitung dari data kontrol yang masih disinkronkan" />
         <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon={Icon.user} color={T.gray600} />
       </div>
@@ -158,9 +182,9 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
         <Card>
           <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.produk size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Performa Produk</div>
-          {produkStats.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data produk</div>}
-          {produkStats.map((p, i) => {
-            const maxP = Math.max(...produkStats.map(x=>x.terjual),1);
+          {produkStatsScoped.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data produk</div>}
+          {produkStatsScoped.map((p, i) => {
+            const maxP = Math.max(...produkStatsScoped.map(x=>x.terjual),1);
             const COLORS = [T.green,T.blue,T.orange,T.purple,T.teal,T.red,T.gold];
             const color = COLORS[i % COLORS.length];
             return (
