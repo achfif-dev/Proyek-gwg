@@ -12,6 +12,7 @@
 // sekarang tidak berubah/rusak kalau belum pernah mengisi wizard).
 
 import { GWG_LOGO_B64 } from "../theme/logo";
+import { DEFAULT_FONT_VALUE } from "../theme/fonts";
 
 const STORAGE_KEY = "gw_app_config";
 
@@ -39,11 +40,20 @@ const DEFAULT_CONFIG = {
   brand: {
     companyName: "Generasi Wangi Group",
     appName: "GWG Super App",
+    // ✅ MULTI BIDANG USAHA: aplikasi ini sejak awal sudah memakai istilah
+    // generik (Produk/Toko/Kontrol/Rekap/Bagi Hasil, dst — bukan istilah
+    // khusus parfum), jadi SECARA FUNGSIONAL sudah bisa dipakai perusahaan
+    // konsinyasi bidang apa pun. `businessField` di sini sifatnya deskriptif
+    // saja (dipakai untuk saran tagline & ditampilkan di Ringkasan wizard),
+    // TIDAK mengubah/menyembunyikan fitur apa pun berdasarkan nilainya.
+    businessField: "", // kosong = generik ("Sistem Manajemen Konsinyasi" tanpa embel-embel bidang)
+    businessFieldOther: "", // dipakai kalau businessField === "lainnya"
     tagline: "Super App · Sistem Manajemen Konsinyasi",
     footerText: "Generasi Wangi Group · Sampang, Jawa Timur",
     logoDataUrl: "", // kosong = pakai logo bawaan (GWG_LOGO_B64)
     primaryColor: "#0F4C35", // dipetakan ke T.green
     accentColor: "#C49A1A",  // dipetakan ke T.gold
+    fontFamily: DEFAULT_FONT_VALUE, // ✅ FONT DINAMIS: lihat src/theme/fonts.js
   },
   // Kosong kalau .env belum diisi VITE_FIREBASE_* — lihat komentar di atas.
   firebase: _envFirebase,
@@ -101,6 +111,41 @@ export function isFirebaseConfigured(cfg = loadAppConfig()) {
 
 export function getBrandLogo(cfg = loadAppConfig()) {
   return cfg.brand.logoDataUrl || GWG_LOGO_B64;
+}
+
+// ── Bidang Bisnis (industri) — dipakai di Setup Wizard supaya perusahaan
+// konsinyasi bidang APA PUN (bukan cuma parfum/wewangian seperti GWG) bisa
+// isi identitas usahanya sendiri. Daftar ini hanya contoh umum; "Lainnya"
+// selalu tersedia untuk bidang yang tidak ada di daftar.
+export const BUSINESS_FIELD_OPTIONS = [
+  { value: "parfum",     label: "Parfum & Wewangian" },
+  { value: "fashion",    label: "Fashion & Pakaian" },
+  { value: "fnb",        label: "Makanan & Minuman (F&B)" },
+  { value: "kosmetik",   label: "Kosmetik & Perawatan Tubuh" },
+  { value: "elektronik", label: "Elektronik & Gadget" },
+  { value: "atk",        label: "Buku & Alat Tulis" },
+  { value: "rumahtangga",label: "Peralatan Rumah Tangga" },
+  { value: "pertanian",  label: "Hasil Pertanian & Sembako" },
+  { value: "mainan",     label: "Mainan & Hobi" },
+  { value: "lainnya",    label: "Lainnya" },
+];
+
+export function getBusinessFieldLabel(brand) {
+  if (!brand) return "";
+  if (brand.businessField === "lainnya") return (brand.businessFieldOther || "").trim();
+  const found = BUSINESS_FIELD_OPTIONS.find(o => o.value === brand.businessField);
+  return found ? found.label : "";
+}
+
+// Saran tagline otomatis berdasarkan bidang bisnis yang dipilih — HANYA
+// dipakai sebagai placeholder/contoh di wizard (bukan dipaksa mengisi),
+// supaya field "Sistem Manajemen Konsinyasi" tetap generik apa pun bidang
+// usahanya, tapi user tetap dapat contoh yang relevan dengan bidangnya.
+export function suggestTagline(brand) {
+  const field = getBusinessFieldLabel(brand);
+  return field
+    ? `Super App · Sistem Manajemen Konsinyasi ${field}`
+    : "Super App · Sistem Manajemen Konsinyasi";
 }
 
 // ── Util warna: bikin varian terang ("Lt") & sedikit lebih terang

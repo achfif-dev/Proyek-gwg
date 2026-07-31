@@ -1,4 +1,5 @@
 import { loadAppConfig, lighten } from "../config/appConfig";
+import { getFontStack, ensureFontLoaded, DEFAULT_FONT_VALUE } from "./fonts";
 
 // ✅ WHITE LABEL: warna utama (green) & aksen (gold) dipetakan dari
 // konfigurasi brand yang diisi lewat Setup Wizard (localStorage) — kalau
@@ -8,6 +9,14 @@ import { loadAppConfig, lighten } from "../config/appConfig";
 const _brand = loadAppConfig().brand;
 const _primary = _brand.primaryColor || "#0F4C35";
 const _accent = _brand.accentColor || "#C49A1A";
+const _fontValue = _brand.fontFamily || DEFAULT_FONT_VALUE;
+
+// ✅ FONT DINAMIS: font tampilan juga bisa diganti lewat Setup Wizard
+// (lihat src/theme/fonts.js), sama seperti warna. `ensureFontLoaded` di
+// sini menyuntikkan <link> Google Fonts yang sesuai begitu modul token ini
+// pertama kali dipakai (sekali per load aplikasi) — kalau font pilihannya
+// "Font Sistem", tidak ada apa pun yang dimuat dari internet.
+ensureFontLoaded(_fontValue);
 
 export const T = {
   green: _primary,
@@ -15,6 +24,7 @@ export const T = {
   greenLt: lighten(_primary, 0.92),
   gold: _accent,
   goldLt: lighten(_accent, 0.9),
+  fontFamily: getFontStack(_fontValue),
   bg: "#F7F8FA",
   white: "#FFFFFF",
   gray50: "#F9FAFB",

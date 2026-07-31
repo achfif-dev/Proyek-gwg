@@ -48,10 +48,15 @@ export default function GWGSuperApp() {
     btn.id = "gwg-native-refresh-btn";
     btn.innerHTML = "&#8635;";
     btn.setAttribute("aria-label", "Muat ulang");
+    // ✅ FIX WARNA: sebelumnya hardcode "#16a34a" (hijau) apa pun warna
+    // brand yang dipilih di Setup Wizard — akibatnya tombol ini tetap
+    // hijau walau perusahaan lain sudah ganti warna utama mereka sendiri.
+    // Sekarang ikut T.green (= brand.primaryColor), sama seperti elemen
+    // lain di aplikasi.
     Object.assign(btn.style, {
       position: "fixed", bottom: "20px", right: "16px", zIndex: "99999",
       width: "48px", height: "48px", borderRadius: "50%", border: "none",
-      background: "#16a34a", color: "#fff", fontSize: "22px",
+      background: T.green, color: "#fff", fontSize: "22px",
       boxShadow: "0 2px 8px rgba(0,0,0,0.3)", display: "flex",
       alignItems: "center", justifyContent: "center",
     });
@@ -613,7 +618,7 @@ export default function GWGSuperApp() {
   ];
 
   return (
-    <div style={{ minHeight:"100vh", background:T.bg, fontFamily:"'Inter',system-ui,sans-serif" }}>
+    <div style={{ minHeight:"100vh", background:T.bg, fontFamily:T.fontFamily }}>
       {/* HEADER — dibuat "fixed" (freeze) terhadap viewport, selalu diam di
           atas layar persis seperti header halaman chat ini. Pakai
           position:fixed (bukan sticky) supaya tetap diam walau app ini
@@ -951,9 +956,9 @@ export default function GWGSuperApp() {
 
             {backupCloudMsg && (
               <div style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 12px", borderRadius:8, marginBottom:16, fontSize:12,
-                background: backupCloudMsg.ok ? "#E6F4ED" : "#FEF2F2",
-                color: backupCloudMsg.ok ? "#0F4C35" : "#DC2626",
-                border: `1px solid ${backupCloudMsg.ok ? "#6EE7B7" : "#FCA5A5"}` }}>
+                background: backupCloudMsg.ok ? T.greenLt : "#FEF2F2",
+                color: backupCloudMsg.ok ? T.green : "#DC2626",
+                border: `1px solid ${backupCloudMsg.ok ? T.green+"55" : "#FCA5A5"}` }}>
                 {backupCloudMsg.ok ? <Icon.checkCircle size={14} strokeWidth={2} /> : <Icon.warning size={14} strokeWidth={2} />}
                 {backupCloudMsg.message}
               </div>
@@ -983,9 +988,9 @@ export default function GWGSuperApp() {
             {gDriveMsg && (
               <div style={{
                 padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:13,
-                background: gDriveMsg.ok ? "#E6F4ED" : "#FEF2F2",
-                color: gDriveMsg.ok ? "#0F4C35" : "#DC2626",
-                border: `1px solid ${gDriveMsg.ok ? "#6EE7B7" : "#FCA5A5"}`,
+                background: gDriveMsg.ok ? T.greenLt : "#FEF2F2",
+                color: gDriveMsg.ok ? T.green : "#DC2626",
+                border: `1px solid ${gDriveMsg.ok ? T.green+"55" : "#FCA5A5"}`,
                 display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap"
               }}>
                 <span style={{ flex:1, display:"flex", alignItems:"center", gap:6 }}>
@@ -1056,7 +1061,7 @@ export default function GWGSuperApp() {
             </div>
             {archiveMsg && (
               <div style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
-                background: archiveMsg.ok ? "#DCFCE7" : "#FEE2E2", color: archiveMsg.ok ? "#166534" : "#991B1B" }}>
+                background: archiveMsg.ok ? T.greenLt : "#FEE2E2", color: archiveMsg.ok ? T.green : "#991B1B" }}>
                 {archiveMsg.ok ? <Icon.checkCircle size={14} strokeWidth={2} /> : <Icon.warning size={14} strokeWidth={2} />}
                 {archiveMsg.message}
               </div>
@@ -1194,9 +1199,9 @@ export default function GWGSuperApp() {
             </div>
             {migrationResult && (
               <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
-                background: migrationResult.ok ? "#E6F4ED" : "#FEF2F2",
-                color: migrationResult.ok ? "#0F4C35" : "#DC2626",
-                border: `1px solid ${migrationResult.ok ? "#6EE7B7" : "#FCA5A5"}` }}>
+                background: migrationResult.ok ? T.greenLt : "#FEF2F2",
+                color: migrationResult.ok ? T.green : "#DC2626",
+                border: `1px solid ${migrationResult.ok ? T.green+"55" : "#FCA5A5"}` }}>
                 {migrationResult.message}
               </div>
             )}

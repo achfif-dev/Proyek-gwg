@@ -19,7 +19,7 @@ export function LoginPage({ onLoginGoogle, fbReady, error }) {
   }
 
   return (
-    <div style={{ minHeight:"100vh", background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 60%, #0A3526 100%)`,
+    <div style={{ minHeight:"100vh", fontFamily:T.fontFamily, background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 60%, #0A3526 100%)`,
       display:"flex", alignItems:"center", justifyContent:"center", padding:"20px" }}>
       <div style={{ background:T.white, borderRadius:20, padding:"40px 36px", maxWidth:400, width:"100%",
         boxShadow:"0 20px 60px rgba(0,0,0,.25)", textAlign:"center" }}>

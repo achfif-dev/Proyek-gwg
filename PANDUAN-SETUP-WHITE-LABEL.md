@@ -31,7 +31,12 @@ Ada 3 lapis pengaturan. Kerjakan **berurutan dari atas ke bawah**:
 
 1. Buka aplikasi (URL deploy Anda, atau `npm run dev` di komputer).
 2. Karena Firebase belum dikonfigurasi, **Setup Wizard akan otomatis muncul** — tidak perlu login apa pun dulu.
-3. **Step 1 – Branding**: isi Nama Perusahaan, Nama Aplikasi, Tagline, Warna Utama & Aksen, dan (opsional) unggah logo.
+3. **Step 1 – Branding**: pilih **Bidang Bisnis** (opsional — hanya untuk saran
+   tagline & catatan identitas; sistemnya tetap konsinyasi generik apa pun
+   bidang usaha Anda: fashion, F&B, kosmetik, elektronik, dll — pilih
+   "Lainnya" kalau tidak ada di daftar), isi Nama Perusahaan, Nama Aplikasi,
+   Tagline, pilih **Font Aplikasi** (ada preview langsung), Warna Utama &
+   Aksen, dan (opsional) unggah logo.
 4. **Step 2 – Firebase**: tempel kode `firebaseConfig` dari Langkah 1 ke kotak "Tempel Kode Konfigurasi Firebase" → klik **🔍 Ambil Otomatis dari Teks** → semua field (apiKey, authDomain, dst) otomatis terisi. Periksa sekali lagi sebelum lanjut.
 5. **Step 3 – Super Admin**: isi email akun Google pemilik aplikasi. Akun ini akan **selalu** punya akses Admin penuh, apa pun isi tabel Pengguna nantinya — cocok sebagai "kunci cadangan". Boleh dikosongkan (lihat catatan di bawah).
 6. **Step 4 – Ringkasan** → klik **💾 Simpan & Muat Ulang**.
@@ -98,6 +103,19 @@ Setelah diedit, jalankan `npm run build` (untuk web) atau push ke GitHub
 - [ ] (Opsional) `.env` diisi untuk branding judul tab/PWA/APK
 - [ ] (Opsional) `VITE_APP_ID` diisi **sebelum** APK pertama kali dirilis
 - [ ] Deploy web (Netlify) dan/atau build APK (GitHub Actions)
+
+---
+
+## 🏷️ Catatan: Bidang Bisnis Apa Pun
+
+Aplikasi ini sudah memakai istilah generik untuk sistem konsinyasi (Produk,
+Toko, Kontrol, Rekap, Bagi Hasil, dst) — **tidak khusus untuk satu bidang
+usaha tertentu**. Perusahaan dengan bidang bisnis apa pun (fashion, F&B,
+kosmetik, elektronik, alat tulis, dsb) bisa memakainya selama modelnya
+tetap **konsinyasi** (produk dititipkan ke toko/mitra, ditarik/dikontrol
+secara berkala, lalu bagi hasil dihitung dari penjualan). Kolom "Bidang
+Bisnis" di Setup Wizard hanya untuk keperluan pencatatan & saran tagline —
+tidak ada fitur yang disembunyikan/dibatasi berdasarkan pilihan tersebut.
 
 ---
 

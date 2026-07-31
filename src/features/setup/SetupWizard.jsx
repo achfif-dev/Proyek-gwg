@@ -1,8 +1,9 @@
 import React, { useRef, useState } from "react";
 import { Btn, Card, Input } from "../../components/ui";
-import { loadAppConfig, saveAppConfig, resetAppConfig } from "../../config/appConfig";
+import { loadAppConfig, saveAppConfig, resetAppConfig, BUSINESS_FIELD_OPTIONS, suggestTagline } from "../../config/appConfig";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
+import { FONT_OPTIONS, ensureFontLoaded } from "../../theme/fonts";
 
 // Regex sederhana untuk mengambil field dari kode konfigurasi Firebase yang
 // ditempel apa adanya dari Firebase Console (Project Settings → SDK setup
@@ -72,7 +73,7 @@ export function SetupWizard({ onDone, onCancel }) {
   const previewLogo = brand.logoDataUrl || null;
 
   return (
-    <div style={{ minHeight:"100vh", background:T.bg, display:"flex", alignItems:"center", justifyContent:"center", padding:20, overflowX:"hidden", boxSizing:"border-box", width:"100%" }}>
+    <div style={{ minHeight:"100vh", background:T.bg, fontFamily:T.fontFamily, display:"flex", alignItems:"center", justifyContent:"center", padding:20, overflowX:"hidden", boxSizing:"border-box", width:"100%" }}>
       {/* ✅ FIX TAMPILAN MOBILE: SetupWizard bisa dirender SEBELUM App.jsx
           sempat memasang reset CSS global-nya (mis. saat LoginPage
           menampilkannya otomatis untuk instalasi baru — belum ada elemen
@@ -113,9 +114,22 @@ export function SetupWizard({ onDone, onCancel }) {
           {step === 1 && (
             <div>
               <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}><Icon.palette size={16} strokeWidth={2} /> Identitas & Branding</div>
+
+              {/* ✅ MULTI BIDANG USAHA: aplikasi ini (Produk/Toko/Kontrol/
+                  Rekap/Bagi Hasil) sudah generik untuk sistem konsinyasi
+                  apa pun — bidang di bawah ini HANYA dipakai untuk saran
+                  tagline & catatan identitas, tidak menyembunyikan atau
+                  mengubah fitur apa pun. */}
+              <Input label="Bidang Bisnis" value={brand.businessField} onChange={v=>bset("businessField", v)}
+                options={BUSINESS_FIELD_OPTIONS} hint="Tetap sistem konsinyasi — pilihan ini hanya untuk saran tagline & identitas, semua fitur tetap sama untuk bidang apa pun." />
+              {brand.businessField === "lainnya" && (
+                <Input label="Sebutkan Bidang Bisnis" value={brand.businessFieldOther} onChange={v=>bset("businessFieldOther", v)}
+                  placeholder="cth: Peralatan Olahraga" />
+              )}
+
               <Input label="Nama Perusahaan" value={brand.companyName} onChange={v=>bset("companyName", v)} required placeholder="cth: Aroma Nusantara Group" />
               <Input label="Nama Aplikasi" value={brand.appName} onChange={v=>bset("appName", v)} placeholder="cth: ANG Super App" />
-              <Input label="Tagline" value={brand.tagline} onChange={v=>bset("tagline", v)} placeholder="cth: Super App · Sistem Manajemen Konsinyasi" />
+              <Input label="Tagline" value={brand.tagline} onChange={v=>bset("tagline", v)} placeholder={`cth: ${suggestTagline(brand)}`} />
               <Input label="Teks Footer" value={brand.footerText} onChange={v=>bset("footerText", v)} placeholder="cth: Aroma Nusantara Group · Kota Anda" />
 
               {/* ⚡ FIX: root cause overflow di layar kecil — grid 2 kolom ini
@@ -145,6 +159,23 @@ export function SetupWizard({ onDone, onCancel }) {
                     <input value={brand.accentColor} onChange={e=>bset("accentColor", e.target.value)}
                       style={{ flex:1, minWidth:0, width:"100%", padding:"8px 6px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:11, fontFamily:"inherit" }} />
                   </div>
+                </div>
+              </div>
+
+              {/* ✅ FONT DINAMIS: pilihan font tampilan aplikasi (lihat
+                  src/theme/fonts.js). ensureFontLoaded dipanggil begitu
+                  user memilih supaya preview teks di bawah langsung
+                  berubah, tanpa perlu simpan/reload dulu. */}
+              <div style={{ marginBottom:14 }}>
+                <label style={{ display:"block", fontSize:12, fontWeight:600, color:T.gray600, marginBottom:5 }}>Font Aplikasi</label>
+                <select value={brand.fontFamily} onChange={e=>{ ensureFontLoaded(e.target.value); bset("fontFamily", e.target.value); }}
+                  style={{ width:"100%", padding:"9px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:8, fontSize:13, fontFamily:"inherit", outline:"none", background:T.white, boxSizing:"border-box", color:T.gray800 }}>
+                  {FONT_OPTIONS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
+                </select>
+                <div style={{ marginTop:8, padding:"10px 12px", border:`1.5px dashed ${T.gray200}`, borderRadius:8,
+                  fontFamily: (FONT_OPTIONS.find(f=>f.value===brand.fontFamily) || FONT_OPTIONS[0]).stack }}>
+                  <div style={{ fontSize:15, fontWeight:700, color:T.gray800 }}>Contoh Tampilan Teks Aa Bb Cc</div>
+                  <div style={{ fontSize:12, color:T.gray500, marginTop:2 }}>Font ini akan dipakai di seluruh aplikasi setelah disimpan.</div>
                 </div>
               </div>
 
@@ -220,7 +251,9 @@ export function SetupWizard({ onDone, onCancel }) {
               <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}><Icon.checkCircle size={16} strokeWidth={2} /> Ringkasan</div>
               <div style={{ fontSize:12, color:T.gray700, lineHeight:2 }}>
                 <div><b>Nama Perusahaan:</b> {brand.companyName || "—"}</div>
+                <div><b>Bidang Bisnis:</b> {(brand.businessField === "lainnya" ? brand.businessFieldOther : BUSINESS_FIELD_OPTIONS.find(o=>o.value===brand.businessField)?.label) || "— (generik)"}</div>
                 <div><b>Nama Aplikasi:</b> {brand.appName || "—"}</div>
+                <div><b>Font Aplikasi:</b> {(FONT_OPTIONS.find(f=>f.value===brand.fontFamily) || FONT_OPTIONS[0]).label}</div>
                 <div><b>Warna:</b> <span style={{ display:"inline-block", width:14, height:14, borderRadius:4, background:brand.primaryColor, verticalAlign:"middle", marginRight:4 }} />{brand.primaryColor} · <span style={{ display:"inline-block", width:14, height:14, borderRadius:4, background:brand.accentColor, verticalAlign:"middle", marginRight:4 }} />{brand.accentColor}</div>
                 <div><b>Firebase Project:</b> {firebase.projectId || "—"}</div>
                 <div><b>Super Admin:</b> {superAdminEmail || "(tidak diisi)"}</div>

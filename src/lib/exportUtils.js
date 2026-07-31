@@ -3,7 +3,7 @@ import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { saveOrShareBlob, saveWorkbookNative } from "./fileSave";
 import { GWG_LOGO_B64, GWG_EXPORT_LOGO_B64 } from "../theme/logo";
-import { loadAppConfig } from "../config/appConfig";
+import { loadAppConfig, lighten } from "../config/appConfig";
 
 // ✅ WHITE LABEL: nama & logo di semua ekspor (Excel/PDF/Print/Gambar)
 // memakai identitas brand yang diisi lewat Setup Wizard — jatuh balik ke
@@ -13,6 +13,25 @@ const BRAND_NAME = _brand.companyName;
 const BRAND_TAGLINE = _brand.tagline;
 const BRAND_LOGO = _brand.logoDataUrl || GWG_EXPORT_LOGO_B64;
 const BRAND_LOGO_FALLBACK = _brand.logoDataUrl || GWG_LOGO_B64;
+// ✅ FIX WARNA EKSPOR: sebelumnya warna header PDF/Excel/Print/Gambar
+// hardcode hijau GWG ("#0F4C35") walau nama/logo sudah ikut brand —
+// akibatnya laporan perusahaan lain tetap berwarna hijau GWG. Sekarang
+// ikut brand.primaryColor juga.
+const BRAND_COLOR = _brand.primaryColor || "#0F4C35";
+// Varian terang dari warna brand, dipakai untuk teks tagline/meta di atas
+// header gambar (header-nya sendiri berwarna solid BRAND_COLOR, jadi teks
+// sekunder di atasnya perlu versi lebih terang biar tetap kebaca).
+const BRAND_COLOR_LT = lighten(BRAND_COLOR, 0.8);
+// jsPDF butuh warna sebagai array [r,g,b] (0-255), bukan string hex —
+// dipakai supaya header/border PDF juga ikut warna brand (sebelumnya
+// hardcode rgb(15,76,53) = "#0F4C35").
+function hexToRgbArray(hex) {
+  const clean = (hex || "#000000").replace("#", "");
+  const full = clean.length === 3 ? clean.split("").map(c => c + c).join("") : clean;
+  const num = parseInt(full, 16);
+  return [(num >> 16) & 255, (num >> 8) & 255, num & 255];
+}
+const BRAND_COLOR_RGB = hexToRgbArray(BRAND_COLOR);
 
 export function autoColumns(records) {
   const keys = new Set();
@@ -108,7 +127,7 @@ export async function exportPDF(data, columns, title, filename) {
       const pageW = doc.internal.pageSize.getWidth();
 
       // Header hijau + logo + judul
-      doc.setFillColor(15, 76, 53);
+      doc.setFillColor(...BRAND_COLOR_RGB);
       doc.rect(0, 0, pageW, 50, "F");
       // Latar putih eksplisit dulu di belakang logo (bulat) — beberapa versi
       // jsPDF tidak mengompositkan transparansi PNG dengan benar, jadi tanpa
@@ -128,7 +147,7 @@ export async function exportPDF(data, columns, title, filename) {
         doc.restoreGraphicsState();
       } catch {}
       // Border hijau tipis di sekeliling badge logo, menyamai tampilan JPG.
-      doc.setDrawColor(15, 76, 53);
+      doc.setDrawColor(...BRAND_COLOR_RGB);
       doc.setLineWidth(1.2);
       doc.circle(logoCx, logoCy, logoR, "S");
       doc.setTextColor(255,255,255);
@@ -204,7 +223,7 @@ export async function exportPDF(data, columns, title, filename) {
         horizontalPageBreak: false,
         styles: { overflow: "linebreak", cellWidth: "wrap", cellPadding: CELL_PAD },
         columnStyles,
-        headStyles: { fillColor: [15,76,53], textColor: 255, fontStyle: "bold", fontSize: nativeFontSize },
+        headStyles: { fillColor: BRAND_COLOR_RGB, textColor: 255, fontStyle: "bold", fontSize: nativeFontSize },
         bodyStyles: { fontSize: nativeFontSize },
         alternateRowStyles: { fillColor: [248,250,248] },
         margin: { left: 24, right: 24, top: 62 },
@@ -292,15 +311,15 @@ export async function exportPDF(data, columns, title, filename) {
     * { box-sizing: border-box; }
     html { width:${bodyWidth}px; }
     body { font-family: 'Segoe UI', Arial, sans-serif; margin:0; padding:0; color:#1F2937; width:${bodyWidth}px; zoom:${fitScale}; }
-    .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; border-bottom:3px solid #0F4C35; padding-bottom:10px; }
+    .header { display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px; border-bottom:3px solid ${BRAND_COLOR}; padding-bottom:10px; }
     .brand { display:flex; align-items:center; gap:10px; }
-    .brand-text h1 { margin:0; font-size:16px; color:#0F4C35; font-weight:800; }
+    .brand-text h1 { margin:0; font-size:16px; color:${BRAND_COLOR}; font-weight:800; }
     .brand-text p { margin:0; font-size:10px; color:#6B7280; letter-spacing:0.05em; text-transform:uppercase; }
     .meta { text-align:right; font-size:10px; color:#6B7280; line-height:1.6; }
     .meta .title { font-size:13px; font-weight:700; color:#1F2937; }
     .summary-bar { display:flex; gap:16px; margin-bottom:14px; }
     .summary-item { background:#F0FDF4; border:1px solid #86EFAC; border-radius:6px; padding:6px 14px; font-size:11px; }
-    .summary-item b { color:#0F4C35; display:block; font-size:13px; }
+    .summary-item b { color:${BRAND_COLOR}; display:block; font-size:13px; }
     /* Lebar tiap kolom sekarang datang dari <colgroup> (px sungguhan, hasil
        ukur teks asli) — table-layout:fixed di sini cuma mengunci lebar itu
        supaya browser tidak menghitung ulang otomatis, BUKAN sumber lebar
@@ -310,7 +329,7 @@ export async function exportPDF(data, columns, title, filename) {
     table { width:${tableWidth}px; table-layout:fixed; border-collapse:collapse; font-size:11px; }
     thead { display:table-header-group; }
     tfoot { display:table-footer-group; }
-    thead tr { background:#0F4C35; }
+    thead tr { background:${BRAND_COLOR}; }
     thead th { color:#fff; padding:8px 6px; text-align:left; font-weight:700; font-size:10px; text-transform:uppercase; letter-spacing:0.04em; overflow-wrap:anywhere; word-break:break-word; }
     tbody tr:last-child td { border-bottom:none; }
     tr { page-break-inside:avoid; }
@@ -320,7 +339,7 @@ export async function exportPDF(data, columns, title, filename) {
   </head><body>
   <div class="header">
     <div class="brand">
-      <img src="${BRAND_LOGO}" alt="${BRAND_NAME}" style="width:40px;height:40px;border-radius:50%;background:#fff;padding:3px;object-fit:contain;border:2px solid #0F4C35;" onerror="this.onerror=null;this.src='${BRAND_LOGO_FALLBACK}';" />
+      <img src="${BRAND_LOGO}" alt="${BRAND_NAME}" style="width:40px;height:40px;border-radius:50%;background:#fff;padding:3px;object-fit:contain;border:2px solid ${BRAND_COLOR};" onerror="this.onerror=null;this.src='${BRAND_LOGO_FALLBACK}';" />
       <div class="brand-text">
         <h1>${BRAND_NAME}</h1>
         <p>${BRAND_TAGLINE}</p>
@@ -432,14 +451,14 @@ export async function exportJPG(data, columns, title, filename) {
 
     function drawTableAndDownload(logoImg) {
       let y;
-      ctx.fillStyle = "#0F4C35";
+      ctx.fillStyle = BRAND_COLOR;
       ctx.fillRect(0, 0, width, HEADER_H);
       drawLogoBadge(logoImg);
       ctx.fillStyle = "#ffffff";
       ctx.font = "bold 17px 'Segoe UI', Arial, sans-serif";
       ctx.fillText(BRAND_NAME, MARGIN + 52, 34);
       ctx.font = "10px 'Segoe UI', Arial, sans-serif";
-      ctx.fillStyle = "#D9F0E6";
+      ctx.fillStyle = BRAND_COLOR_LT;
       ctx.fillText(BRAND_TAGLINE.toUpperCase(), MARGIN + 52, 52);
 
       ctx.textAlign = "right";
@@ -447,7 +466,7 @@ export async function exportJPG(data, columns, title, filename) {
       ctx.font = "bold 14px 'Segoe UI', Arial, sans-serif";
       ctx.fillText(truncate(canvasSafe(title), width - MARGIN * 2 - 250, "bold 14px 'Segoe UI', Arial, sans-serif"), width - MARGIN, 32);
       ctx.font = "11px 'Segoe UI', Arial, sans-serif";
-      ctx.fillStyle = "#D9F0E6";
+      ctx.fillStyle = BRAND_COLOR_LT;
       ctx.fillText(`Diekspor: ${now}`, width - MARGIN, 50);
       ctx.fillText(`Total: ${data.length} data`, width - MARGIN, 65);
       ctx.textAlign = "left";
@@ -461,7 +480,7 @@ export async function exportJPG(data, columns, title, filename) {
         ctx.fillStyle = "#F0FDF4";
         ctx.fillRect(bx, y, sumW, SUMMARY_H - 10);
         ctx.strokeRect(bx, y, sumW, SUMMARY_H - 10);
-        ctx.fillStyle = "#0F4C35";
+        ctx.fillStyle = BRAND_COLOR;
         ctx.font = "bold 13px 'Segoe UI', Arial, sans-serif";
         ctx.fillText(String(num), bx + 10, y + 17);
         ctx.font = "10px 'Segoe UI', Arial, sans-serif";
@@ -470,7 +489,7 @@ export async function exportJPG(data, columns, title, filename) {
       });
       y += SUMMARY_H;
 
-      ctx.fillStyle = "#0F4C35";
+      ctx.fillStyle = BRAND_COLOR;
       ctx.fillRect(MARGIN, y, tableWidth, HEAD_ROW_H);
       ctx.fillStyle = "#ffffff";
       let x = MARGIN;
@@ -556,7 +575,7 @@ export async function exportJPG(data, columns, title, filename) {
       ctx.beginPath();
       ctx.arc(cx, cy, r, 0, Math.PI * 2);
       ctx.lineWidth = 1.5;
-      ctx.strokeStyle = "#0F4C35";
+      ctx.strokeStyle = BRAND_COLOR;
       ctx.stroke();
       ctx.restore();
     }
@@ -577,8 +596,8 @@ export async function exportHTML(data, columns, title, filename) {
     }).join("")}</tr>`
   ).join("");
   const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
-  <style>body{font-family:sans-serif;padding:24px}h1{color:#0F4C35}table{border-collapse:collapse;width:100%}
-  th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:#0F4C35;color:#fff}tr:nth-child(even){background:#f2f2f2}</style>
+  <style>body{font-family:sans-serif;padding:24px}h1{color:${BRAND_COLOR}}table{border-collapse:collapse;width:100%}
+  th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:${BRAND_COLOR};color:#fff}tr:nth-child(even){background:#f2f2f2}</style>
   </head><body><h1>${title}</h1><p>Diekspor: ${new Date().toLocaleString("id-ID")}</p>
   <table><thead><tr>${columns.map(c=>`<th>${c.label}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
   const blob = new Blob([html], { type: "text/html" });
