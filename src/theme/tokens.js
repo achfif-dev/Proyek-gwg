@@ -35,6 +35,17 @@ export const T = {
   purpleLt: "#F5F3FF",
   teal: "#0F766E",
   tealLt: "#F0FDFA",
+
+  // ── Skala radius & shadow terpusat, dipakai supaya card/button/modal
+  //    terasa halus & modern (bukan sudut tajam/kaku ala UI jadul).
+  radiusSm: "8px",
+  radiusMd: "12px",
+  radiusLg: "16px",
+  radiusFull: "999px",
+  shadowSm: "0 1px 2px rgba(16,24,40,.06)",
+  shadowMd: "0 1px 3px rgba(16,24,40,.08), 0 2px 6px rgba(16,24,40,.06)",
+  shadowLg: "0 4px 12px rgba(16,24,40,.10), 0 8px 24px rgba(16,24,40,.08)",
+  transition: "all .15s ease",
 };
 
 // Warna status catatan kontrol

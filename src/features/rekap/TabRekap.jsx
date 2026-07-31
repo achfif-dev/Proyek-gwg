@@ -7,6 +7,7 @@ import { fmt, fmtRp, naturalCompare } from "../../lib/format";
 import { SIKLUS_GAP_DAYS, statusTokoPadaTanggal } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { Icon, StatusDot } from "../../theme/icons.jsx";
 
 export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId;
@@ -169,7 +170,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
     const sp = sumProduk(luarRows);
     return {
       wilayahId: "LUAR_RUTE", ruteId: "LUAR_RUTE",
-      wilayahNama: "🛣️ Penjualan Luar Rute", ruteNama: "🛣️ Penjualan Luar Rute",
+      wilayahNama: "Penjualan Luar Rute", ruteNama: "Penjualan Luar Rute",
       jumlahKunjungan: luarRows.length, jumlahToko: luarRows.length,
       totalRev: luarRows.reduce((s,k)=>s+k.totalRev,0),
       totalBonus: luarRows.reduce((s,k)=>s+(k.totalBonus||0),0),
@@ -206,7 +207,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
       const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
       return {
         ...g,
-        ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+        ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} (+${jumlahLuarRute} luar rute)` : g.ruteNama,
         jumlahToko: g.rows.filter(r=>r.tokoId).length,
         totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
@@ -236,8 +237,8 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
       const sp = sumProduk(luarSisa);
       hasil.push({
         ruteId: "LUAR_RUTE",
-        ruteNama: "🛣️ Penjualan Luar Rute",
-        wilayahNama: luarSisa[0].wilayahNama ? `🛣️ ${luarSisa[0].wilayahNama}` : "Tidak terikat rute/wilayah",
+        ruteNama: "Penjualan Luar Rute",
+        wilayahNama: luarSisa[0].wilayahNama ? `${luarSisa[0].wilayahNama} (Luar Rute)` : "Tidak terikat rute/wilayah",
         jumlahToko: luarSisa.length,
         totalRev: luarSisa.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: luarSisa.reduce((s,k)=>s+(k.totalBonus||0),0),
@@ -281,7 +282,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
       const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
       return {
         ...g,
-        ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+        ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} (+${jumlahLuarRute} luar rute)` : g.ruteNama,
         jumlahToko: g.rows.filter(r=>r.tokoId).length,
         totalRev: g.rows.reduce((s,k)=>s+k.totalRev,0),
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
@@ -405,7 +406,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
     // sudah di-scope per wilayah Sales).
     if (!isSalesRestricted && (terjualByRute.NORUTE || stokByRute.NORUTE)) {
       ruteRows.push({
-        ruteId: "NORUTE", ruteNama: "🛣️ Tanpa Rute",
+        ruteId: "NORUTE", ruteNama: "Tanpa Rute",
         wilayahId: "NOWIL", wilayahNama: "— (Tanpa Wilayah)",
         stok: stokByRute.NORUTE || {}, terjual: terjualByRute.NORUTE || {},
       });
@@ -457,7 +458,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
         const sp = sumProduk(g.rows);
         const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
         return { ...g,
-          ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+          ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} (+${jumlahLuarRute} luar rute)` : g.ruteNama,
           jumlahKunjungan:g.rows.filter(r=>r.tokoId).length,
           totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
       });
@@ -514,7 +515,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           const sp = sumProduk(g.rows);
           const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
           return { ...g,
-            ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+            ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} (+${jumlahLuarRute} luar rute)` : g.ruteNama,
             jumlahKunjungan:g.rows.filter(r=>r.tokoId).length,
             totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
         });
@@ -570,7 +571,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           const sp = sumProduk(g.rows);
           const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
           return { ...g,
-            ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} 🛣️×${jumlahLuarRute}` : g.ruteNama,
+            ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} (+${jumlahLuarRute} luar rute)` : g.ruteNama,
             jumlahKunjungan:g.rows.filter(r=>r.tokoId).length,
             totalRev:g.rows.reduce((s,k)=>s+k.totalRev,0), totalBonus:g.rows.reduce((s,k)=>s+(k.totalBonus||0),0), ...sp, ...hitungStatusKunjungan(g.rows) };
         });
@@ -742,7 +743,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
   ];
 
   const colsRanking = [
-    { key:"rank",           label:"#",            render:v=><b style={{ color: v===1?T.gold:v===2?T.gray500:v===3?"#B45309":T.gray400 }}>{v<=3 ? ["🥇","🥈","🥉"][v-1] : v}</b> },
+    { key:"rank",           label:"#",            render:v=><b style={{ color: v===1?T.gold:v===2?T.gray500:v===3?"#B45309":T.gray400, display:"inline-flex", alignItems:"center" }}>{v<=3 ? [<Icon.trophy key="t" size={15} strokeWidth={2}/>,<Icon.medal key="m" size={15} strokeWidth={2}/>,<Icon.award key="a" size={15} strokeWidth={2}/>][v-1] : v}</b> },
     { key:"tokoNama",       label:"Toko",         render:v=><b>{v}</b> },
     { key:"ruteNama",       label:"Rute",         render:v=><span>{v}</span> },
     { key:"wilayahNama",    label:"Wilayah",      render:v=><Badge color={T.green}>{v}</Badge> },
@@ -789,19 +790,19 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
     // = 1 cakupan (Keseluruhan/Wilayah/Rute), kolom = Terjual, Stok Beredar,
     // dan Persentase per produk.
     const perpRows = [];
-    perpRows.push({ cakupan:"🌍 Keseluruhan", nama:"Semua Wilayah",
+    perpRows.push({ cakupan:"Keseluruhan", nama:"Semua Wilayah",
       ...Object.fromEntries(produkAktif.flatMap(p => [
         [`terjual_${p.id}`, perputaranStok.total.terjual[p.id]||0],
         [`stok_${p.id}`, perputaranStok.total.stok[p.id]||0],
         [`pct_${p.id}`, perputaranStok.total.stok[p.id] ? `${((perputaranStok.total.terjual[p.id]||0)/perputaranStok.total.stok[p.id]*100).toFixed(1)}%` : "—"],
       ])) });
-    perputaranStok.wilayahRows.forEach(w => perpRows.push({ cakupan:"📍 Wilayah", nama:w.wilayahNama,
+    perputaranStok.wilayahRows.forEach(w => perpRows.push({ cakupan:"Wilayah", nama:w.wilayahNama,
       ...Object.fromEntries(produkAktif.flatMap(p => [
         [`terjual_${p.id}`, w.terjual[p.id]||0],
         [`stok_${p.id}`, w.stok[p.id]||0],
         [`pct_${p.id}`, w.stok[p.id] ? `${((w.terjual[p.id]||0)/w.stok[p.id]*100).toFixed(1)}%` : "—"],
       ])) }));
-    perputaranStok.ruteRows.forEach(r => perpRows.push({ cakupan:"🛣️ Rute", nama:`${r.ruteNama} (${r.wilayahNama})`,
+    perputaranStok.ruteRows.forEach(r => perpRows.push({ cakupan:"Rute", nama:`${r.ruteNama} (${r.wilayahNama})`,
       ...Object.fromEntries(produkAktif.flatMap(p => [
         [`terjual_${p.id}`, r.terjual[p.id]||0],
         [`stok_${p.id}`, r.stok[p.id]||0],
@@ -953,8 +954,8 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
       if (!stok) {
         if (terjual) {
           return (
-            <span style={{ color:T.red, fontWeight:700 }} title="Stok beredar saat ini 0 (kemungkinan produk sudah ditarik dari rute ini), tapi ada histori terjual di periode ini.">
-              {fmt(terjual)}<span style={{ color:T.gray400 }}>/0</span> ⚠️
+            <span style={{ color:T.red, fontWeight:700, display:"inline-flex", alignItems:"center", gap:3 }} title="Stok beredar saat ini 0 (kemungkinan produk sudah ditarik dari rute ini), tapi ada histori terjual di periode ini.">
+              {fmt(terjual)}<span style={{ color:T.gray400 }}>/0</span> <Icon.warning size={11} strokeWidth={2.5} />
             </span>
           );
         }
@@ -1003,7 +1004,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
     return (
       <div>
         <Card style={{ marginBottom:16, background:T.greenLt }}>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:12 }}>🌍 Keseluruhan Perusahaan</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:12, display:"flex", alignItems:"center", gap:6 }}><Icon.globe size={16} strokeWidth={2} /> Keseluruhan Perusahaan</div>
           <div style={{ display:"flex", gap:24, flexWrap:"wrap" }}>
             {produkAktif.map(p=>(
               <div key={p.id}>
@@ -1013,8 +1014,8 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             ))}
           </div>
         </Card>
-        {!isSalesRestricted && <TabelPerputaran title="📍 Per Wilayah" rows={wilayahRows} labelKey="wilayahId" labelNama="Wilayah" />}
-        <TabelPerputaran title="🛣️ Per Rute" rows={ruteRows} labelKey="ruteId" labelNama="Rute" />
+        {!isSalesRestricted && <TabelPerputaran title={<><Icon.wilayah size={14} style={{verticalAlign:"-2px", marginRight:5}}/>Per Wilayah</>} rows={wilayahRows} labelKey="wilayahId" labelNama="Wilayah" />}
+        <TabelPerputaran title={<><Icon.rute size={14} style={{verticalAlign:"-2px", marginRight:5}}/>Per Rute</>} rows={ruteRows} labelKey="ruteId" labelNama="Rute" />
       </div>
     );
   }
@@ -1025,7 +1026,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
         {rekapHarian.length === 0 ? (
           <Card>
             <div style={{ textAlign:"center", color:T.gray400, padding:32, fontSize:14 }}>
-              📭 Tidak ada data kontrol untuk tanggal <b>{filterTanggal}</b>
+              <Icon.inbox size={22} strokeWidth={1.75} style={{display:"block", margin:"0 auto 8px"}} /> Tidak ada data kontrol untuk tanggal <b>{filterTanggal}</b>
               {filterWilayah && <span> di wilayah terpilih</span>}.
             </div>
           </Card>
@@ -1034,7 +1035,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
               marginBottom:14, paddingBottom:10, borderBottom:`2px solid ${T.gray200}` }}>
               <div>
-                <div style={{ fontSize:15, fontWeight:800, color:T.gray800 }}>🛣️ {ruteGrp.ruteNama}</div>
+                <div style={{ fontSize:15, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.rute size={16} strokeWidth={2} /> {ruteGrp.ruteNama}</div>
                 <div style={{ fontSize:12, color:T.gray400 }}>{ruteGrp.wilayahNama} · {ruteGrp.jumlahToko} toko</div>
               </div>
               <div style={{ textAlign:"right" }}>
@@ -1073,7 +1074,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
                     return (
                       <tr key={k.id} style={{ background:i%2===0?T.white:T.gray50, borderTop:`1px solid ${T.gray100}` }}>
                         <td style={tdS}>
-                          <b>{k.tokoNama || `👤 ${k.dicatatOleh || "Tidak diketahui"}`}</b>
+                          <b>{k.tokoNama || <span style={{display:"inline-flex",alignItems:"center",gap:4}}><Icon.user size={12} strokeWidth={2}/>{k.dicatatOleh || "Tidak diketahui"}</span>}</b>
                           {isLuarRute && k.keterangan && (
                             <div style={{ fontSize:10, color:T.gray400, fontWeight:400 }}>{k.keterangan}</div>
                           )}
@@ -1086,9 +1087,9 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
                         ))}
                         <td style={{ ...tdS, fontWeight:700, color:T.green, whiteSpace:"nowrap" }}>{fmtRp(k.totalRev)}</td>
                         <td style={tdS}>
-                          {isLuarRute ? <Badge color={T.purple}>🛣️ Luar Rute</Badge>
+                          {isLuarRute ? <Badge color={T.purple}><Icon.rute size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Luar Rute</Badge>
                               : cs ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
-                              : <Badge color={T.green}>✅ Terjual</Badge>}
+                              : <Badge color={T.green}><Icon.checkCircle size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Terjual</Badge>}
                         </td>
                       </tr>
                     );
@@ -1114,19 +1115,19 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
         {rekapHarian.length > 1 && (
           <Card style={{ background:T.goldLt, border:`2px solid ${T.gold}44` }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
-              <div style={{ fontSize:15, fontWeight:800, color:T.gray800 }}>
-                🏆 TOTAL KESELURUHAN — {filterTanggal}
+              <div style={{ fontSize:15, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}>
+                <Icon.trophy size={17} strokeWidth={2} /> TOTAL KESELURUHAN — {filterTanggal}
               </div>
               <div style={{ textAlign:"right" }}>
                 <div style={{ fontSize:20, fontWeight:800, color:T.green }}>{fmtRp(totalRevAll)}</div>
                 <div style={{ fontSize:13, color:T.gold }}>Bonus: {fmt(totalBonusAll)} pcs · {totalKunjungan} toko</div>
                 {(totalTutupAll>0 || totalTidakTerjualAll>0 || totalMasalahAll>0) && (
                   <div style={{ fontSize:12, color:T.gray500, marginTop:2 }}>
-                    {totalTutupAll>0 && <span>🔵 {totalTutupAll} toko tutup</span>}
+                    {totalTutupAll>0 && <span style={{display:"inline-flex",alignItems:"center",gap:3}}><StatusDot color="#3B82F6"/> {totalTutupAll} toko tutup</span>}
                     {totalTutupAll>0 && (totalTidakTerjualAll>0||totalMasalahAll>0) && <span> · </span>}
-                    {totalTidakTerjualAll>0 && <span>🟡 {totalTidakTerjualAll} tidak terjual</span>}
+                    {totalTidakTerjualAll>0 && <span style={{display:"inline-flex",alignItems:"center",gap:3}}><StatusDot color="#EAB308"/> {totalTidakTerjualAll} tidak terjual</span>}
                     {totalTidakTerjualAll>0 && totalMasalahAll>0 && <span> · </span>}
-                    {totalMasalahAll>0 && <span>🔴 {totalMasalahAll} bermasalah</span>}
+                    {totalMasalahAll>0 && <span style={{display:"inline-flex",alignItems:"center",gap:3}}><StatusDot color="#EF4444"/> {totalMasalahAll} bermasalah</span>}
                   </div>
                 )}
               </div>
@@ -1141,13 +1142,13 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
   const tdS = { padding:"7px 10px", color:T.gray800, verticalAlign:"middle" };
 
   const MODE_TABS = [
-    { key:"harian",   label:"📅 Harian/Rute" },
-    { key:"bulanan",  label:"📆 Bulanan" },
-    { key:"kuartal",  label:"📊 Kuartal" },
-    { key:"tahunan",  label:"📈 Tahunan" },
-    { key:"siklus",   label:"🔁 Siklus Wilayah" },
-    { key:"perputaran", label:"🔄 Perputaran Stok" },
-    { key:"ranking",  label:"🏆 Ranking Toko" },
+    { key:"harian",   label:"Harian/Rute", icon:Icon.calendar },
+    { key:"bulanan",  label:"Bulanan", icon:Icon.calendarDays },
+    { key:"kuartal",  label:"Kuartal", icon:Icon.rekap },
+    { key:"tahunan",  label:"Tahunan", icon:Icon.trendingUp },
+    { key:"siklus",   label:"Siklus Wilayah", icon:Icon.repeat },
+    { key:"perputaran", label:"Perputaran Stok", icon:Icon.refresh },
+    { key:"ranking",  label:"Ranking Toko", icon:Icon.trophy },
   ];
 
   return (
@@ -1155,7 +1156,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
       {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📑 Rekap Penjualan</div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.rekap size={19} strokeWidth={2} /> Rekap Penjualan</div>
           <div style={{ fontSize:12, color:T.gray400 }}>Rekap otomatis dari data kontrol bulanan</div>
         </div>
         {(() => {
@@ -1200,7 +1201,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             // Baris kosong
             {},
             // Ringkasan
-            { wilayahNama:"📊 RINGKASAN",             ruteNama:"",                        totalRevFmt:"", totalBonus:"" },
+            { wilayahNama:"RINGKASAN",             ruteNama:"",                        totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Total Revenue",             ruteNama:fmtRp(totalRevAll),         totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Total Bonus (pcs)",         ruteNama:String(totalBonusAll),      totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Jumlah Kunjungan/Toko",    ruteNama:String(totalKunjungan),     totalRevFmt:"", totalBonus:"" },
@@ -1213,13 +1214,13 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             // selama siklus ini (lihat komentar siklusTokoSummary di atas).
             ...(mode==="siklus" ? [
               {},
-              { wilayahNama:"📦 RINGKASAN TOKO — SIKLUS INI", ruteNama:"",  totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"RINGKASAN TOKO — SIKLUS INI", ruteNama:"",  totalRevFmt:"", totalBonus:"" },
               { wilayahNama:"Jumlah Data Toko Keseluruhan",              ruteNama:String(siklusTokoSummary.totalToko),            totalRevFmt:"", totalBonus:"" },
               { wilayahNama:"Toko Aktif saat Siklus Kontrol Berlangsung",ruteNama:String(siklusTokoSummary.aktifSaatSiklus),      totalRevFmt:"", totalBonus:"" },
               { wilayahNama:"Toko Ditarik/Non-Aktif saat Siklus Berlangsung", ruteNama:String(siklusTokoSummary.ditarikSaatSiklus), totalRevFmt:"", totalBonus:"" },
               { wilayahNama:"Toko Aktif untuk Siklus Kontrol Berikutnya",ruteNama:String(siklusTokoSummary.aktifSiklusBerikutnya),totalRevFmt:"", totalBonus:"" },
               ...(siklusTokoSummary.adaTanpaRiwayat ? [
-                { wilayahNama:"ℹ️ Catatan", ruteNama:"Sebagian toko belum punya riwayat tanggal status (dibuat sebelum fitur ini ada) — memakai status terkini sebagai pendekatan untuk toko tsb.", totalRevFmt:"", totalBonus:"" },
+                { wilayahNama:"Catatan", ruteNama:"Sebagian toko belum punya riwayat tanggal status (dibuat sebelum fitur ini ada) — memakai status terkini sebagai pendekatan untuk toko tsb.", totalRevFmt:"", totalBonus:"" },
               ] : []),
             ] : []),
           ];
@@ -1241,7 +1242,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           pindah tab. */}
       <div style={{ background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10,
         padding:"14px 16px", marginBottom:16 }}>
-        <div style={{ fontSize:13, fontWeight:800, color:T.gray800, marginBottom:2 }}>🔍 Cari Toko (cek & ubah entri kontrol)</div>
+        <div style={{ fontSize:13, fontWeight:800, color:T.gray800, marginBottom:2, display:"flex", alignItems:"center", gap:6 }}><Icon.search size={14} strokeWidth={2} /> Cari Toko (cek & ubah entri kontrol)</div>
         <div style={{ fontSize:11.5, color:T.gray400, marginBottom:10 }}>
           Curiga ada salah input kontrol? Cari nama/kode tokonya di sini — daftar entrinya akan muncul di bawah dan bisa langsung diubah, sama seperti di Tab Kontrol.
         </div>
@@ -1255,7 +1256,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           {cariTokoQuery && (
             <button onClick={()=>setCariTokoQuery("")} title="Hapus pencarian"
               style={{ position:"absolute", right:8, top:"50%", transform:"translateY(-50%)",
-                border:"none", background:"transparent", color:T.gray400, fontSize:16, cursor:"pointer", padding:4 }}>✕</button>
+                border:"none", background:"transparent", color:T.gray400, display:"flex", cursor:"pointer", padding:4 }}><Icon.close size={16} strokeWidth={2} /></button>
           )}
         </div>
         {cariTokoQuery.trim() && (
@@ -1286,10 +1287,12 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
         {MODE_TABS.map(m => (
           <button key={m.key} onClick={()=>setMode(m.key)}
             style={{ padding:"9px 6px", border:"none", borderRadius:8, cursor:"pointer",
+              display:"flex", flexDirection:"column", alignItems:"center", gap:3,
               fontFamily:"inherit", fontWeight:700, fontSize:12.5, lineHeight:1.25, transition:"all .15s",
               textAlign:"center", whiteSpace:"normal", wordBreak:"break-word",
               background:mode===m.key ? T.green : "transparent",
               color:mode===m.key ? "#fff" : T.gray600 }}>
+            <m.icon size={15} strokeWidth={2} />
             {m.label}
           </button>
         ))}
@@ -1304,7 +1307,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
         {mode==="siklus" ? null : isSalesRestricted ? (
           <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
             padding:"8px 14px", fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, flex:1, minWidth:160 }}>
-            🔒 Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+            <Icon.lock size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
           </div>
         ) : (
           <div style={{ minWidth:160, flex:1 }}>
@@ -1325,7 +1328,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             {isSalesRestricted ? (
               <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
                 padding:"8px 14px", fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, flex:1, minWidth:160 }}>
-                🔒 Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+                <Icon.lock size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
               </div>
             ) : (
               <div style={{ minWidth:220, flex:2 }}>
@@ -1342,7 +1345,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
                         style={{ padding:"6px 12px", borderRadius:99, border:`1.5px solid ${active?T.teal:T.gray200}`,
                           background:active?T.tealLt:T.white, color:active?T.teal:T.gray600,
                           fontSize:12, fontWeight:700, cursor:"pointer" }}>
-                        {active?"✓ ":""}{o.label}
+                        {active && <Icon.check size={11} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:3}} />}{o.label}
                       </button>
                     );
                   })}
@@ -1362,7 +1365,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             {filterSiklusWilayahs.length>0 && (
               <Btn variant="secondary" size="sm" onClick={() => {
                 if (siklusAutoRange) { setFilterSiklusStart(siklusAutoRange.start); setFilterSiklusEnd(siklusAutoRange.end); }
-              }}>🔄 Deteksi Ulang Otomatis</Btn>
+              }} icon={Icon.refresh}>Deteksi Ulang Otomatis</Btn>
             )}
           </>
         )}
@@ -1487,19 +1490,19 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
 
       {/* Summary Cards */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
-        <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon="💰" color={T.green}
+        <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon={Icon.wallet} color={T.green}
           pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Revenue bisa masih bertambah" />
-        <StatCard label={`Laba Est. (${marginPctRekap}%)`} value={fmtRp(totalRevAll*(marginPctRekap/100))} icon="📊" color={T.gold}
+        <StatCard label={`Laba Est. (${marginPctRekap}%)`} value={fmtRp(totalRevAll*(marginPctRekap/100))} icon={Icon.rekap} color={T.gold}
           pending={dataStillSyncing} pendingTitle="Dihitung dari Total Revenue yang masih disinkronkan" />
-        <StatCard label={mode==="harian"?"Toko":"Kunjungan"} value={totalKunjungan} icon="🏪" color={T.blue}
+        <StatCard label={mode==="harian"?"Toko":"Kunjungan"} value={totalKunjungan} icon={Icon.toko} color={T.blue}
           pending={dataStillSyncing} />
-        <StatCard label="Total Bonus" value={`${fmt(totalBonusAll)} pcs`} icon="🎁" color={T.orange}
+        <StatCard label="Total Bonus" value={`${fmt(totalBonusAll)} pcs`} icon={Icon.gift} color={T.orange}
           pending={dataStillSyncing} />
         {produkAktif.map(p => (
           <StatCard key={p.id}
             label={`Jual ${p.nama}`}
             value={`${fmt(isPerputaran ? (perputaranStok.total.terjual[p.id]||0) : activeData.reduce((s,r)=>s+(r[`terjual_${p.id}`]||0),0))} pcs`}
-            icon="🧴" color={T.purple} />
+            icon={Icon.produk} color={T.purple} />
         ))}
       </div>
       {/* ✅ Ringkasan Toko khusus mode Siklus Wilayah (sama persis dengan
@@ -1507,15 +1510,15 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           Admin/Manajer bisa langsung lihat di layar tanpa harus ekspor dulu. */}
       {mode==="siklus" && filterSiklusWilayahs.length>0 && (
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
-          <StatCard label="Jumlah Data Toko Keseluruhan" value={fmt(siklusTokoSummary.totalToko)} icon="📦" color={T.gray600} />
-          <StatCard label="Toko Aktif saat Siklus Berlangsung" value={fmt(siklusTokoSummary.aktifSaatSiklus)} icon="🟢" color={T.green} />
-          <StatCard label="Toko Ditarik/Non-Aktif saat Siklus" value={fmt(siklusTokoSummary.ditarikSaatSiklus)} icon="🔻" color={T.red} />
-          <StatCard label="Toko Aktif utk Siklus Berikutnya" value={fmt(siklusTokoSummary.aktifSiklusBerikutnya)} icon="⏭️" color={T.blue} />
+          <StatCard label="Jumlah Data Toko Keseluruhan" value={fmt(siklusTokoSummary.totalToko)} icon={Icon.package} color={T.gray600} />
+          <StatCard label="Toko Aktif saat Siklus Berlangsung" value={fmt(siklusTokoSummary.aktifSaatSiklus)} icon={Icon.checkCircle} color={T.green} />
+          <StatCard label="Toko Ditarik/Non-Aktif saat Siklus" value={fmt(siklusTokoSummary.ditarikSaatSiklus)} icon={Icon.arrowDown} color={T.red} />
+          <StatCard label="Toko Aktif utk Siklus Berikutnya" value={fmt(siklusTokoSummary.aktifSiklusBerikutnya)} icon={Icon.skip} color={T.blue} />
         </div>
       )}
       {mode==="siklus" && filterSiklusWilayahs.length>0 && siklusTokoSummary.adaTanpaRiwayat && (
         <div style={{ fontSize:11, color:T.gray500, marginTop:-8, marginBottom:16 }}>
-          ℹ️ Sebagian toko belum punya riwayat tanggal status (dibuat/diubah sebelum fitur ini ada) — untuk toko tsb dipakai status terkini sebagai pendekatan.
+          <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Sebagian toko belum punya riwayat tanggal status (dibuat/diubah sebelum fitur ini ada) — untuk toko tsb dipakai status terkini sebagai pendekatan.
         </div>
       )}
       {/* ℹ️ Ranking Toko dihitung per-toko, jadi Penjualan Luar Rute (toko
@@ -1524,7 +1527,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           data tidak sinkron, cuma beda cakupan; catatan ini supaya jelas. */}
       {mode==="ranking" && (
         <div style={{ fontSize:11, color:T.gray500, marginTop:-8, marginBottom:16 }}>
-          ℹ️ Total di atas hanya mencakup penjualan yang terikat ke toko tertentu. Penjualan Luar Rute (toko tidak diketahui) tidak dihitung di sini, sehingga totalnya bisa lebih kecil dari badge "Rev" di header.
+          <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Total di atas hanya mencakup penjualan yang terikat ke toko tertentu. Penjualan Luar Rute (toko tidak diketahui) tidak dihitung di sini, sehingga totalnya bisa lebih kecil dari badge "Rev" di header.
         </div>
       )}
 
@@ -1546,7 +1549,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
         activeData.length === 0 ? (
           <Card>
             <div style={{ textAlign:"center", color:T.gray400, padding:32, fontSize:14 }}>
-              📭 Tidak ada data untuk periode ini.
+              <Icon.inbox size={20} strokeWidth={1.75} style={{verticalAlign:"-4px", marginRight:6}} /> Tidak ada data untuk periode ini.
             </div>
           </Card>
         ) : (
@@ -1557,7 +1560,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
             {/* Grand Total Row */}
             <Card style={{ background:T.goldLt, border:`2px solid ${T.gold}44`, marginTop:12 }}>
               <div style={{ display:"flex", flexWrap:"wrap", gap:24, alignItems:"center" }}>
-                <div style={{ fontSize:15, fontWeight:800, color:T.gray800 }}>🏆 GRAND TOTAL</div>
+                <div style={{ fontSize:15, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.trophy size={17} strokeWidth={2} /> GRAND TOTAL</div>
                 <div>
                   <div style={{ fontSize:11, color:T.gray500 }}>Total Revenue</div>
                   <div style={{ fontSize:18, fontWeight:800, color:T.green }}>{fmtRp(totalRevAll)}</div>
@@ -1588,7 +1591,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
       {mode==="ranking" && (
         <Card style={{ marginTop:16 }}>
           <div style={{ fontSize:15, fontWeight:800, color:T.gray800, marginBottom:4 }}>
-            🔥 Toko Konsisten Terjual ≥{KONSISTEN_MIN_BULAN} Bulan Berturut-turut
+            <Icon.flame size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}} /> Toko Konsisten Terjual ≥{KONSISTEN_MIN_BULAN} Bulan Berturut-turut
           </div>
           <div style={{ fontSize:12, color:T.gray400, marginBottom:14 }}>
             Dihitung dari SELURUH data kontrol yang sudah dimuat (tidak terikat periode di atas) — toko dengan
@@ -1596,7 +1599,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           </div>
           {rankingKonsisten.length === 0 ? (
             <div style={{ textAlign:"center", color:T.gray400, padding:24, fontSize:13 }}>
-              📭 Belum ada toko dengan streak ≥{KONSISTEN_MIN_BULAN} bulan berturut-turut
+              <Icon.inbox size={16} strokeWidth={1.75} style={{verticalAlign:"-3px", marginRight:6}} /> Belum ada toko dengan streak ≥{KONSISTEN_MIN_BULAN} bulan berturut-turut
               {filterWilayah ? " di wilayah terpilih" : ""}.
             </div>
           ) : (
@@ -1616,7 +1619,7 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
                 <tbody>
                   {rankingKonsisten.map((r, i) => (
                     <tr key={r.tokoId} style={{ background:i%2===0?T.white:T.gray50, borderTop:`1px solid ${T.gray100}` }}>
-                      <td style={tdS}>{i<3 ? ["🥇","🥈","🥉"][i] : i+1}</td>
+                      <td style={tdS}>{i<3 ? [<Icon.trophy key="t" size={14} strokeWidth={2}/>,<Icon.medal key="m" size={14} strokeWidth={2}/>,<Icon.award key="a" size={14} strokeWidth={2}/>][i] : i+1}</td>
                       <td style={tdS}><b>{r.tokoNama}</b></td>
                       <td style={tdS}>{r.ruteNama}</td>
                       <td style={tdS}><Badge color={T.green}>{r.wilayahNama}</Badge></td>

@@ -24,16 +24,18 @@ export function getInitialActiveTab() {
   }
 }
 
+import { Icon } from "../theme/icons.jsx";
+
 export const TABS = [
-  { key:"dashboard",  label:"📈 Dashboard" },
-  { key:"wilayah",    label:"📍 Wilayah" },
-  { key:"rute",       label:"🛣️ Rute" },
-  { key:"toko",       label:"🏪 Toko" },
-  { key:"produk",     label:"🧴 Produk" },
-  { key:"kontrol",    label:"📋 Kontrol" },
-  { key:"rekap",      label:"📑 Rekap" },
-  { key:"bagihasil",  label:"💰 Bagi Hasil" },
-  { key:"pengguna",   label:"👤 Pengguna" },
+  { key:"dashboard",  label:"Dashboard",  icon: Icon.dashboard },
+  { key:"wilayah",    label:"Wilayah",    icon: Icon.wilayah },
+  { key:"rute",       label:"Rute",       icon: Icon.rute },
+  { key:"toko",       label:"Toko",       icon: Icon.toko },
+  { key:"produk",     label:"Produk",     icon: Icon.produk },
+  { key:"kontrol",    label:"Kontrol",    icon: Icon.kontrol },
+  { key:"rekap",      label:"Rekap",      icon: Icon.rekap },
+  { key:"bagihasil",  label:"Bagi Hasil", icon: Icon.bagihasil },
+  { key:"pengguna",   label:"Pengguna",   icon: Icon.pengguna },
 ];
 
 // Aturan akses tab berdasarkan role:

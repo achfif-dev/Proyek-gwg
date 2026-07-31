@@ -3,6 +3,7 @@ import { FIREBASE_CONFIGURED } from "../firebase/config";
 import { getBrandLogo, loadAppConfig } from "../config/appConfig";
 import { SetupWizard } from "../features/setup/SetupWizard";
 import { T } from "../theme/tokens";
+import { Icon } from "../theme/icons.jsx";
 
 export function LoginPage({ onLoginGoogle, fbReady, error }) {
   const brand = loadAppConfig().brand;
@@ -57,8 +58,8 @@ export function LoginPage({ onLoginGoogle, fbReady, error }) {
 
             {error && (
               <div style={{ marginTop:16, padding:"10px 16px", background:T.redLt, borderRadius:8,
-                fontSize:13, color:T.red, border:`1px solid #FCA5A5` }}>
-                ⚠️ {error}
+                fontSize:13, color:T.red, border:`1px solid #FCA5A5`, display:"flex", alignItems:"center", gap:6 }}>
+                <Icon.warning size={14} strokeWidth={2} /> {error}
               </div>
             )}
 

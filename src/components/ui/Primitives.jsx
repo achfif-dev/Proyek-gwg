@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { T } from "../../theme/tokens";
+import { Icon } from "../../theme/icons.jsx";
 
 export function Badge({ children, color=T.green, bg }) {
   return (
@@ -10,19 +11,24 @@ export function Badge({ children, color=T.green, bg }) {
   );
 }
 
-export function Btn({ children, onClick, variant="primary", size="md", icon, disabled, style={} }) {
-  const base = { display:"flex", alignItems:"center", gap:6, border:"none", borderRadius:8,
+export function Btn({ children, onClick, variant="primary", size="md", icon: IconProp, disabled, style={} }) {
+  const base = { display:"flex", alignItems:"center", gap:6, border:"none", borderRadius:T.radiusSm,
     cursor:disabled?"not-allowed":"pointer", fontWeight:600, fontFamily:"inherit",
-    transition:"all .15s", opacity:disabled?0.5:1, ...style };
+    transition:T.transition, opacity:disabled?0.5:1, ...style };
   const variants = {
     primary:   { background:T.green,  color:"#fff",     padding:size==="sm"?"6px 14px":"9px 20px", fontSize:size==="sm"?12:13 },
     secondary: { background:T.white,  color:T.gray800,  border:`1.5px solid ${T.gray200}`, padding:size==="sm"?"5px 13px":"8px 19px", fontSize:size==="sm"?12:13 },
     danger:    { background:T.redLt,  color:T.red,      border:`1.5px solid #FCA5A5`, padding:size==="sm"?"5px 13px":"8px 19px", fontSize:size==="sm"?12:13 },
     gold:      { background:T.gold,   color:"#fff",     padding:size==="sm"?"6px 14px":"9px 20px", fontSize:size==="sm"?12:13 },
   };
+  const iconSize = size==="sm" ? 14 : 16;
   return (
     <button onClick={disabled?undefined:onClick} style={{ ...base, ...variants[variant] }}>
-      {icon && <span>{icon}</span>}
+      {/* icon: komponen lucide-react (mis. icon={Icon.save}), string emoji lama masih
+          didukung sementara untuk kompatibilitas tapi sebaiknya dimigrasikan */}
+      {IconProp && (typeof IconProp === "string"
+        ? <span>{IconProp}</span>
+        : <IconProp size={iconSize} strokeWidth={2} />)}
       {children}
     </button>
   );
@@ -30,8 +36,8 @@ export function Btn({ children, onClick, variant="primary", size="md", icon, dis
 
 export function Card({ children, style={}, padding=20, className }) {
   return (
-    <div className={className} style={{ background:T.white, borderRadius:14, border:`1px solid ${T.gray200}`,
-      padding, boxShadow:"0 1px 4px rgba(0,0,0,.05)", ...style }}>
+    <div className={className} style={{ background:T.white, borderRadius:T.radiusLg, border:`1px solid ${T.gray200}`,
+      padding, boxShadow:T.shadowSm, ...style }}>
       {children}
     </div>
   );
@@ -116,7 +122,7 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
           <span style={{ overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap", minWidth:0, flexShrink:1 }}>{selected ? selected.label : "— Pilih —"}</span>
           {selected?.sudahDikontrol && (
             <span title="Toko ini sudah ada entri kontrol pada tanggal yang dipilih" style={{ flexShrink:0, fontSize:10, fontWeight:700,
-              color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px" }}>✅ Sudah</span>
+              color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", display:"inline-flex", alignItems:"center", gap:2 }}><Icon.check size={9} strokeWidth={2.5}/>Sudah</span>
           )}
           {/* Badge generik kedua — dipakai untuk penanda lain di luar "sudah dikontrol
               hari ini", mis. "belum pernah dikontrol periode ini" di Kontrol Bulanan.
@@ -153,7 +159,7 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
                 {/* ✅ Badge: toko ini sudah ada entri kontrol pada tanggal yang sedang dipilih di form */}
                 {o.sudahDikontrol && (
                   <span title="Sudah dikontrol pada tanggal ini" style={{ flexShrink:0, fontSize:10, fontWeight:700,
-                    color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>✅ Sudah</span>
+                    color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap", display:"inline-flex", alignItems:"center", gap:2 }}><Icon.check size={9} strokeWidth={2.5}/>Sudah</span>
                 )}
                 {/* Badge kedua (generik) — hanya tampil kalau badge "Sudah" di atas tidak aktif,
                     supaya tiap toko maksimal 1 badge saja di daftar (tidak berantakan) */}
@@ -182,7 +188,7 @@ export function Modal({ title, children, onClose, width=480 }) {
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", zIndex:1000,
       display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}
       onClick={e => e.target===e.currentTarget && onClose()}>
-      <div style={{ background:T.white, borderRadius:16, width:"100%", maxWidth:width,
+      <div style={{ background:T.white, borderRadius:T.radiusLg, width:"100%", maxWidth:width,
         maxHeight:"90vh", overflowY:"auto", overflowX:"hidden", boxShadow:"0 20px 60px rgba(0,0,0,.2)", boxSizing:"border-box" }}>
         <div className="gw-modal-header" style={{ display:"flex", alignItems:"center", justifyContent:"space-between",
           padding:"18px 24px", borderBottom:`1px solid ${T.gray200}`,
@@ -200,9 +206,11 @@ export function ConfirmDelete({ onConfirm, onCancel, label }) {
   return (
     <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.45)", zIndex:2000,
       display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
-      <div style={{ background:T.white, borderRadius:14, padding:28, maxWidth:360, width:"100%",
+      <div style={{ background:T.white, borderRadius:T.radiusLg, padding:28, maxWidth:360, width:"100%",
         boxShadow:"0 20px 60px rgba(0,0,0,.2)", textAlign:"center" }}>
-        <div style={{ fontSize:36, marginBottom:12 }}>🗑️</div>
+        <div style={{ display:"flex", justifyContent:"center", marginBottom:12, color:T.red }}>
+          <Icon.delete size={36} strokeWidth={1.75} />
+        </div>
         <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:8 }}>Hapus data ini?</div>
         <div style={{ fontSize:13, color:T.gray500, marginBottom:20 }}>{label || "Tindakan ini tidak dapat dibatalkan."}</div>
         <div style={{ display:"flex", gap:10, justifyContent:"center" }}>

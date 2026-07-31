@@ -1,5 +1,6 @@
 import { T } from "../../theme/tokens";
 import { Btn } from "./Primitives";
+import { Icon } from "../../theme/icons.jsx";
 
 export function FilterBar({ filters, onChange, onReset }) {
   return (
@@ -23,7 +24,7 @@ export function FilterBar({ filters, onChange, onReset }) {
           )}
         </div>
       ))}
-      <Btn variant="secondary" size="sm" onClick={onReset} icon="↺">Reset</Btn>
+      <Btn variant="secondary" size="sm" onClick={onReset} icon={Icon.undo}>Reset</Btn>
     </div>
   );
 }

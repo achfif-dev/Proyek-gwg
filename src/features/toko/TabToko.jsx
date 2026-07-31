@@ -5,6 +5,7 @@ import { downloadTokoTemplate } from "../../lib/importUtils";
 import { appendStatusHistory } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { Icon } from "../../theme/icons.jsx";
 
 export function autoUpgradeBaruToAktif(db, updateRecord) {
   const today = new Date();
@@ -145,7 +146,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       normTxt(t.nama) === normTxt(form.nama) && t.ruteId === form.ruteId && t.id !== form.id
     );
     if (isDup) {
-      alert(`⚠️ Nama toko "${form.nama}" sudah terdaftar di rute ini pada data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama toko yang berbeda (atau periksa kembali apakah ini toko duplikat).`);
+      alert(`Nama toko "${form.nama}" sudah terdaftar di rute ini pada data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama toko yang berbeda (atau periksa kembali apakah ini toko duplikat).`);
       return;
     }
     const ruteObj = (db.rute||[]).find(r=>r.id===form.ruteId);
@@ -336,7 +337,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     if (dupCandidates.length > 0) {
       return {
         needsConfirm: true,
-        title: "⚠️ Toko Duplikat Ditemukan",
+        title: <><Icon.warning size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Toko Duplikat Ditemukan</>,
         message: `Ditemukan ${dupCandidates.length} toko dengan nama yang sama pada rute yang sama:`,
         dupList: dupCandidates.map(d => d.label),
         onConfirm: commit, // onConfirm(true) = tetap tambahkan semua, onConfirm(false) = lewati yang duplikat
@@ -354,26 +355,26 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     { key:"tanggalMasuk", label:"Tgl Masuk", render:(v,row)=> row.status==="Baru" && v
       ? <span style={{ fontSize:11, color:T.blue }}>{v}</span>
       : <span style={{ color:T.gray400 }}>—</span> },
-    ...produkAktif.map(p=>({ key:`produk_${p.id}`, label:p.nama, render:v=><span>{v?"✅":"—"}</span> })),
+    ...produkAktif.map(p=>({ key:`produk_${p.id}`, label:p.nama, render:v=><span>{v?<Icon.checkCircle size={14} strokeWidth={2} color={T.green}/>:"—"}</span> })),
   ];
 
   return (
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🏪 Master Toko</div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.toko size={19} strokeWidth={2} /> Master Toko</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.toko||[]).length} toko · {(db.toko||[]).filter(t=>t.status==="Aktif").length} aktif · terurut abjad</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           {!isSalesRestricted && <ImportMenu label="Import Toko" onTemplate={()=>downloadTokoTemplate(db)} onParseRows={importTokoFromRows} />}
           <ExportMenu data={data} columns={cols} title="Data Toko" filename="toko" />
-          {!isSalesRestricted && <Btn onClick={openAdd} icon="＋">Tambah Toko</Btn>}
+          {!isSalesRestricted && <Btn onClick={openAdd} icon={Icon.add}>Tambah Toko</Btn>}
         </div>
       </div>
       {isSalesRestricted && (
         <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
           padding:"8px 14px", fontSize:12, color:T.green, marginBottom:12 }}>
-          🔒 Menampilkan toko di wilayah kamu saja. Kamu bisa memperbaiki Nama Toko & Rute; perubahan
+          <Icon.lock size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Menampilkan toko di wilayah kamu saja. Kamu bisa memperbaiki Nama Toko & Rute; perubahan
           status/produk/stok perlu Admin atau Manajer.
         </div>
       )}
@@ -396,7 +397,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
         onClearAll={()=>setSelectedIds([])}
         onDeleteSelected={deleteSelected} label="toko"
         extraActions={!isSalesRestricted && (
-          <Btn variant="secondary" size="sm" icon="🔀" onClick={openPindahRuteMassal}>
+          <Btn variant="secondary" size="sm" icon={Icon.shuffle} onClick={openPindahRuteMassal}>
             Pindah Rute {selectedIds.length} Toko
           </Btn>
         )} />
@@ -420,7 +421,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
           marginBottom: showStokPanel ? 12 : 0 }}>
           <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-            <div style={{ fontSize:14, fontWeight:700, color:T.gray800 }}>📦 Daftar Stok Produk per Toko</div>
+            <div style={{ fontSize:14, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.package size={16} strokeWidth={2} /> Daftar Stok Produk per Toko</div>
             <Badge color={T.teal}>{data.length} toko</Badge>
           </div>
           <Btn variant="secondary" size="sm"
@@ -445,7 +446,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
               <div style={{ display:"flex", gap:10, flexWrap:"wrap", alignItems:"flex-end",
                 background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10, padding:"12px 16px", marginBottom:12 }}>
                 <div style={{ minWidth:180, flex:1 }}>
-                  <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4 }}>🔍 Cari Toko</div>
+                  <div style={{ fontSize:11, fontWeight:600, color:T.gray600, marginBottom:4, display:"flex", alignItems:"center", gap:4 }}><Icon.search size={12} strokeWidth={2} /> Cari Toko</div>
                   <input value={stokFilter.q} onChange={e=>setStokFilter(p=>({...p,q:e.target.value}))}
                     placeholder="Nama toko / kode..."
                     style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
@@ -508,7 +509,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
                           <th key={p.id} style={{ padding:"8px 12px", textAlign:"center", fontWeight:700,
                             color: stokFilter.produkId === p.id ? T.green : T.gray600,
                             fontSize:11, textTransform:"uppercase" }}>
-                            📦 {p.nama}
+                            <Icon.package size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}} />{p.nama}
                           </th>
                         ))}
                         <th style={{ padding:"8px 12px", textAlign:"right", fontWeight:700, color:T.gray600, fontSize:11 }}>AKSI</th>
@@ -529,12 +530,12 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
                                 fontWeight: stok > 0 ? 700 : 400,
                                 color: stok > 0 ? T.green : T.gray400,
                                 background: stokFilter.produkId === p.id ? (stok > 0 ? T.greenLt : T.redLt) : "transparent" }}>
-                                {stok > 0 ? `✅ ${fmt(stok)}` : "—"}
+                                {stok > 0 ? <span style={{display:"inline-flex",alignItems:"center",gap:3}}><Icon.checkCircle size={12} strokeWidth={2}/>{fmt(stok)}</span> : "—"}
                               </td>
                             );
                           })}
                           <td style={{ padding:"8px 12px", textAlign:"right" }}>
-                            {!isSalesRestricted && <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>openStok(t)}>Update</Btn>}
+                            {!isSalesRestricted && <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>openStok(t)}>Update</Btn>}
                           </td>
                         </tr>
                       ))}
@@ -555,7 +556,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
           {isSalesRestricted && (
             <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
               padding:"8px 12px", fontSize:12, color:T.green, marginBottom:12 }}>
-              🔒 Sebagai Sales, kamu cuma bisa memperbaiki <b>Nama Toko</b> dan <b>Rute</b>. Perubahan
+              <Icon.lock size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Sebagai Sales, kamu cuma bisa memperbaiki <b>Nama Toko</b> dan <b>Rute</b>. Perubahan
               lain (status, produk, stok) perlu dilakukan Admin/Manajer.
             </div>
           )}
@@ -617,7 +618,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       )}
 
       {stokModal && (
-        <Modal title={`📦 Update Stok Awal — ${stokForm.tokoNama}`} onClose={()=>setStokModal(false)}>
+        <Modal title={<><Icon.package size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Update Stok Awal — {stokForm.tokoNama}</>} onClose={()=>setStokModal(false)}>
           <div style={{ fontSize:13, color:T.gray600, marginBottom:16 }}>
             Stok ini otomatis ter-update setiap kali ada entri <b>Kontrol Bulanan</b> baru untuk toko ini
             — nilai "Stok Awal" pada kontrol terakhir dibawa apa adanya (sudah termasuk hasil
@@ -638,7 +639,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       )}
 
       {pindahRuteModal && (
-        <Modal title={`🔀 Pindah Rute Massal — ${selectedIds.length} Toko Terpilih`} onClose={()=>setPindahRuteModal(false)}>
+        <Modal title={<><Icon.shuffle size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pindah Rute Massal — {selectedIds.length} Toko Terpilih</>} onClose={()=>setPindahRuteModal(false)}>
           <div style={{ fontSize:13, color:T.gray600, marginBottom:16 }}>
             Semua toko yang dicentang akan dipindahkan ke rute tujuan yang dipilih di bawah ini.
             Berguna untuk migrasi banyak toko sekaligus (mis. rute dipecah/digabung, atau

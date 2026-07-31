@@ -68,11 +68,11 @@ export function useAnalytics(db) {
         const pAgg = produkAgg.get(p.id);
         if (pAgg) { pAgg.terjual += terjual; pAgg.rev += terjual * (p.harga||0); }
       });
-      let status = "⚪ Kosong";
+      let status = "Kosong";
       if (totalStok > 0) {
-        if (totalTerjual === totalStok) status = "✅ Habis";
-        else if (totalTerjual === 0) status = "🔴 Belum Laku";
-        else status = "🟢 Laku Sebagian";
+        if (totalTerjual === totalStok) status = "Habis";
+        else if (totalTerjual === 0) status = "Belum Laku";
+        else status = "Laku Sebagian";
       }
       const toko = tokoById.get(k.tokoId) || null;
       const rute = toko ? (ruteById.get(toko.ruteId) || null) : null;

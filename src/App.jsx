@@ -32,6 +32,7 @@ import { TabKontrol } from "./features/kontrol/TabKontrol";
 import { TabRekap } from "./features/rekap/TabRekap";
 import { TabBagiHasil } from "./features/bagihasil/TabBagiHasil";
 import { TabPengguna } from "./features/pengguna/TabPengguna";
+import { Icon } from "./theme/icons.jsx";
 
 export default function GWGSuperApp() {
   // Tombol refresh manual — versi PWA/browser punya gesture "tarik ke bawah
@@ -315,7 +316,7 @@ export default function GWGSuperApp() {
         const looksLikeRawDb = parsed && typeof parsed === "object" &&
           ["wilayah","rute","toko","produk","kontrol","pengguna"].some(k => Array.isArray(parsed[k]));
         if (!looksLikeSnapshot && !looksLikeRawDb) {
-          setRestoreFileError("⚠️ File tidak dikenali sebagai backup GWG SuperApp yang valid (format JSON tidak sesuai).");
+          setRestoreFileError("File tidak dikenali sebagai backup GWG SuperApp yang valid (format JSON tidak sesuai).");
           return;
         }
         const snapshot = looksLikeSnapshot
@@ -325,10 +326,10 @@ export default function GWGSuperApp() {
         setRestoreTarget(snapshot);
         setRestoreConfirmText("");
       } catch (err) {
-        setRestoreFileError("⚠️ Gagal membaca file: " + err.message + ". Pastikan file adalah backup .json yang valid dan tidak rusak.");
+        setRestoreFileError("Gagal membaca file: " + err.message + ". Pastikan file adalah backup .json yang valid dan tidak rusak.");
       }
     };
-    reader.onerror = () => setRestoreFileError("⚠️ Gagal membaca file dari perangkat.");
+    reader.onerror = () => setRestoreFileError("Gagal membaca file dari perangkat.");
     reader.readAsText(file);
   }
 
@@ -362,12 +363,12 @@ export default function GWGSuperApp() {
       const viewLink = fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`;
       setGDriveMsg({
         ok: true,
-        text: `✅ Berhasil diunggah ke Google Drive! File: "${fileData.name}"`,
+        text: `Berhasil diunggah ke Google Drive! File: "${fileData.name}"`,
         link: viewLink,
       });
     } catch (e) {
       console.error("GDrive upload error:", e);
-      setGDriveMsg({ ok: false, text: `❌ Gagal upload ke Google Drive: ${e.message}` });
+      setGDriveMsg({ ok: false, text: `Gagal upload ke Google Drive: ${e.message}` });
     } finally {
       setGDriveLoading(false);
     }
@@ -587,12 +588,13 @@ export default function GWGSuperApp() {
       onClick: () => setActiveTab(t.key),
     })),
     { divider: true },
-    { label: "🚪 Keluar", danger: true, onClick: logout },
+    { label: "Keluar", icon: Icon.logout, danger: true, onClick: logout },
     ...(isAdmin ? [
       { divider: true },
-      { label: "⚙️ Setup Aplikasi (White Label)", onClick: ()=>setShowSetupWizard(true) },
+      { label: "Setup Aplikasi (White Label)", icon: Icon.settings, onClick: ()=>setShowSetupWizard(true) },
       {
-        label: "💾⚡ Backup Cepat (unduh sekarang)",
+        label: "Backup Cepat (unduh sekarang)",
+        icon: Icon.zap,
         onClick: async () => {
           const result = await backupNow(db, { reason: "manual-cepat" });
           if (result?.snapshot) {
@@ -600,9 +602,10 @@ export default function GWGSuperApp() {
           }
         },
       },
-      { label: "💾 Backup & Restore", onClick: openBackupModal },
+      { label: "Backup & Restore", icon: Icon.save, onClick: openBackupModal },
       {
-        label: "⚠️ Reset Database",
+        label: "Reset Database",
+        icon: Icon.warning,
         danger: true,
         onClick: () => { setShowReset(true); setResetStep(1); setResetAlasan(""); setResetConfirmText(""); },
       },
@@ -628,21 +631,25 @@ export default function GWGSuperApp() {
                 <div className="gw-header-subtitle" style={{ fontSize:11, color:"rgba(255,255,255,.7)", letterSpacing:"0.08em", textTransform:"uppercase" }}>
                   {brand.tagline}
                   {!isOnline ? (
-                    <span style={{ marginLeft:8, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
-                      📴 Offline{pendingSync > 0 ? ` · ${pendingSync} tersimpan` : ""}
+                    <span style={{ marginLeft:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
+                      <Icon.wifiOff size={11} strokeWidth={2.5} /> Offline{pendingSync > 0 ? ` · ${pendingSync} tersimpan` : ""}
                     </span>
                   ) : pendingSync > 0 ? (
-                    <span style={{ marginLeft:8, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>🔄 Mengirim {pendingSync} perubahan...</span>
+                    <span style={{ marginLeft:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
+                      <Icon.refresh size={11} strokeWidth={2.5} /> Mengirim {pendingSync} perubahan...
+                    </span>
                   ) : syncing && (
-                    <span style={{ marginLeft:8, background:"rgba(255,255,255,.2)", borderRadius:99, padding:"1px 8px", fontSize:10 }}>🔄 Sinkronisasi...</span>
+                    <span style={{ marginLeft:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(255,255,255,.2)", borderRadius:99, padding:"1px 8px", fontSize:10 }}>
+                      <Icon.refresh size={11} strokeWidth={2.5} /> Sinkronisasi...
+                    </span>
                   )}
                 </div>
               </div>
             </div>
             <div className="gw-header-actions" style={{ display:"flex", alignItems:"center", gap:10 }}>
-              <div className="gw-header-revenue" style={{ background:"rgba(255,255,255,.12)", borderRadius:10, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}
+              <div className="gw-header-revenue" style={{ display:"flex", alignItems:"center", gap:5, background:"rgba(255,255,255,.12)", borderRadius:T.radiusMd, padding:"6px 14px", fontSize:12, color:"rgba(255,255,255,.9)", fontWeight:600, whiteSpace:"nowrap" }}
                 title={dataStillSyncing ? "Data kontrol masih disinkronkan di latar belakang — angka ini bisa masih bertambah" : undefined}>
-                💰 <span className="gw-hide-xs">Rev: </span>{fmtRp(
+                <Icon.wallet size={14} strokeWidth={2} /> <span className="gw-hide-xs">Rev: </span>{fmtRp(
                   (!isManajer && currentUserRecord?.wilayahId)
                     ? analytics.perWilayah.filter(w=>w.id===currentUserRecord.wilayahId).reduce((s,w)=>s+w.rev,0)
                     : analytics.totalRev
@@ -658,10 +665,10 @@ export default function GWGSuperApp() {
               <button
                 onClick={() => window.location.reload()}
                 title="Muat ulang / sinkronkan data"
-                style={{ background:"rgba(255,255,255,.12)", border:"none", borderRadius:10,
+                style={{ background:"rgba(255,255,255,.12)", border:"none", borderRadius:T.radiusMd,
                   width:34, height:34, display:"flex", alignItems:"center", justifyContent:"center",
-                  color:"#fff", cursor:"pointer", fontSize:16, flexShrink:0 }}
-              >🔄</button>
+                  color:"#fff", cursor:"pointer", flexShrink:0, transition:T.transition }}
+              ><Icon.refresh size={16} strokeWidth={2} /></button>
 
               {/* Panel "Pengguna Aktif" — daftar sesi/perangkat yang sedang online real-time.
                   Posisi panel dihitung dinamis via useClampedMenuPosition (position:fixed +
@@ -673,7 +680,7 @@ export default function GWGSuperApp() {
                     title="Pengguna sedang aktif"
                     style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
                     <span style={{ width:8, height:8, borderRadius:"50%", background:"#22C55E", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
-                    🟢 {visibleActiveUsers.length}<span className="gw-hide-xs"> Aktif</span>
+                    {visibleActiveUsers.length}<span className="gw-hide-xs"> Aktif</span>
                   </button>
                   {showActiveUsers && activeUsersMenuStyle && (
                     <div style={{ ...activeUsersMenuStyle, background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", maxHeight:"60vh", overflowY:"auto", zIndex:250, padding:8 }}>
@@ -690,7 +697,7 @@ export default function GWGSuperApp() {
                               {au.nama || au.email} {au.email===user.email && "(Anda)"}
                               {au.sessionCount > 1 && <span style={{ color:T.gray400, fontWeight:400 }}> · {au.sessionCount} sesi</span>}
                             </div>
-                            <div style={{ fontSize:10, color:T.gray400 }}>{au.role}{isSuperAdminEmail(au.email) ? " · 👑 Super Admin" : ""}</div>
+                            <div style={{ fontSize:10, color:T.gray400, display:"flex", alignItems:"center", gap:3 }}>{au.role}{isSuperAdminEmail(au.email) && <> · <Icon.crown size={10} strokeWidth={2} /> Super Admin</>}</div>
                           </div>
                         </div>
                       ))}
@@ -711,24 +718,24 @@ export default function GWGSuperApp() {
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
                       <span style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
                       {!isOnline ? (
-                        <span style={{ color:"#FCD34D" }} title="Tidak ada koneksi internet — perubahan tersimpan di perangkat ini dan akan sinkron otomatis begitu online kembali">
-                          📴<span className="gw-hide-xs"> Offline{pendingSync > 0 ? ` · ${pendingSync} menunggu` : " · data lokal"}</span>
+                        <span style={{ color:"#FCD34D", display:"inline-flex", alignItems:"center", gap:3 }} title="Tidak ada koneksi internet — perubahan tersimpan di perangkat ini dan akan sinkron otomatis begitu online kembali">
+                          <Icon.wifiOff size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Offline{pendingSync > 0 ? ` · ${pendingSync} menunggu` : " · data lokal"}</span>
                         </span>
                       ) : pendingSync > 0 ? (
-                        <span style={{ color:"#FCD34D" }} title="Sedang mengirim perubahan yang tersimpan saat offline">🔄<span className="gw-hide-xs"> Mengirim {pendingSync} perubahan...</span></span>
+                        <span style={{ color:"#FCD34D", display:"inline-flex", alignItems:"center", gap:3 }} title="Sedang mengirim perubahan yang tersimpan saat offline"><Icon.refresh size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Mengirim {pendingSync} perubahan...</span></span>
                       ) : syncError ? (
-                        <span style={{ color:"#FCA5A5" }} title={syncError}>⚠️<span className="gw-hide-xs"> Gagal sync</span></span>
+                        <span style={{ color:"#FCA5A5", display:"inline-flex", alignItems:"center", gap:3 }} title={syncError}><Icon.warning size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Gagal sync</span></span>
                       ) : syncing ? (
-                        <span title="Sedang memuat data dari cloud — di jaringan lambat ini bisa makan waktu">🔄<span className="gw-hide-xs"> Sinkronisasi...</span></span>
+                        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }} title="Sedang memuat data dari cloud — di jaringan lambat ini bisa makan waktu"><Icon.refresh size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Sinkronisasi...</span></span>
                       ) : lastSync ? (
-                        <span>☁️<span className="gw-hide-xs"> Sinkron {lastSync.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}</span></span>
+                        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><Icon.cloud size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Sinkron {lastSync.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}</span></span>
                       ) : (
-                        <span>☁️<span className="gw-hide-xs"> Terhubung</span></span>
+                        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><Icon.cloud size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Terhubung</span></span>
                       )}
                       {" ·"}{" "}
                       </span>
-                      <span style={{ background: daruratAktif ? "#DC2626" : "rgba(255,255,255,.2)", borderRadius:4, padding:"0 5px", fontWeight:700 }}>
-                        {userRole}{daruratAktif && " ⚠️"}
+                      <span style={{ background: daruratAktif ? "#DC2626" : "rgba(255,255,255,.2)", borderRadius:4, padding:"0 5px", fontWeight:700, display:"inline-flex", alignItems:"center", gap:3 }}>
+                        {userRole}{daruratAktif && <Icon.warning size={10} strokeWidth={2.5} />}
                       </span>
                     </div>
                   </div>
@@ -740,13 +747,13 @@ export default function GWGSuperApp() {
                   </Btn>
                 )
               ) : (
-                <div style={{ fontSize:11, color:"rgba(255,255,255,.5)", padding:"6px 10px", background:"rgba(255,255,255,.08)", borderRadius:8 }}>
-                  💾 Mode Lokal
+                <div style={{ fontSize:11, color:"rgba(255,255,255,.5)", padding:"6px 10px", background:"rgba(255,255,255,.08)", borderRadius:8, display:"flex", alignItems:"center", gap:5 }}>
+                  <Icon.save size={12} strokeWidth={2} /> Mode Lokal
                 </div>
               )}
 
               <HeaderMenu
-                icon="☰"
+                icon={Icon.menu}
                 title="Menu"
                 items={mainMenuItems}
               />
@@ -757,7 +764,7 @@ export default function GWGSuperApp() {
           {!FIREBASE_CONFIGURED && (
             <div style={{ background:"rgba(196,154,26,.25)", border:"1px solid rgba(196,154,26,.4)", borderRadius:8, padding:"8px 14px",
               marginBottom:12, fontSize:12, color:"#FBF3D9", display:"flex", alignItems:"center", gap:8 }}>
-              ⚠️ <span><b>Mode Lokal:</b> Untuk sinkronisasi lintas perangkat, konfigurasikan Firebase di variabel <code>FIREBASE_CONFIG</code> pada file ini. Lihat instruksi di komentar atas.</span>
+              <Icon.warning size={15} strokeWidth={2} style={{flexShrink:0}} /> <span><b>Mode Lokal:</b> Untuk sinkronisasi lintas perangkat, konfigurasikan Firebase di variabel <code>FIREBASE_CONFIG</code> pada file ini. Lihat instruksi di komentar atas.</span>
             </div>
           )}
 
@@ -769,7 +776,7 @@ export default function GWGSuperApp() {
           {user && firebaseDB && syncing && !cloudLoaded && (
             <div style={{ background:"rgba(59,130,246,.2)", border:"1px solid rgba(59,130,246,.4)", borderRadius:8, padding:"8px 14px",
               marginBottom:12, fontSize:12, color:"#DBEAFE", display:"flex", alignItems:"center", gap:8 }}>
-              🔄 <span><b>Memuat data dari cloud...</b> Angka di bawah masih bisa bertambah sebentar lagi, terutama di jaringan lambat — bukan data yang hilang.</span>
+              <Icon.refresh size={15} strokeWidth={2} style={{flexShrink:0}} /> <span><b>Memuat data dari cloud...</b> Angka di bawah masih bisa bertambah sebentar lagi, terutama di jaringan lambat — bukan data yang hilang.</span>
             </div>
           )}
 
@@ -785,7 +792,7 @@ export default function GWGSuperApp() {
           {user && firebaseDB && !syncing && cloudLoaded && dataStillSyncing && (
             <div style={{ background:"rgba(59,130,246,.2)", border:"1px solid rgba(59,130,246,.4)", borderRadius:8, padding:"8px 14px",
               marginBottom:12, fontSize:12, color:"#DBEAFE", display:"flex", alignItems:"center", gap:8 }}>
-              🔄 <span><b>Masih menerima data kontrol/toko di latar belakang</b> (jaringan lambat) — Total Revenue &amp; rekap penjualan masih akan bertambah, belum final.</span>
+              <Icon.refresh size={15} strokeWidth={2} style={{flexShrink:0}} /> <span><b>Masih menerima data kontrol/toko di latar belakang</b> (jaringan lambat) — Total Revenue &amp; rekap penjualan masih akan bertambah, belum final.</span>
             </div>
           )}
 
@@ -814,7 +821,7 @@ export default function GWGSuperApp() {
           <div style={{ background:"#FEF2F2", border:"2px solid #DC2626", borderRadius:12,
             padding:"14px 18px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:12,
             flexWrap:"wrap" }}>
-            <span style={{ fontSize:22, flexShrink:0 }}>🚫</span>
+            <span style={{ color:"#DC2626", flexShrink:0 }}><Icon.ban size={22} strokeWidth={2} /></span>
             <div style={{ flex:1, minWidth:200 }}>
               <div style={{ fontWeight:800, fontSize:14, color:"#DC2626", marginBottom:4 }}>
                 {writeDenied.length} perubahan GAGAL disimpan — tidak ada izin
@@ -828,7 +835,7 @@ export default function GWGSuperApp() {
               </div>
             </div>
             <div style={{ display:"flex", gap:8, flexShrink:0 }}>
-              <Btn size="sm" variant="danger" onClick={()=>window.location.reload()}>🔄 Muat Ulang</Btn>
+              <Btn size="sm" variant="danger" icon={Icon.refresh} onClick={()=>window.location.reload()}>Muat Ulang</Btn>
               <Btn size="sm" variant="secondary" onClick={clearWriteDenied}>Tutup</Btn>
             </div>
           </div>
@@ -897,27 +904,27 @@ export default function GWGSuperApp() {
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
       {showBackup && isAdmin && (
-        <Modal title="💾 Backup & Restore Data" onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); setRestoreFileError(""); setBackupCloudMsg(null); }}>
+        <Modal title={<><Icon.save size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Backup & Restore Data</>} onClose={()=>{ setShowBackup(false); setRestoreTarget(null); setRestoreConfirmText(""); setRestoreFileError(""); setBackupCloudMsg(null); }}>
           <div style={{ padding:"4px 0 8px" }}>
             <div style={{ fontSize:13, color:T.gray400, marginBottom:16 }}>
               Sistem otomatis membuat backup 1x/hari ke cloud. Anda juga bisa membuat backup manual kapan saja, atau mengunduh salinan ke perangkat.
             </div>
 
             <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
-              <Btn onClick={() => downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, { ts:new Date().toISOString(), reason:"manual-download", data:db })}>
-                ⬇️ Unduh Backup Sekarang (.json)
+              <Btn icon={Icon.download} onClick={() => downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, { ts:new Date().toISOString(), reason:"manual-download", data:db })}>
+                Unduh Backup Sekarang (.json)
               </Btn>
-              <Btn variant="secondary" disabled={backupLoading} onClick={async () => {
+              <Btn variant="secondary" disabled={backupLoading} icon={backupLoading ? Icon.refresh : Icon.cloud} onClick={async () => {
                 setBackupLoading(true);
                 setBackupCloudMsg(null);
                 const result = await backupNow(db, { reason: "manual" });
                 setBackupCloudMsg(result.cloudOk
-                  ? { ok: true, message: "✅ Snapshot berhasil disimpan ke Firebase." }
-                  : { ok: false, message: `⚠️ Gagal menyimpan ke cloud: ${result.cloudError || "tidak diketahui"}. Salinan lokal tetap tersimpan di perangkat ini.` });
+                  ? { ok: true, message: "Snapshot berhasil disimpan ke Firebase." }
+                  : { ok: false, message: `Gagal menyimpan ke cloud: ${result.cloudError || "tidak diketahui"}. Salinan lokal tetap tersimpan di perangkat ini.` });
                 setBackupList(await listBackups());
                 setBackupLoading(false);
               }}>
-                {backupLoading ? "⏳ Menyimpan..." : "☁️ Simpan Snapshot ke Cloud (Firebase)"}
+                {backupLoading ? "Menyimpan..." : "Simpan Snapshot ke Cloud (Firebase)"}
               </Btn>
               {/* ── GOOGLE DRIVE UPLOAD ── */}
               <Btn
@@ -943,10 +950,11 @@ export default function GWGSuperApp() {
             </div>
 
             {backupCloudMsg && (
-              <div style={{ padding:"8px 12px", borderRadius:8, marginBottom:16, fontSize:12,
+              <div style={{ display:"flex", alignItems:"center", gap:6, padding:"8px 12px", borderRadius:8, marginBottom:16, fontSize:12,
                 background: backupCloudMsg.ok ? "#E6F4ED" : "#FEF2F2",
                 color: backupCloudMsg.ok ? "#0F4C35" : "#DC2626",
                 border: `1px solid ${backupCloudMsg.ok ? "#6EE7B7" : "#FCA5A5"}` }}>
+                {backupCloudMsg.ok ? <Icon.checkCircle size={14} strokeWidth={2} /> : <Icon.warning size={14} strokeWidth={2} />}
                 {backupCloudMsg.message}
               </div>
             )}
@@ -958,14 +966,15 @@ export default function GWGSuperApp() {
               memulihkan data — tidak perlu menunggu masuk daftar Riwayat Backup Cloud di bawah.
             </div>
             <div style={{ display:"flex", gap:10, marginBottom:8, flexWrap:"wrap" }}>
-              <Btn variant="secondary" onClick={() => restoreFileRef.current?.click()}>
-                📂 Pilih File Backup (.json) untuk Dipulihkan
+              <Btn variant="secondary" icon={Icon.folder} onClick={() => restoreFileRef.current?.click()}>
+                Pilih File Backup (.json) untuk Dipulihkan
               </Btn>
             </div>
             <input ref={restoreFileRef} type="file" accept=".json,application/json" style={{ display:"none" }} onChange={handleRestoreFileChange} />
             {restoreFileError && (
-              <div style={{ background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"8px 12px",
+              <div style={{ display:"flex", alignItems:"center", gap:6, background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"8px 12px",
                 marginBottom:16, fontSize:12, color:T.red }}>
+                <Icon.warning size={14} strokeWidth={2} />
                 {restoreFileError}
               </div>
             )}
@@ -979,11 +988,14 @@ export default function GWGSuperApp() {
                 border: `1px solid ${gDriveMsg.ok ? "#6EE7B7" : "#FCA5A5"}`,
                 display:"flex", alignItems:"flex-start", gap:10, flexWrap:"wrap"
               }}>
-                <span style={{ flex:1 }}>{gDriveMsg.text}</span>
+                <span style={{ flex:1, display:"flex", alignItems:"center", gap:6 }}>
+                  {gDriveMsg.ok ? <Icon.checkCircle size={15} strokeWidth={2} /> : <Icon.warning size={15} strokeWidth={2} />}
+                  {gDriveMsg.text}
+                </span>
                 {gDriveMsg.ok && gDriveMsg.link && (
                   <a href={gDriveMsg.link} target="_blank" rel="noopener noreferrer"
-                    style={{ color:"#1D4ED8", fontWeight:600, whiteSpace:"nowrap" }}>
-                    🔗 Buka di Drive
+                    style={{ color:"#1D4ED8", fontWeight:600, whiteSpace:"nowrap", display:"inline-flex", alignItems:"center", gap:4 }}>
+                    <Icon.link size={13} strokeWidth={2} /> Buka di Drive
                   </a>
                 )}
                 {!gDriveMsg.ok && (
@@ -994,7 +1006,7 @@ export default function GWGSuperApp() {
               </div>
             )}
 
-            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>📅 Data Penjualan (Kontrol) per Tahun</div>
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}><Icon.calendar size={15} strokeWidth={2}/> Data Penjualan (Kontrol) per Tahun</div>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
               Untuk hemat kuota Firebase gratis, hanya <b>{new Date().getFullYear()}</b> &amp; <b>{new Date().getFullYear()-1}</b> yang otomatis dimuat.
               Tahun lain dimuat manual di sini bila perlu dilihat di laporan/rekap.
@@ -1007,14 +1019,15 @@ export default function GWGSuperApp() {
                 const isLoaded = loadedKontrolYears.includes(y);
                 return (
                   <Btn key={y} variant={isLoaded ? "secondary" : "primary"} disabled={isLoaded}
+                    icon={isLoaded ? Icon.checkCircle : Icon.arrowDown}
                     onClick={() => loadKontrolYear(y)}>
-                    {isLoaded ? `✅ ${y} (dimuat)` : `⬇️ Muat tahun ${y}`}
+                    {isLoaded ? `${y} (dimuat)` : `Muat tahun ${y}`}
                   </Btn>
                 );
               })}
             </div>
 
-            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🗄️ Arsipkan Tahun Lama ke Google Drive</div>
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}><Icon.archive size={15} strokeWidth={2}/> Arsipkan Tahun Lama ke Google Drive</div>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
               Pindahkan data kontrol satu tahun dari Realtime Database (kuota 1GB) ke Google Drive Anda (15GB
               gratis, tanpa perlu upgrade paket Firebase) sebagai satu file arsip. Data <b>tidak hilang</b> — tetap
@@ -1028,6 +1041,7 @@ export default function GWGSuperApp() {
               )}
               {availableKontrolYears.filter(y => !archivedKontrolYears.includes(y)).map(y => (
                 <Btn key={`arch-${y}`} variant="secondary" size="sm" disabled={archivingYear === y}
+                  icon={archivingYear === y ? Icon.refresh : Icon.archive}
                   onClick={async () => {
                     if (!confirm(`Arsipkan data kontrol tahun ${y}?\n\nData akan dipindah ke Google Drive Anda dan dihapus dari database aktif (tetap bisa dilihat/diexport lagi kapan saja dari daftar arsip). Anda mungkin diminta login/izin akses Google Drive.`)) return;
                     setArchivingYear(y);
@@ -1036,33 +1050,35 @@ export default function GWGSuperApp() {
                     setArchiveMsg(result);
                     setArchivingYear(null);
                   }}>
-                  {archivingYear === y ? `⏳ Mengarsipkan ${y}...` : `🗄️ Arsipkan ${y}`}
+                  {archivingYear === y ? `Mengarsipkan ${y}...` : `Arsipkan ${y}`}
                 </Btn>
               ))}
             </div>
             {archiveMsg && (
-              <div style={{ padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
+              <div style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
                 background: archiveMsg.ok ? "#DCFCE7" : "#FEE2E2", color: archiveMsg.ok ? "#166534" : "#991B1B" }}>
-                {archiveMsg.ok ? "✅ " : "⚠️ "}{archiveMsg.message}
+                {archiveMsg.ok ? <Icon.checkCircle size={14} strokeWidth={2} /> : <Icon.warning size={14} strokeWidth={2} />}
+                {archiveMsg.message}
               </div>
             )}
 
             {archivedKontrolYears.length > 0 && (
               <>
-                <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>📦 Data Kontrol yang Sudah Diarsipkan</div>
+                <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}><Icon.package size={15} strokeWidth={2}/> Data Kontrol yang Sudah Diarsipkan</div>
                 <div style={{ display:"flex", flexDirection:"column", gap:6, marginBottom:16 }}>
                   {archivedKontrolYears.map(y => (
                     <div key={`archrow-${y}`} style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap",
                       padding:"8px 10px", borderRadius:8, background:T.gray50, border:`1px solid ${T.gray200}` }}>
-                      <span style={{ fontSize:13, fontWeight:600, flex:1 }}>📅 Tahun {y}</span>
-                      <Btn variant="secondary" size="sm"
+                      <span style={{ fontSize:13, fontWeight:600, flex:1, display:"flex", alignItems:"center", gap:5 }}><Icon.calendar size={13} strokeWidth={2}/> Tahun {y}</span>
+                      <Btn variant="secondary" size="sm" icon={Icon.eye}
                         onClick={async () => {
                           setViewArchiveYear(y);
                           setViewArchiveData("loading");
                           const result = await viewArchivedKontrolYear(y);
                           setViewArchiveData(result.ok ? result : { ok:false, message: result.message, records: [] });
-                        }}>👁️ Lihat</Btn>
+                        }}>Lihat</Btn>
                       <Btn variant="secondary" size="sm" disabled={exportingArchiveYear === y}
+                        icon={exportingArchiveYear === y ? Icon.refresh : Icon.download}
                         onClick={async () => {
                           setExportingArchiveYear(y);
                           const result = await viewArchivedKontrolYear(y);
@@ -1072,8 +1088,8 @@ export default function GWGSuperApp() {
                             alert(result.message || "Gagal mengekspor arsip.");
                           }
                           setExportingArchiveYear(null);
-                        }}>{exportingArchiveYear === y ? "⏳ Menyiapkan..." : "⬇️ Export Excel"}</Btn>
-                      <Btn variant="danger" size="sm" onClick={() => { setDeleteArchiveConfirmYear(y); setDeleteArchiveConfirmText(""); }}>🗑️ Hapus</Btn>
+                        }}>{exportingArchiveYear === y ? "Menyiapkan..." : "Export Excel"}</Btn>
+                      <Btn variant="danger" size="sm" icon={Icon.delete} onClick={() => { setDeleteArchiveConfirmYear(y); setDeleteArchiveConfirmText(""); }}>Hapus</Btn>
                     </div>
                   ))}
                 </div>
@@ -1087,13 +1103,13 @@ export default function GWGSuperApp() {
                 <div style={{ background:"#fff", borderRadius:12, padding:20, maxWidth:640, maxHeight:"80vh",
                   overflow:"auto", width:"100%" }} onClick={e => e.stopPropagation()}>
                   <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
-                    <div style={{ fontSize:15, fontWeight:700 }}>📦 Arsip Kontrol {viewArchiveYear}</div>
+                    <div style={{ fontSize:15, fontWeight:700, display:"flex", alignItems:"center", gap:6 }}><Icon.package size={17} strokeWidth={2}/> Arsip Kontrol {viewArchiveYear}</div>
                     <button onClick={() => { setViewArchiveYear(null); setViewArchiveData(null); }}
-                      style={{ border:"none", background:"none", fontSize:18, cursor:"pointer" }}>✕</button>
+                      style={{ border:"none", background:"none", display:"flex", cursor:"pointer", color:T.gray600 }}><Icon.close size={18} strokeWidth={2} /></button>
                   </div>
-                  {viewArchiveData === "loading" && <div style={{ fontSize:13, color:T.gray400 }}>⏳ Memuat arsip dari Storage...</div>}
+                  {viewArchiveData === "loading" && <div style={{ fontSize:13, color:T.gray400, display:"flex", alignItems:"center", gap:6 }}><Icon.refresh size={14} strokeWidth={2}/> Memuat arsip dari Storage...</div>}
                   {viewArchiveData && viewArchiveData !== "loading" && !viewArchiveData.ok && (
-                    <div style={{ fontSize:13, color:"#991B1B" }}>⚠️ {viewArchiveData.message}</div>
+                    <div style={{ fontSize:13, color:"#991B1B", display:"flex", alignItems:"center", gap:6 }}><Icon.warning size={14} strokeWidth={2}/> {viewArchiveData.message}</div>
                   )}
                   {viewArchiveData && viewArchiveData !== "loading" && viewArchiveData.ok && (
                     <>
@@ -1131,7 +1147,7 @@ export default function GWGSuperApp() {
               <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.5)", zIndex:1000,
                 display:"flex", alignItems:"center", justifyContent:"center", padding:16 }}>
                 <div style={{ background:"#fff", borderRadius:12, padding:20, maxWidth:420, width:"100%" }}>
-                  <div style={{ fontSize:15, fontWeight:700, marginBottom:8, color:"#991B1B" }}>⚠️ Hapus Arsip Permanen</div>
+                  <div style={{ fontSize:15, fontWeight:700, marginBottom:8, color:"#991B1B", display:"flex", alignItems:"center", gap:6 }}><Icon.delete size={16} strokeWidth={2}/> Hapus Arsip Permanen</div>
                   <div style={{ fontSize:13, color:T.gray600, marginBottom:12, lineHeight:1.6 }}>
                     Ini akan menghapus arsip tahun <b>{deleteArchiveConfirmYear}</b> secara permanen dari Google Drive.
                     Data <b>TIDAK BISA</b> dikembalikan setelah ini. Pastikan sudah export/simpan sendiri kalau masih perlu.
@@ -1153,7 +1169,7 @@ export default function GWGSuperApp() {
               </div>
             )}
 
-            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8 }}>🔧 Migrasi Struktur Data Lama</div>
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}><Icon.wrench size={15} strokeWidth={2}/> Migrasi Struktur Data Lama</div>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
               Sekali jalan: memindahkan data kontrol lama (satu tabel besar) ke struktur per-tahun. Data diverifikasi
               tersalin dengan benar dulu sebelum salinan lama dihapus — aman diulang jika gagal di tengah jalan.
@@ -1164,6 +1180,7 @@ export default function GWGSuperApp() {
                 placeholder="Ketik MIGRASI untuk aktifkan tombol"
                 style={{ padding:"8px 10px", fontSize:13, border:`1px solid ${T.gray200}`, borderRadius:8, fontFamily:"inherit" }} />
               <Btn variant="danger" disabled={migrating || migrateConfirmText.trim().toUpperCase() !== "MIGRASI"}
+                icon={migrating ? Icon.refresh : Icon.wrench}
                 onClick={async () => {
                   setMigrating(true);
                   setMigrationResult(null);
@@ -1172,7 +1189,7 @@ export default function GWGSuperApp() {
                   setMigrating(false);
                   setMigrateConfirmText("");
                 }}>
-                {migrating ? "⏳ Memigrasi..." : "🔧 Jalankan Migrasi Sekarang"}
+                {migrating ? "Memigrasi..." : "Jalankan Migrasi Sekarang"}
               </Btn>
             </div>
             {migrationResult && (
@@ -1202,7 +1219,7 @@ export default function GWGSuperApp() {
                       <div style={{ fontSize:11, color:T.gray400 }}>{b.reason || "—"} · {b.ts ? new Date(b.ts).toLocaleString("id-ID") : "-"}</div>
                     </div>
                     <div style={{ display:"flex", gap:6 }}>
-                      <Btn size="sm" variant="secondary" onClick={() => downloadJSON(`gwg_backup_${b.key}.json`, b)}>⬇️</Btn>
+                      <Btn size="sm" variant="secondary" icon={Icon.download} onClick={() => downloadJSON(`gwg_backup_${b.key}.json`, b)} />
                       <Btn size="sm" variant="danger" onClick={() => { setRestoreTarget(b); setRestoreConfirmText(""); }}>Pulihkan</Btn>
                     </div>
                   </div>
@@ -1220,9 +1237,9 @@ export default function GWGSuperApp() {
       {/* KONFIRMASI RESTORE — backup akan MENGGANTI seluruh data saat ini,
           jadi perlu konfirmasi ketat sama seperti Reset. */}
       {restoreTarget && isAdmin && (
-        <Modal title="⚠️ Pulihkan dari Backup" onClose={()=>{ setRestoreTarget(null); setRestoreConfirmText(""); }}>
+        <Modal title={<><Icon.warning size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pulihkan dari Backup</>} onClose={()=>{ setRestoreTarget(null); setRestoreConfirmText(""); }}>
           <div style={{ textAlign:"center", padding:"8px 0 20px" }}>
-            <div style={{ fontSize:40, marginBottom:12 }}>⚠️</div>
+            <div style={{ display:"flex", justifyContent:"center", marginBottom:12, color:T.orange }}><Icon.warning size={40} strokeWidth={1.75} /></div>
             <div style={{ fontSize:15, fontWeight:600, color:T.gray800, marginBottom:8 }}>
               Pulihkan data dari backup <b>{restoreTarget.key}</b>?
             </div>
@@ -1257,9 +1274,9 @@ export default function GWGSuperApp() {
                   setRestoreConfirmText("");
                   setShowBackup(false);
                   if (result && result.ok === false) {
-                    alert("⚠️ Restore SEBAGIAN gagal!\n\n" + result.message);
+                    alert("Restore SEBAGIAN gagal!\n\n" + result.message);
                   } else {
-                    alert("✅ Restore berhasil. Data toko/kontrol besar mungkin perlu beberapa detik untuk tampil sepenuhnya — tunggu status sinkron selesai sebelum menutup aplikasi.");
+                    alert("Restore berhasil. Data toko/kontrol besar mungkin perlu beberapa detik untuk tampil sepenuhnya — tunggu status sinkron selesai sebelum menutup aplikasi.");
                   }
                 }}
               >
@@ -1278,20 +1295,20 @@ export default function GWGSuperApp() {
           - Tahap 1: Admin wajib mengisi alasan reset (mencegah pencet tidak sengaja)
           - Tahap 2: Ketik frasa "HAPUS PERMANEN" persis (lebih susah terpencet sembarangan) */}
       {showReset && isAdmin && (
-        <Modal title={`⚠️ Reset Database — Langkah ${resetStep} dari 2`}
+        <Modal title={<><Icon.warning size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Reset Database — Langkah {resetStep} dari 2</>}
           onClose={()=>{ setShowReset(false); setResetConfirmText(""); setResetStep(1); setResetAlasan(""); }}>
           <div style={{ padding:"4px 0 8px" }}>
 
             {/* Langkah 1: Isi alasan reset */}
             {resetStep === 1 && (
               <div style={{ textAlign:"center" }}>
-                <div style={{ fontSize:40, marginBottom:12 }}>🔐</div>
+                <div style={{ display:"flex", justifyContent:"center", marginBottom:12, color:T.gray600 }}><Icon.lock size={40} strokeWidth={1.75} /></div>
                 <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:8 }}>
                   Langkah 1: Konfirmasi Identitas & Alasan
                 </div>
                 <div style={{ fontSize:13, color:T.gray400, marginBottom:16, textAlign:"left",
                   background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"12px 14px" }}>
-                  <b style={{ color:T.red }}>⚠️ Peringatan Keras:</b> Tindakan ini akan menghapus
+                  <b style={{ color:T.red, display:"inline-flex", alignItems:"center", gap:5 }}><Icon.warning size={14} strokeWidth={2}/> Peringatan Keras:</b> Tindakan ini akan menghapus
                   <b> seluruh data</b> (toko, rute, wilayah, produk, kontrol, pengguna)
                   {user && <span> termasuk <b>data cloud Firebase</b></span>} secara <b>permanen</b> dan
                   tidak dapat dibatalkan. Sistem akan membuat backup otomatis sebelum reset.
@@ -1314,10 +1331,10 @@ export default function GWGSuperApp() {
                 </div>
                 <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
                   <Btn variant="secondary" onClick={()=>{ setShowReset(false); setResetAlasan(""); setResetStep(1); }}>Batal</Btn>
-                  <Btn variant="danger"
+                  <Btn variant="danger" icon={Icon.arrowRight}
                     disabled={resetAlasan.trim().length < 10}
                     onClick={()=>{ if(resetAlasan.trim().length >= 10) setResetStep(2); }}>
-                    Lanjut ke Langkah 2 →
+                    Lanjut ke Langkah 2
                   </Btn>
                 </div>
               </div>
@@ -1326,7 +1343,7 @@ export default function GWGSuperApp() {
             {/* Langkah 2: Ketik frasa konfirmasi */}
             {resetStep === 2 && (
               <div style={{ textAlign:"center" }}>
-                <div style={{ fontSize:40, marginBottom:12 }}>💣</div>
+                <div style={{ display:"flex", justifyContent:"center", marginBottom:12, color:T.red }}><Icon.danger size={40} strokeWidth={1.75} /></div>
                 <div style={{ fontSize:15, fontWeight:700, color:T.red, marginBottom:8 }}>
                   Langkah 2: Konfirmasi Penghapusan Permanen
                 </div>
@@ -1350,9 +1367,10 @@ export default function GWGSuperApp() {
                     fontFamily:"inherit", letterSpacing:2, background:T.redLt }}
                 />
                 <div style={{ display:"flex", gap:10, justifyContent:"center" }}>
-                  <Btn variant="secondary" onClick={()=>{ setResetStep(1); setResetConfirmText(""); }}>← Kembali</Btn>
+                  <Btn variant="secondary" icon={Icon.arrowLeft} onClick={()=>{ setResetStep(1); setResetConfirmText(""); }}>Kembali</Btn>
                   <Btn
                     variant="danger"
+                    icon={Icon.danger}
                     disabled={resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN"}
                     onClick={()=>{
                       if (!isAdmin || resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN") return;
@@ -1363,7 +1381,7 @@ export default function GWGSuperApp() {
                       setResetAlasan("");
                     }}
                   >
-                    💥 Ya, Reset Permanen Sekarang
+                    Ya, Reset Permanen Sekarang
                   </Btn>
                 </div>
                 <div style={{ marginTop:12, fontSize:11, color:T.gray400 }}>

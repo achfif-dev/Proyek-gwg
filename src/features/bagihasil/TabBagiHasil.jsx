@@ -6,6 +6,7 @@ import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { Icon } from "../../theme/icons.jsx";
 
 export function TabBagiHasil({ db, analytics, save }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
@@ -189,13 +190,13 @@ export function TabBagiHasil({ db, analytics, save }) {
       {/* Header */}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4, flexWrap:"wrap", gap:12 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>💰 Simulasi Bagi Hasil & Akuntansi</div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.wallet size={19} strokeWidth={2} /> Simulasi Bagi Hasil & Akuntansi</div>
           <div style={{ fontSize:12, color:T.gray400 }}>Laporan keuangan & distribusi profit sesuai skema akuntansi</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-          <Btn variant="secondary" size="sm" icon="⚙️" onClick={()=>{ setCfgDraft(config); setEditConfig(true); }}>Konfigurasi</Btn>
-          <Btn variant="secondary" size="sm" icon="📊" onClick={exportLaporanBagiHasil}>Ekspor Excel</Btn>
-          <Btn variant="secondary" size="sm" icon={showDetail?"🔼":"🔽"} onClick={()=>setShowDetail(v=>!v)}>
+          <Btn variant="secondary" size="sm" icon={Icon.settings} onClick={()=>{ setCfgDraft(config); setEditConfig(true); }}>Konfigurasi</Btn>
+          <Btn variant="secondary" size="sm" icon={Icon.rekap} onClick={exportLaporanBagiHasil}>Ekspor Excel</Btn>
+          <Btn variant="secondary" size="sm" icon={showDetail?Icon.chevronUp:Icon.chevronDown} onClick={()=>setShowDetail(v=>!v)}>
             {showDetail?"Sembunyikan Detail":"Lihat Detail Produk"}
           </Btn>
         </div>
@@ -212,7 +213,7 @@ export function TabBagiHasil({ db, analytics, save }) {
                   style={{ padding:"6px 14px", border:`1.5px solid ${periodeMode===m?T.green:T.gray200}`,
                     borderRadius:7, background:periodeMode===m?T.greenLt:T.white, cursor:"pointer",
                     fontSize:12, fontWeight:600, color:periodeMode===m?T.green:T.gray600, fontFamily:"inherit" }}>
-                  {m==="bulanan"?"📅 Bulanan":m==="tahunan"?"📆 Tahunan":"📌 Kustom"}
+                  <span style={{display:"inline-flex",alignItems:"center",gap:4}}>{m==="bulanan"?<Icon.calendar size={13} strokeWidth={2}/>:m==="tahunan"?<Icon.calendarDays size={13} strokeWidth={2}/>:<Icon.pin size={13} strokeWidth={2}/>}{m==="bulanan"?"Bulanan":m==="tahunan"?"Tahunan":"Kustom"}</span>
                 </button>
               ))}
             </div>
@@ -257,19 +258,19 @@ export function TabBagiHasil({ db, analytics, save }) {
 
       {/* Ringkasan Kinerja Periode */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:10, marginBottom:16 }}>
-        <StatCard label="Total Revenue" value={fmtRp(akuntansi.pendapatan)} icon="💵" color={T.green} sub={PERIODE_LABELS[periodeMode]} />
-        <StatCard label="Laba Bersih" value={fmtRp(akuntansi.labaBersihFinal)} icon="📈" color={T.teal} sub={`${akuntansi.marginPct}% dari Laba Kotor`} />
-        <StatCard label="Total Biaya" value={fmtRp(akuntansi.totalBiaya)} icon="📉" color={T.red} sub="semua kategori" />
-        <StatCard label="Produk Terjual" value={fmt(revPeriode.terjualTotal)+" pcs"} icon="🧴" color={T.purple} sub={`${revPeriode.kunjunganTotal} kunjungan`} />
-        <StatCard label="Toko Dikunjungi" value={revPeriode.tokoUnik} icon="🏪" color={T.blue} sub="toko unik" />
-        <StatCard label="Total Dibagi" value={fmtRp(akuntansi.totalDibagi)} icon="🤝" color={T.gold} sub={`${(config.pihak||[]).length} pihak`} />
+        <StatCard label="Total Revenue" value={fmtRp(akuntansi.pendapatan)} icon={Icon.banknote} color={T.green} sub={PERIODE_LABELS[periodeMode]} />
+        <StatCard label="Laba Bersih" value={fmtRp(akuntansi.labaBersihFinal)} icon={Icon.trendingUp} color={T.teal} sub={`${akuntansi.marginPct}% dari Laba Kotor`} />
+        <StatCard label="Total Biaya" value={fmtRp(akuntansi.totalBiaya)} icon={Icon.trendingDown} color={T.red} sub="semua kategori" />
+        <StatCard label="Produk Terjual" value={fmt(revPeriode.terjualTotal)+" pcs"} icon={Icon.produk} color={T.purple} sub={`${revPeriode.kunjunganTotal} kunjungan`} />
+        <StatCard label="Toko Dikunjungi" value={revPeriode.tokoUnik} icon={Icon.toko} color={T.blue} sub="toko unik" />
+        <StatCard label="Total Dibagi" value={fmtRp(akuntansi.totalDibagi)} icon={Icon.bagihasil} color={T.gold} sub={`${(config.pihak||[]).length} pihak`} />
       </div>
 
       {/* Laporan Laba Rugi */}
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
           <div style={{ fontSize:14, fontWeight:800, color:T.gray800, marginBottom:16, borderBottom:`2px solid ${T.green}`, paddingBottom:10 }}>
-            📋 Laporan Laba Rugi — {PERIODE_LABELS[periodeMode]}
+            <Icon.file size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}} /> Laporan Laba Rugi — {PERIODE_LABELS[periodeMode]}
           </div>
 
           {/* Pendapatan */}
@@ -315,7 +316,7 @@ export function TabBagiHasil({ db, analytics, save }) {
             <div style={{ display:"flex", justifyContent:"space-between", padding:"12px 16px",
               background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`,
               borderRadius:10, marginTop:8 }}>
-              <span style={{ fontSize:14, fontWeight:700, color:"#fff" }}>💰 LABA BERSIH</span>
+              <span style={{ fontSize:14, fontWeight:700, color:"#fff", display:"inline-flex", alignItems:"center", gap:6 }}><Icon.wallet size={15} strokeWidth={2} /> LABA BERSIH</span>
               <span style={{ fontSize:16, fontWeight:900, color:"#fff" }}>{fmtRp(akuntansi.labaBersihFinal)}</span>
             </div>
           </div>
@@ -324,14 +325,14 @@ export function TabBagiHasil({ db, analytics, save }) {
         {/* Distribusi Bagi Hasil */}
         <Card>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, borderBottom:`2px solid ${T.gold}`, paddingBottom:10 }}>
-            <div style={{ fontSize:14, fontWeight:800, color:T.gray800 }}>🤝 Distribusi Bagi Hasil</div>
-            <Btn size="sm" icon="＋" variant="gold" onClick={tambahPihak}>Tambah Pihak</Btn>
+            <div style={{ fontSize:14, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.bagihasil size={16} strokeWidth={2} /> Distribusi Bagi Hasil</div>
+            <Btn size="sm" icon={Icon.add} variant="gold" onClick={tambahPihak}>Tambah Pihak</Btn>
           </div>
 
           {/* Validasi total pct */}
           {(totalPctLaba > 100 || totalPctRev > 100) && (
             <div style={{ background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"8px 12px", marginBottom:12, fontSize:12, color:T.red }}>
-              ⚠️ Total persentase dari {totalPctLaba>100?"laba":"revenue"} melebihi 100% ({totalPctLaba>100?totalPctLaba:totalPctRev}%). Harap periksa konfigurasi.
+              <Icon.warning size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Total persentase dari {totalPctLaba>100?"laba":"revenue"} melebihi 100% ({totalPctLaba>100?totalPctLaba:totalPctRev}%). Harap periksa konfigurasi.
             </div>
           )}
 
@@ -367,8 +368,8 @@ export function TabBagiHasil({ db, analytics, save }) {
                       <div style={{ fontSize:10, color:T.gray400 }}>dari {fmtRp(p.basisNilai)}</div>
                     </div>
                     <div style={{ display:"flex", gap:4 }}>
-                      <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>{ setFormPihak({...p}); setModalPihak("edit"); }} />
-                      <Btn variant="danger" size="sm" icon="🗑" onClick={()=>hapusPihak(p.id)} />
+                      <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>{ setFormPihak({...p}); setModalPihak("edit"); }} />
+                      <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>hapusPihak(p.id)} />
                     </div>
                   </div>
                 </div>
@@ -398,7 +399,7 @@ export function TabBagiHasil({ db, analytics, save }) {
       {/* Detail Per Produk */}
       {showDetail && (
         <Card style={{ marginBottom:16 }}>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>🧴 Kontribusi Per Produk — {PERIODE_LABELS[periodeMode]}</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}><Icon.produk size={16} strokeWidth={2} /> Kontribusi Per Produk — {PERIODE_LABELS[periodeMode]}</div>
           <div style={{ overflowX:"auto" }}>
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13 }}>
               <thead>
@@ -454,7 +455,7 @@ export function TabBagiHasil({ db, analytics, save }) {
 
       {/* Analisis Tren Bulanan — Line chart sederhana */}
       <Card style={{ marginBottom:16 }}>
-        <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>📊 Tren Revenue & Laba (12 Bulan Terakhir)</div>
+        <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}><Icon.rekap size={16} strokeWidth={2} /> Tren Revenue & Laba (12 Bulan Terakhir)</div>
         {(() => {
           const months = [];
           const now = new Date();
@@ -504,10 +505,10 @@ export function TabBagiHasil({ db, analytics, save }) {
 
       {/* Modal Konfigurasi Bagi Hasil */}
       {editConfig && (
-        <Modal title="⚙️ Konfigurasi Bagi Hasil & Biaya" onClose={()=>setEditConfig(false)} width={520}>
+        <Modal title={<><Icon.settings size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Konfigurasi Bagi Hasil & Biaya</>} onClose={()=>setEditConfig(false)} width={520}>
           <div style={{ marginBottom:16 }}>
             <div style={{ fontSize:13, fontWeight:700, color:T.gray700, marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>
-              📊 Asumsi Margin Laba
+              <Icon.rekap size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Asumsi Margin Laba
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:12 }}>
               <div style={{ flex:1 }}>
@@ -526,7 +527,7 @@ export function TabBagiHasil({ db, analytics, save }) {
           </div>
           <div style={{ marginBottom:16 }}>
             <div style={{ fontSize:13, fontWeight:700, color:T.gray700, marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>
-              💸 Beban Usaha (Nominal Tetap)
+              <Icon.money size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Beban Usaha (Nominal Tetap)
             </div>
             {[
               { key:"biayaOperasional", label:"Biaya Operasional (Rp)" },
@@ -544,7 +545,7 @@ export function TabBagiHasil({ db, analytics, save }) {
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setEditConfig(false)}>Batal</Btn>
-            <Btn onClick={submitConfig}>💾 Simpan Konfigurasi</Btn>
+            <Btn onClick={submitConfig} icon={Icon.save}>Simpan Konfigurasi</Btn>
           </div>
         </Modal>
       )}

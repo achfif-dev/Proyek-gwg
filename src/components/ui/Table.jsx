@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { T } from "../../theme/tokens";
 import { Btn, ConfirmDelete } from "./Primitives";
+import { Icon } from "../../theme/icons.jsx";
 
 export function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, onToggleSelect, onToggleSelectAll, pageSize = 50 }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -90,8 +91,8 @@ export function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, 
                   {(onEdit||onDelete) && (
                     <td style={{ padding:"8px 14px", textAlign:"right", whiteSpace:"nowrap" }}>
                       <div style={{ display:"flex", gap:6, justifyContent:"flex-end" }}>
-                        {onEdit && <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>onEdit(row)}>Edit</Btn>}
-                        {onDelete && <Btn variant="danger" size="sm" icon="🗑" onClick={()=>setDeleteTarget(row.id)}>Hapus</Btn>}
+                        {onEdit && <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>onEdit(row)}>Edit</Btn>}
+                        {onDelete && <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>setDeleteTarget(row.id)}>Hapus</Btn>}
                       </div>
                     </td>
                   )}

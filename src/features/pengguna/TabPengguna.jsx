@@ -4,6 +4,7 @@ import { SUPER_ADMIN_CANONICAL_ID, SUPER_ADMIN_EMAIL, isSuperAdminEmail } from "
 import { Dashboard } from "../../features/dashboard/Dashboard";
 import { genUniqueId } from "../../lib/format";
 import { T } from "../../theme/tokens";
+import { Icon } from "../../theme/icons.jsx";
 
 export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers }) {
   // Set email (huruf kecil) yang punya minimal satu sesi aktif — dipakai
@@ -116,7 +117,7 @@ export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmerg
     { key:"role",  label:"Role",  render:(v,row)=>(
         <span style={{ display:"flex", alignItems:"center", gap:6 }}>
           <Badge color={ROLE_C[v]||T.gray600}>{v}</Badge>
-          {isSuperAdminEmail(row?.email) && <Badge color={T.gold}>👑 Super Admin</Badge>}
+          {isSuperAdminEmail(row?.email) && <Badge color={T.gold}><Icon.crown size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Super Admin</Badge>}
         </span>
       ) },
     { key:"wilayahId", label:"Wilayah", render:v=>v?<Badge color={T.green}>{(db.wilayah||[]).find(w=>w.id===v)?.nama||v}</Badge>:<span style={{ color:T.gray400 }}>Semua</span> },
@@ -126,19 +127,19 @@ export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmerg
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>👤 Manajemen Pengguna</div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.user size={19} strokeWidth={2} /> Manajemen Pengguna</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.pengguna||[]).length} pengguna terdaftar</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={db.pengguna||[]} columns={cols} title="Data Pengguna" filename="pengguna" />
-          <Btn variant="secondary" onClick={openBlockedModal} icon="🚫">Email Diblokir</Btn>
-          <Btn onClick={openAdd} icon="＋">Tambah Pengguna</Btn>
+          <Btn variant="secondary" onClick={openBlockedModal} icon={Icon.ban}>Email Diblokir</Btn>
+          <Btn onClick={openAdd} icon={Icon.add}>Tambah Pengguna</Btn>
         </div>
       </div>
       {isEmergencyAdmin && (
         <div style={{ background:T.redLt, border:`1.5px solid #FCA5A5`, borderRadius:10, padding:"12px 16px",
           marginBottom:16, fontSize:13, color:T.red, lineHeight:1.6, fontWeight:600 }}>
-          🚨 Sistem mendeteksi tidak ada satupun pengguna dengan role <b>Admin</b> di database — Anda
+          <Icon.siren size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}} /> Sistem mendeteksi tidak ada satupun pengguna dengan role <b>Admin</b> di database — Anda
           diberi akses Admin <b>sementara</b> agar bisa memperbaiki ini. Segera ubah role akun Anda
           (atau pengguna lain yang tepat) kembali menjadi <b>Admin</b> di tabel di bawah, supaya akses
           Admin permanen tidak hilang lagi.
@@ -146,11 +147,11 @@ export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmerg
       )}
       <div style={{ background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:10, padding:"10px 14px",
         marginBottom:16, fontSize:12, color:T.gray600, lineHeight:1.6 }}>
-        ℹ️ Akun Google baru yang login langsung muncul otomatis di tabel di bawah dengan role <b>Viewer</b> —
+        <Icon.idea size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Akun Google baru yang login langsung muncul otomatis di tabel di bawah dengan role <b>Viewer</b> —
         tidak perlu input manual nama/email. Viewer hanya bisa <b>melihat</b> data (tab Dashboard, Kontrol, Rekap),
         tidak bisa mengubah apa pun. Admin atau Manajer cukup ubah role-nya (Admin/Manajer/Sales/Viewer)
         lewat tombol edit jika perlu memberi akses input data. Tab ini (Pengguna) khusus untuk <b>Admin</b>,
-        dan akun <b>Super Admin</b> tetap (👑) tidak bisa diubah/dihapus siapapun lewat tab ini.
+        dan akun <b>Super Admin</b> tetap tidak bisa diubah/dihapus siapapun lewat tab ini.
       </div>
       <Card padding={0}>
         <Table columns={cols} data={db.pengguna||[]} onEdit={openEdit}
@@ -170,7 +171,7 @@ export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmerg
         </Modal>
       )}
       {showBlocked && (
-        <Modal title="🚫 Email Diblokir" onClose={()=>setShowBlocked(false)} width={560}>
+        <Modal title={<><Icon.ban size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Email Diblokir</>} onClose={()=>setShowBlocked(false)} width={560}>
           <div style={{ fontSize:12, color:T.gray600, lineHeight:1.6, marginBottom:16 }}>
             Email di bawah ini pernah dihapus dari tabel Pengguna, sehingga <b>tidak akan
             otomatis terdaftar ulang</b> walaupun pemiliknya login kembali dengan akun

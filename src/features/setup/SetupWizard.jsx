@@ -2,6 +2,7 @@ import React, { useRef, useState } from "react";
 import { Btn, Card, Input } from "../../components/ui";
 import { loadAppConfig, saveAppConfig, resetAppConfig } from "../../config/appConfig";
 import { T } from "../../theme/tokens";
+import { Icon } from "../../theme/icons.jsx";
 
 // Regex sederhana untuk mengambil field dari kode konfigurasi Firebase yang
 // ditempel apa adanya dari Firebase Console (Project Settings → SDK setup
@@ -36,7 +37,7 @@ export function SetupWizard({ onDone, onCancel }) {
     const file = e.target.files?.[0];
     if (!file) return;
     if (file.size > 900 * 1024) {
-      alert("⚠️ Ukuran logo terlalu besar (maks ±900 KB). Gunakan gambar yang lebih kecil/terkompresi.");
+      alert("Ukuran logo terlalu besar (maks ±900 KB). Gunakan gambar yang lebih kecil/terkompresi.");
       return;
     }
     const reader = new FileReader();
@@ -48,11 +49,11 @@ export function SetupWizard({ onDone, onCancel }) {
     const parsed = parseFirebaseConfigText(pasteText);
     const foundCount = Object.keys(parsed).length;
     if (foundCount === 0) {
-      setPasteMsg("⚠️ Tidak ada field yang terdeteksi. Pastikan kode konfigurasi ditempel apa adanya dari Firebase Console.");
+      setPasteMsg("Tidak ada field yang terdeteksi. Pastikan kode konfigurasi ditempel apa adanya dari Firebase Console.");
       return;
     }
     setFirebaseForm(p => ({ ...p, ...parsed }));
-    setPasteMsg(`✅ ${foundCount} field berhasil terisi otomatis dari teks yang ditempel. Periksa kembali di bawah.`);
+    setPasteMsg(`${foundCount} field berhasil terisi otomatis dari teks yang ditempel. Periksa kembali di bawah.`);
   }
 
   function finish() {
@@ -92,7 +93,7 @@ export function SetupWizard({ onDone, onCancel }) {
       `}</style>
       <div className="gw-setup-wizard" style={{ maxWidth:560, width:"100%" }}>
         <div style={{ textAlign:"center", marginBottom:18 }}>
-          <div style={{ fontSize:22, fontWeight:800, color:T.gray800 }}>🚀 Setup Aplikasi (White Label)</div>
+          <div style={{ fontSize:22, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}><Icon.rocket size={22} strokeWidth={2} /> Setup Aplikasi (White Label)</div>
           <div style={{ fontSize:12, color:T.gray400, marginTop:4 }}>
             Sesuaikan aplikasi ini dengan identitas & database perusahaan Anda sendiri
           </div>
@@ -111,7 +112,7 @@ export function SetupWizard({ onDone, onCancel }) {
         <Card>
           {step === 1 && (
             <div>
-              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:14 }}>🎨 Identitas & Branding</div>
+              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}><Icon.palette size={16} strokeWidth={2} /> Identitas & Branding</div>
               <Input label="Nama Perusahaan" value={brand.companyName} onChange={v=>bset("companyName", v)} required placeholder="cth: Aroma Nusantara Group" />
               <Input label="Nama Aplikasi" value={brand.appName} onChange={v=>bset("appName", v)} placeholder="cth: ANG Super App" />
               <Input label="Tagline" value={brand.tagline} onChange={v=>bset("tagline", v)} placeholder="cth: Super App · Sistem Manajemen Konsinyasi" />
@@ -154,7 +155,7 @@ export function SetupWizard({ onDone, onCancel }) {
                     display:"flex", alignItems:"center", justifyContent:"center", overflow:"hidden", flexShrink:0 }}>
                     {previewLogo
                       ? <img src={previewLogo} alt="Preview logo" style={{ width:"100%", height:"100%", objectFit:"contain" }} />
-                      : <span style={{ fontSize:22 }}>🌿</span>}
+                      : <Icon.leaf size={24} strokeWidth={1.75} color={T.gray400} />}
                   </div>
                   <div style={{ minWidth:0 }}>
                     <Btn variant="secondary" size="sm" onClick={()=>fileRef.current?.click()}>Unggah Logo</Btn>
@@ -171,7 +172,7 @@ export function SetupWizard({ onDone, onCancel }) {
 
           {step === 2 && (
             <div>
-              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:6 }}>🔥 Konfigurasi Firebase</div>
+              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:6, display:"flex", alignItems:"center", gap:6 }}><Icon.flame size={16} strokeWidth={2} /> Konfigurasi Firebase</div>
               <div style={{ fontSize:12, color:T.gray500, marginBottom:14, lineHeight:1.6 }}>
                 Buat/pakai project Firebase milik perusahaan Anda sendiri (gratis), lalu buka
                 <b> Project Settings → Your apps → SDK setup and configuration</b>, salin kodenya,
@@ -179,7 +180,7 @@ export function SetupWizard({ onDone, onCancel }) {
               </div>
               <Input label="Tempel Kode Konfigurasi Firebase" value={pasteText} onChange={setPasteText}
                 type="textarea" placeholder={`const firebaseConfig = {\n  apiKey: "...",\n  authDomain: "...",\n  ...\n};`} />
-              <Btn variant="secondary" size="sm" onClick={applyPaste} style={{ marginBottom:10 }}>🔍 Ambil Otomatis dari Teks</Btn>
+              <Btn variant="secondary" size="sm" icon={Icon.search} onClick={applyPaste} style={{ marginBottom:10 }}>Ambil Otomatis dari Teks</Btn>
               {pasteMsg && <div style={{ fontSize:12, color:T.green, marginBottom:10 }}>{pasteMsg}</div>}
 
               <div style={{ fontSize:11, fontWeight:700, color:T.gray400, textTransform:"uppercase", letterSpacing:"0.06em", margin:"14px 0 8px" }}>
@@ -192,16 +193,17 @@ export function SetupWizard({ onDone, onCancel }) {
               <Input label="storageBucket" value={firebase.storageBucket} onChange={v=>fset("storageBucket", v)} />
               <Input label="messagingSenderId" value={firebase.messagingSenderId} onChange={v=>fset("messagingSenderId", v)} />
               <Input label="appId" value={firebase.appId} onChange={v=>fset("appId", v)} />
-              <div style={{ background:T.blueLt, borderRadius:8, padding:"10px 12px", fontSize:11, color:T.gray600, marginTop:6 }}>
-                💡 Jangan lupa aktifkan <b>Authentication → Sign-in method → Google</b> dan
-                <b> Realtime Database</b> di project Firebase tersebut.
+              <div style={{ background:T.blueLt, borderRadius:8, padding:"10px 12px", fontSize:11, color:T.gray600, marginTop:6, display:"flex", alignItems:"flex-start", gap:6 }}>
+                <Icon.idea size={14} strokeWidth={2} style={{flexShrink:0, marginTop:1}} />
+                <span>Jangan lupa aktifkan <b>Authentication → Sign-in method → Google</b> dan
+                <b> Realtime Database</b> di project Firebase tersebut.</span>
               </div>
             </div>
           )}
 
           {step === 3 && (
             <div>
-              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:6 }}>👑 Akun Super Admin</div>
+              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:6, display:"flex", alignItems:"center", gap:6 }}><Icon.crown size={16} strokeWidth={2} /> Akun Super Admin</div>
               <div style={{ fontSize:12, color:T.gray500, marginBottom:14, lineHeight:1.6 }}>
                 Akun Google dengan email ini akan SELALU mendapat akses Admin penuh setiap kali
                 login — apa pun yang tercatat di tabel Pengguna. Cocok sebagai "kunci cadangan"
@@ -215,7 +217,7 @@ export function SetupWizard({ onDone, onCancel }) {
 
           {step === 4 && (
             <div>
-              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:14 }}>✅ Ringkasan</div>
+              <div style={{ fontSize:15, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}><Icon.checkCircle size={16} strokeWidth={2} /> Ringkasan</div>
               <div style={{ fontSize:12, color:T.gray700, lineHeight:2 }}>
                 <div><b>Nama Perusahaan:</b> {brand.companyName || "—"}</div>
                 <div><b>Nama Aplikasi:</b> {brand.appName || "—"}</div>
@@ -223,8 +225,8 @@ export function SetupWizard({ onDone, onCancel }) {
                 <div><b>Firebase Project:</b> {firebase.projectId || "—"}</div>
                 <div><b>Super Admin:</b> {superAdminEmail || "(tidak diisi)"}</div>
               </div>
-              <div style={{ background:T.orangeLt, borderRadius:8, padding:"10px 12px", fontSize:11, color:T.orange, marginTop:14 }}>
-                ⚠️ Setelah disimpan, aplikasi akan dimuat ulang otomatis untuk menerapkan
+              <div style={{ background:T.orangeLt, borderRadius:8, padding:"10px 12px", fontSize:11, color:T.orange, marginTop:14, display:"flex", alignItems:"center", gap:6 }}>
+                <Icon.warning size={14} strokeWidth={2} style={{flexShrink:0}} /> Setelah disimpan, aplikasi akan dimuat ulang otomatis untuk menerapkan
                 perubahan.
               </div>
             </div>
@@ -232,13 +234,13 @@ export function SetupWizard({ onDone, onCancel }) {
 
           <div style={{ display:"flex", gap:10, justifyContent:"space-between", marginTop:20 }}>
             <div>
-              {step > 1 && <Btn variant="secondary" onClick={()=>setStep(s=>s-1)}>← Kembali</Btn>}
+              {step > 1 && <Btn variant="secondary" icon={Icon.arrowLeft} onClick={()=>setStep(s=>s-1)}>Kembali</Btn>}
               {step === 1 && onCancel && <Btn variant="secondary" onClick={onCancel}>Batal</Btn>}
             </div>
             <div>
               {step < 4
-                ? <Btn onClick={()=>setStep(s=>s+1)}>Lanjut →</Btn>
-                : <Btn onClick={finish}>💾 Simpan & Muat Ulang</Btn>}
+                ? <Btn icon={Icon.arrowRight} style={{flexDirection:"row-reverse"}} onClick={()=>setStep(s=>s+1)}>Lanjut</Btn>
+                : <Btn icon={Icon.save} onClick={finish}>Simpan & Muat Ulang</Btn>}
             </div>
           </div>
         </Card>

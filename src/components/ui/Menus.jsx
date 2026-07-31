@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import { T } from "../../theme/tokens";
 import { Btn, Modal, Badge } from "./Primitives";
 import { exportCSV, exportExcel, exportHTML, exportJSON, exportPDF, exportJPG } from "../../lib/exportUtils";
+import { Icon } from "../../theme/icons.jsx";
 
 export function useClampedMenuPosition(open, anchorRef, menuWidth = 230) {
   const [style, setStyle] = useState(null);
@@ -31,7 +32,7 @@ export function useClampedMenuPosition(open, anchorRef, menuWidth = 230) {
 // aksi admin (Backup Cepat, Backup, Reset DB) supaya header tidak penuh /
 // berantakan di layar HP. Posisinya memakai hook clamped yang sama supaya
 // selalu terlihat penuh di dalam layar.
-export function HeaderMenu({ items, icon="☰", title="Menu" }) {
+export function HeaderMenu({ items, icon: IconComp = Icon.menu, title="Menu" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const menuStyle = useClampedMenuPosition(open, ref, 240);
@@ -46,8 +47,8 @@ export function HeaderMenu({ items, icon="☰", title="Menu" }) {
       <button onClick={() => setOpen(o=>!o)} title={title}
         style={{ display:"flex", alignItems:"center", justifyContent:"center", width:34, height:34,
           background:"rgba(255,255,255,.12)", color:"#fff", border:"1px solid rgba(255,255,255,.2)",
-          borderRadius:8, cursor:"pointer", fontSize:16, fontFamily:"inherit" }}>
-        {icon}
+          borderRadius:T.radiusSm, cursor:"pointer", transition:T.transition, fontFamily:"inherit" }}>
+        <IconComp size={18} strokeWidth={2} />
       </button>
       {open && menuStyle && (
         <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
@@ -58,14 +59,16 @@ export function HeaderMenu({ items, icon="☰", title="Menu" }) {
               <div key={i} style={{ borderTop:`1px solid ${T.gray200}`, margin:"4px 0" }} />
             ) : (
               <button key={i} onClick={() => { it.onClick?.(); setOpen(false); }}
-                style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
+                style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
                   background: it.active ? T.greenLt : "none", cursor:"pointer", fontSize:13, fontFamily:"inherit",
                   fontWeight: it.active ? 700 : 400,
                   color: it.danger ? T.red : (it.active ? T.green : T.gray800),
                   borderBottom: i<items.length-1 ? `1px solid ${T.gray100}` : "none" }}
-                onMouseEnter={e => e.target.style.background = it.danger ? T.redLt : (it.active ? T.greenLt : T.gray50)}
-                onMouseLeave={e => e.target.style.background = it.active ? T.greenLt : "none"}>
-                {it.active ? "✓ " : ""}{it.label}
+                onMouseEnter={e => e.currentTarget.style.background = it.danger ? T.redLt : (it.active ? T.greenLt : T.gray50)}
+                onMouseLeave={e => e.currentTarget.style.background = it.active ? T.greenLt : "none"}>
+                {it.icon && <it.icon size={15} strokeWidth={2} style={{flexShrink:0}} />}
+                {it.active && <Icon.check size={13} strokeWidth={2.5} style={{flexShrink:0}} />}
+                {it.label}
               </button>
             )
           ))}
@@ -123,30 +126,30 @@ export function ImportMenu({ label="Import", onTemplate, onParseRows }) {
 
   return (
     <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
-      <Btn variant="secondary" size="sm" icon="📥" onClick={() => setOpen(!open)}>{label}</Btn>
+      <Btn variant="secondary" size="sm" icon={Icon.download} onClick={() => setOpen(!open)}>{label}</Btn>
       {open && menuStyle && (
         <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
           borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, overflow:"hidden" }}>
           <button onClick={() => { onTemplate(); setOpen(false); }}
-            style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
+            style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
               background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit", color:T.gray800,
               borderBottom:`1px solid ${T.gray100}` }}
-            onMouseEnter={e => e.target.style.background=T.gray50}
-            onMouseLeave={e => e.target.style.background="none"}>
-            ⬇️ Download Template Excel
+            onMouseEnter={e => e.currentTarget.style.background=T.gray50}
+            onMouseLeave={e => e.currentTarget.style.background="none"}>
+            <Icon.arrowDown size={15} strokeWidth={2} /> Download Template Excel
           </button>
           <button onClick={() => { fileRef.current?.click(); setOpen(false); }}
-            style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
+            style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
               background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit", color:T.gray800 }}
-            onMouseEnter={e => e.target.style.background=T.gray50}
-            onMouseLeave={e => e.target.style.background="none"}>
-            ⬆️ Upload File Excel
+            onMouseEnter={e => e.currentTarget.style.background=T.gray50}
+            onMouseLeave={e => e.currentTarget.style.background="none"}>
+            <Icon.arrowUp size={15} strokeWidth={2} /> Upload File Excel
           </button>
         </div>
       )}
       <input ref={fileRef} type="file" accept=".xlsx,.xls" style={{ display:"none" }} onChange={handleFile} />
       {pending && (
-        <Modal title={pending.title || "⚠️ Data Duplikat Ditemukan"} onClose={()=>setPending(null)}>
+        <Modal title={pending.title || <><Icon.warning size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Data Duplikat Ditemukan</>} onClose={()=>setPending(null)}>
           <div style={{ fontSize:13, color:T.gray800, marginBottom:10 }}>{pending.message}</div>
           <div style={{ maxHeight:220, overflow:"auto", fontSize:12, color:T.red, background:T.redLt,
             borderRadius:8, padding:"10px 12px", lineHeight:1.7, marginBottom:14 }}>
@@ -164,7 +167,7 @@ export function ImportMenu({ label="Import", onTemplate, onParseRows }) {
         </Modal>
       )}
       {result && (
-        <Modal title="📊 Hasil Import Excel" onClose={()=>setResult(null)}>
+        <Modal title={<><Icon.rekap size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Hasil Import Excel</>} onClose={()=>setResult(null)}>
           <div style={{ display:"flex", gap:8, marginBottom:14, flexWrap:"wrap" }}>
             <Badge color={T.green}>{result.added} berhasil ditambahkan</Badge>
             {result.skipped > 0 && <Badge color={T.red}>{result.skipped} baris dilewati</Badge>}
@@ -176,7 +179,9 @@ export function ImportMenu({ label="Import", onTemplate, onParseRows }) {
             </div>
           )}
           {result.errors?.length===0 && result.added>0 && (
-            <div style={{ fontSize:13, color:T.green, fontWeight:600 }}>✅ Semua baris berhasil diimpor tanpa error.</div>
+            <div style={{ fontSize:13, color:T.green, fontWeight:600, display:"flex", alignItems:"center", gap:6 }}>
+              <Icon.checkCircle size={16} strokeWidth={2} /> Semua baris berhasil diimpor tanpa error.
+            </div>
           )}
           <div style={{ display:"flex", justifyContent:"flex-end", marginTop:16 }}>
             <Btn onClick={()=>setResult(null)}>Tutup</Btn>
@@ -203,25 +208,25 @@ export function ExportMenu({ data, columns, title, filename, exportData, exportC
   const eCols = exportCols || columns;
   return (
     <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
-      <Btn variant="secondary" size="sm" icon="📤" onClick={() => setOpen(!open)}>Ekspor</Btn>
+      <Btn variant="secondary" size="sm" icon={Icon.upload} onClick={() => setOpen(!open)}>Ekspor</Btn>
       {open && menuStyle && (
         <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
           borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, overflow:"hidden" }}>
           {[
-            { label:"📊 CSV", action: () => { exportCSV(eData, eCols, filename); setOpen(false); } },
-            { label:"🟢 Excel (.xlsx)", action: () => { exportExcel(eData, eCols, title, filename); setOpen(false); } },
-            { label:"🌐 HTML", action: () => { exportHTML(eData, eCols, title, filename); setOpen(false); } },
-            { label:"📋 JSON", action: () => { exportJSON(eData, filename); setOpen(false); } },
-            { label:"📄 PDF Landscape", action: () => { exportPDF(eData, eCols, title, filename); setOpen(false); } },
-            { label:"🖼️ JPG", action: () => { exportJPG(eData, eCols, title, filename); setOpen(false); } },
+            { label:"CSV", icon:Icon.rekap, action: () => { exportCSV(eData, eCols, filename); setOpen(false); } },
+            { label:"Excel (.xlsx)", icon:Icon.checkCircle, action: () => { exportExcel(eData, eCols, title, filename); setOpen(false); } },
+            { label:"HTML", icon:Icon.globe, action: () => { exportHTML(eData, eCols, title, filename); setOpen(false); } },
+            { label:"JSON", icon:Icon.kontrol, action: () => { exportJSON(eData, filename); setOpen(false); } },
+            { label:"PDF Landscape", icon:Icon.file, action: () => { exportPDF(eData, eCols, title, filename); setOpen(false); } },
+            { label:"JPG", icon:Icon.image, action: () => { exportJPG(eData, eCols, title, filename); setOpen(false); } },
           ].map((opt, i) => (
             <button key={i} onClick={opt.action}
-              style={{ display:"block", width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
+              style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
                 background:"none", cursor:"pointer", fontSize:13, fontFamily:"inherit", color:T.gray800,
                 borderBottom: i<5 ? `1px solid ${T.gray100}` : "none" }}
-              onMouseEnter={e => e.target.style.background=T.gray50}
-              onMouseLeave={e => e.target.style.background="none"}>
-              {opt.label}
+              onMouseEnter={e => e.currentTarget.style.background=T.gray50}
+              onMouseLeave={e => e.currentTarget.style.background="none"}>
+              <opt.icon size={15} strokeWidth={2} /> {opt.label}
             </button>
           ))}
         </div>

@@ -8,6 +8,7 @@ import { SIKLUS_GAP_DAYS, appendStatusHistory } from "../../lib/dataHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { Icon, StatusDot } from "../../theme/icons.jsx";
 
 export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
@@ -226,6 +227,34 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     return map;
   }, [enriched]);
 
+  // ✅ Tanggal MULAI siklus (putaran) kontrol yang SEDANG BERJALAN per
+  // wilayah — diambil dari segmen TERAKHIR di siklusSegmentsPerWilayah.
+  // Dipakai diagnostik cakupan kontrol di bawah untuk mengenali toko yang
+  // baru saja diinput SAAT siklus ini berjalan (lihat cakupanDiagnostik &
+  // diagnostikBaseList), supaya toko yang memang belum kebagian giliran
+  // kunjungan di siklus berjalan tidak ikut ditandai "belum dikontrol".
+  const cycleStartPerWilayah = useMemo(() => {
+    const map = {};
+    Object.entries(siklusSegmentsPerWilayah).forEach(([wilayahId, segs]) => {
+      if (segs.length) map[wilayahId] = segs[segs.length - 1].start;
+    });
+    return map;
+  }, [siklusSegmentsPerWilayah]);
+
+  // ✅ Cek apakah sebuah toko "baru diinput SAAT siklus kontrol berjalan" —
+  // yaitu toko dengan tanggalMasuk (tanggal didaftarkan sbg toko Baru) yang
+  // jatuh di dalam/​setelah tanggal mulai siklus berjalan wilayahnya. Toko
+  // seperti ini belum kebagian giliran kunjungan di siklus berjalan, jadi
+  // tidak adil ditandai "belum pernah/belum dikontrol dalam rentang waktu".
+  function isTokoBaruSiklusBerjalan(t) {
+    if (!t.tanggalMasuk) return false;
+    const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
+    if (!rute) return false;
+    const cycleStart = cycleStartPerWilayah[rute.wilayahId];
+    if (!cycleStart) return false; // wilayah belum ada histori kontrol sama sekali
+    return t.tanggalMasuk >= cycleStart;
+  }
+
   // Set berisi id entri kontrol yang tokonya punya >1 kunjungan dalam siklus
   // yang sama (dipakai filter "Kunjungan Berulang" di bawah).
   const kunjunganBerulangIds = useMemo(() => {
@@ -320,7 +349,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   const cakupanDiagnostik = useMemo(() => {
     const controlledIds = new Set((db.kontrol||[]).map(k=>k.tokoId));
     const tokoRelevan = (db.toko||[]).filter(t => t.status==="Aktif" || t.status==="Baru");
-    const belumPernah = tokoRelevan.filter(t => !controlledIds.has(t.id));
+    // ✅ Toko yang baru diinput SAAT siklus kontrol wilayahnya sedang
+    // berjalan belum kebagian giliran kunjungan — jangan ikut ditandai
+    // "belum pernah dikontrol" (lihat isTokoBaruSiklusBerjalan di atas).
+    const belumPernah = tokoRelevan.filter(t => !controlledIds.has(t.id) && !isTokoBaruSiklusBerjalan(t));
     const berstokTanpaKontrol = belumPernah.filter(t =>
       produkAktif.some(p => Number(t[`stok_${p.id}`]||0) > 0));
 
@@ -350,7 +382,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       .filter(y => !(loadedKontrolYears||[]).includes(y));
 
     return { totalRelevan: tokoRelevan.length, belumPernah, berstokTanpaKontrol, perWilayahSorted, perRuteSorted, tahunBelumDimuat };
-  }, [db.toko, db.kontrol, db.rute, db.wilayah, produkAktif, availableKontrolYears, loadedKontrolYears]);
+  }, [db.toko, db.kontrol, db.rute, db.wilayah, produkAktif, availableKontrolYears, loadedKontrolYears, cycleStartPerWilayah]);
 
   // ✅ Rute untuk dropdown filter Diagnostik (dipersempit sesuai Wilayah yang dipilih di filter diagnostik)
   const diagnostikRuteOpts = useMemo(() => {
@@ -365,11 +397,18 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // rentang waktu". Beda dengan "belum pernah" (yang cuma cek ada/tidaknya
   // entri sama sekali), ini bisa menangkap toko yang pernah dikontrol tapi
   // sudah lama tidak dikunjungi ulang.
+  // ✅ Selain tanggal, ikut simpan catatanStatus dari entri PALING BARU itu
+  // (mis. "masalah" = Bermasalah) — dipakai diagnostikBaseList di bawah
+  // supaya toko yang kunjungan terakhirnya berstatus Bermasalah tidak ikut
+  // ditandai "tidak dikontrol dalam rentang waktu" (toko Bermasalah sudah
+  // punya jalur penanganannya sendiri lewat kolom Keterangan).
   const lastKontrolByToko = useMemo(() => {
     const map = {};
     (db.kontrol||[]).forEach(k => {
       if (!k.tokoId || !k.tanggal) return;
-      if (!map[k.tokoId] || k.tanggal > map[k.tokoId]) map[k.tokoId] = k.tanggal;
+      if (!map[k.tokoId] || k.tanggal > map[k.tokoId].tanggal) {
+        map[k.tokoId] = { tanggal: k.tanggal, catatanStatus: k.catatanStatus || "" };
+      }
     });
     return map;
   }, [db.kontrol]);
@@ -379,6 +418,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   //  - "rentang": toko Aktif/Baru yang entri kontrol TERAKHIRnya (kalau ada)
   //    lebih lama dari N hari yang lalu, ATAU belum pernah sama sekali
   //    (otomatis ikut kehitung "tidak dikontrol dalam rentang" juga).
+  // ✅ Toko baru yang diinput saat siklus kontrol wilayahnya sedang berjalan,
+  // dan toko yang entri kontrol TERAKHIRnya berstatus kunjungan "Bermasalah",
+  // dikecualikan dari kedua mode diagnostik ini (lihat isTokoBaruSiklusBerjalan
+  // & keterangan lastKontrolByToko di atas).
   const diagnostikBaseList = useMemo(() => {
     if (diagnostikMode === "never") return cakupanDiagnostik.belumPernah;
     const cutoff = new Date();
@@ -386,10 +429,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     const cutoffStr = cutoff.toISOString().slice(0, 10);
     const tokoRelevan = (db.toko || []).filter(t => t.status === "Aktif" || t.status === "Baru");
     return tokoRelevan.filter(t => {
+      if (isTokoBaruSiklusBerjalan(t)) return false;
       const last = lastKontrolByToko[t.id];
-      return !last || last < cutoffStr;
+      if (last && last.catatanStatus === "masalah") return false;
+      return !last || last.tanggal < cutoffStr;
     });
-  }, [diagnostikMode, diagnostikRentangHari, cakupanDiagnostik.belumPernah, db.toko, lastKontrolByToko]);
+  }, [diagnostikMode, diagnostikRentangHari, cakupanDiagnostik.belumPernah, db.toko, lastKontrolByToko, cycleStartPerWilayah]);
 
   // ✅ Daftar "belum pernah dikontrol" setelah disaring Wilayah/Rute/pencarian —
   // dipakai baik untuk tabel "Lihat Daftar Toko" maupun tombol "Ekspor Excel",
@@ -551,7 +596,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     if (!tokoIds.length) { alert("Belum ada data kontrol untuk dihitung."); return; }
     if (!confirm(`Hitung ulang stok untuk ${tokoIds.length} toko yang pernah dikontrol? Ini akan menimpa nilai Stok di Master Toko sesuai data kontrol & penyesuaian yang sudah ada.`)) return;
     tokoIds.forEach(tokoId => recalcTokoStok(tokoId));
-    alert(`✅ Selesai — stok ${tokoIds.length} toko sudah dihitung ulang.`);
+    alert(`Selesai — stok ${tokoIds.length} toko sudah dihitung ulang.`);
   }
 
   function openPenyesuaian(tokoId) {
@@ -737,7 +782,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       const tokoDipilih = (db.toko||[]).find(t=>t.id===form.tokoId);
       const ruteDipilih = tokoDipilih ? (db.rute||[]).find(r=>r.id===tokoDipilih.ruteId) : null;
       if (!ruteDipilih || ruteDipilih.wilayahId !== salesWilayahId) {
-        return alert("❌ Toko ini berada di luar wilayah Anda. Kontrol tidak dapat disimpan.");
+        return alert("Toko ini berada di luar wilayah Anda. Kontrol tidak dapat disimpan.");
       }
     }
     // ⚠️ Validasi kontrol ganda: cegah input dobel untuk toko yang sama di
@@ -750,7 +795,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     if (duplikatKontrol) {
       const namaTokoDup = (db.toko||[]).find(t=>t.id===form.tokoId)?.nama || "Toko ini";
       const lanjut = confirm(
-        `⚠️ ${namaTokoDup} SUDAH ada entri kontrol pada tanggal ${form.tanggal}.\n\n` +
+        `${namaTokoDup} SUDAH ada entri kontrol pada tanggal ${form.tanggal}.\n\n` +
         `Menyimpan sekarang akan menambah entri kontrol KEDUA di hari yang sama untuk toko ini.\n\n` +
         `Lanjutkan simpan?`
       );
@@ -758,6 +803,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     }
     // Status kunjungan WAJIB jika tidak ada produk terjual; opsional jika ada penjualan
     if (!adaTerjual && !form.catatanStatus) return alert("Pilih status kunjungan karena tidak ada produk yang terjual");
+    // ✅ Toko berstatus kunjungan "Bermasalah" wajib diberi keterangan —
+    // supaya jelas apa masalahnya (dipakai juga untuk tindak lanjut/exclude
+    // dari diagnostik "belum dikontrol", lihat lastKontrolByToko di atas).
+    if (form.catatanStatus === "masalah" && !String(form.catatan||"").trim()) {
+      return alert("Tulis keterangan untuk toko berstatus Bermasalah");
+    }
     const d = form.tanggal;
     const [y,m] = d.split("-");
     const payload = { ...form };
@@ -840,7 +891,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     addRecord("toko", payload);
     setTambahTokoModal(false);
     setTambahTokoForm({ nama:"", ruteId:"", status:"Aktif", catatan:"", produkIds:[] });
-    alert(`✅ Toko "${nama}" berhasil ditambahkan!`);
+    alert(`Toko "${nama}" berhasil ditambahkan!`);
   }
 
   function openTokoStatusModal(toko) {
@@ -1068,9 +1119,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             k.tanggal >= siklus.start && k.tanggal <= siklus.end && !(modal==="edit" && k.id===form.id)
           );
           if (entriSiklusIni.length === 0) {
-            extraBadge = { label: "🔴 Belum Kontrol", title: `Belum ada entri kontrol untuk toko ini di siklus berjalan (${siklus.start} s/d ${siklus.end})`, color: T.red, bg: T.redLt };
+            extraBadge = { label: "Belum Kontrol", title: `Belum ada entri kontrol untuk toko ini di siklus berjalan (${siklus.start} s/d ${siklus.end})`, color: T.red, bg: T.redLt };
           } else if (entriSiklusIni.every(k => k.catatanStatus === "tutup")) {
-            extraBadge = { label: "🟠 Tutup, Perlu Diulang", title: "Semua kunjungan di siklus berjalan ketemu toko tutup — belum ada kontrol yang berhasil", color: T.orange, bg: T.orangeLt };
+            extraBadge = { label: "Tutup, Perlu Diulang", title: "Semua kunjungan di siklus berjalan ketemu toko tutup — belum ada kontrol yang berhasil", color: T.orange, bg: T.orangeLt };
           }
         }
       }
@@ -1202,7 +1253,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     { key:"id",           label:"ID",         render:v=><code style={{ fontSize:10 }}>{v}</code> },
     { key:"tokoNama",     label:"Toko",       render:(v,row)=>{
       const tkObj = (db.toko||[]).find(t=>t.id===row.tokoId);
-      const stMap = { "Aktif": { icon:"✅", color:T.green }, "Baru": { icon:"🆕", color:T.blue }, "Non-Aktif": { icon:"🔴", color:T.red } };
+      const stMap = { "Aktif": { Icon:Icon.checkCircle, color:T.green }, "Baru": { Icon:Icon.package, color:T.blue }, "Non-Aktif": { Icon:Icon.closeCircle, color:T.red } };
       const st = tkObj ? (stMap[tkObj.status]||stMap["Aktif"]) : null;
       return (
         <div style={{ display:"flex", alignItems:"center", gap:6 }}>
@@ -1213,8 +1264,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               onClick={e=>{ e.stopPropagation(); openEditStatusModal(tkObj); }}
               style={{ cursor:"pointer", fontSize:10, background:st.color+"22", color:st.color,
                 border:`1px solid ${st.color}44`, borderRadius:99, padding:"1px 7px", fontWeight:700, lineHeight:1.6,
-                userSelect:"none", flexShrink:0 }}
-            >{st.icon} {tkObj.status}</span>
+                userSelect:"none", flexShrink:0, display:"inline-flex", alignItems:"center", gap:3 }}
+            ><st.Icon size={10} strokeWidth={2.5} /> {tkObj.status}</span>
           )}
         </div>
       );
@@ -1229,7 +1280,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     ]),
     { key:"totalRev",    label:"Revenue",    render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",  label:"Ttl Bonus",  render:v=><b style={{ color:T.gold }}>{fmt(v)} pcs</b> },
-    { key:"catatanStatus",label:"Status",    render:(v,row)=>{ if(!v) return <Badge color={T.green}>✅ Terjual</Badge>; const s=CATATAN_STATUS[v]||CATATAN_STATUS.manual; return <span title={row.catatan||""} style={{ display:"inline-flex", alignItems:"center", gap:4 }}><Badge color={s.color} bg={s.bg}>{s.label}</Badge>{row.catatan && <span style={{ fontSize:10, color:s.color, opacity:.7 }}>📝</span>}</span>; } },
+    { key:"catatanStatus",label:"Status",    render:(v,row)=>{ if(!v) return <Badge color={T.green}><Icon.checkCircle size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Terjual</Badge>; const s=CATATAN_STATUS[v]||CATATAN_STATUS.manual; return <span title={row.catatan||""} style={{ display:"inline-flex", alignItems:"center", gap:4 }}><Badge color={s.color} bg={s.bg}>{s.label}</Badge>{row.catatan && <Icon.note size={11} strokeWidth={2} style={{ color:s.color, opacity:.7 }} />}</span>; } },
     { key:"catatan",     label:"Catatan" },
   ];
 
@@ -1270,9 +1321,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
       {/* Modal Konfirmasi Penarikan / Non-Aktifkan Toko dari Kontrol */}
       {tokoStatusModal && (
-        <Modal title="🏪 Tarik / Non-Aktifkan Toko" onClose={() => { setTokoStatusModal(null); setStokPenarikan({}); }} width={520}>
+        <Modal title={<><Icon.toko size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Tarik / Non-Aktifkan Toko</>} onClose={() => { setTokoStatusModal(null); setStokPenarikan({}); }} width={520}>
           <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10, padding:"12px 16px", marginBottom:16 }}>
-            <div style={{ fontSize:14, fontWeight:700, color:"#DC2626", marginBottom:4 }}>⚠️ Toko akan ditarik / dinonaktifkan</div>
+            <div style={{ fontSize:14, fontWeight:700, color:"#DC2626", marginBottom:4, display:"flex", alignItems:"center", gap:6 }}><Icon.warning size={15} strokeWidth={2}/> Toko akan ditarik / dinonaktifkan</div>
             <div style={{ fontSize:13, color:"#6B7280", lineHeight:1.6 }}>
               Toko <b>{tokoStatusModal.toko.nama}</b> akan diubah statusnya menjadi <b>Non-Aktif</b>.<br/>
               Toko ini <b>tidak akan muncul</b> di dropdown kontrol bulan berikutnya.<br/>
@@ -1280,7 +1331,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             </div>
           </div>
           <div style={{ marginBottom:16 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6 }}>📅 Tanggal Penarikan</div>
+            <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6, display:"flex", alignItems:"center", gap:6 }}><Icon.calendar size={14} strokeWidth={2}/> Tanggal Penarikan</div>
             <div style={{ fontSize:12, color:"#6B7280", marginBottom:8 }}>
               Tanggal PASTI toko ini ditarik/dinonaktifkan di lapangan — boleh digeser mundur kalau baru dicatat belakangan. Dipakai untuk riwayat status toko di Rekap Siklus Wilayah.
             </div>
@@ -1288,7 +1339,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               style={{ padding:"7px 10px", border:"1.5px solid #E5E7EB", borderRadius:7, fontSize:13, fontFamily:"inherit" }} />
           </div>
           <div style={{ marginBottom:16 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6 }}>📦 Stok Produk Saat Penarikan</div>
+            <div style={{ fontSize:13, fontWeight:700, color:"#1F2937", marginBottom:6, display:"flex", alignItems:"center", gap:6 }}><Icon.package size={14} strokeWidth={2}/> Stok Produk Saat Penarikan</div>
             <div style={{ fontSize:12, color:"#6B7280", marginBottom:10, lineHeight:1.5 }}>
               Isi stok produk yang dikembalikan ke gudang saat toko ini ditarik. Stok ini akan disimpan ke master toko sebagai referensi.<br/>
               <span style={{ color:"#D97706", fontWeight:600 }}>Isi 0 jika semua stok sudah habis terjual atau tidak ada yang dikembalikan.</span>
@@ -1310,11 +1361,11 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             </div>
           </div>
           <div style={{ background:"#EFF6FF", border:"1px solid #BFDBFE", borderRadius:8, padding:"10px 14px", marginBottom:16, fontSize:12 }}>
-            ℹ️ Data kontrol yang sudah ada untuk toko ini <b>tidak akan dihapus</b> — status toko diubah menjadi Non-Aktif, stok diperbarui, dan ceklis "Produk yang Dijual" di Master Toko ikut <b>dikosongkan</b> (karena toko ini sudah tidak menjual produk apapun).
+            <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Data kontrol yang sudah ada untuk toko ini <b>tidak akan dihapus</b> — status toko diubah menjadi Non-Aktif, stok diperbarui, dan ceklis "Produk yang Dijual" di Master Toko ikut <b>dikosongkan</b> (karena toko ini sudah tidak menjual produk apapun).
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end" }}>
             <Btn variant="secondary" onClick={() => { setTokoStatusModal(null); setStokPenarikan({}); }}>Batal</Btn>
-            <Btn variant="danger" onClick={konfirmasiNonaktifkanToko}>🔴 Nonaktifkan Toko & Perbarui Stok</Btn>
+            <Btn variant="danger" onClick={konfirmasiNonaktifkanToko} icon={Icon.closeCircle}>Nonaktifkan Toko & Perbarui Stok</Btn>
           </div>
         </Modal>
       )}
@@ -1323,25 +1374,25 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       {editStatusModal && (() => {
         const { toko } = editStatusModal;
         const STATUS_OPTS = [
-          { value: "Aktif",     label: "Aktif",      icon: "✅", desc: "Toko aktif & muncul di dropdown kontrol.", color: T.green,  bg: T.greenLt,  border: T.green+"44" },
-          { value: "Baru",      label: "Baru",       icon: "🆕", desc: "Toko baru, akan muncul di kontrol & ditandai BARU.", color: T.blue,   bg: T.blueLt,   border: "#93C5FD" },
-          { value: "Non-Aktif", label: "Non-Aktif",  icon: "🔴", desc: "Toko tidak aktif, tersembunyi dari dropdown kontrol.", color: T.red,    bg: T.redLt,    border: "#FCA5A5" },
+          { value: "Aktif",     label: "Aktif",      icon: Icon.checkCircle, desc: "Toko aktif & muncul di dropdown kontrol.", color: T.green,  bg: T.greenLt,  border: T.green+"44" },
+          { value: "Baru",      label: "Baru",       icon: Icon.package, desc: "Toko baru, akan muncul di kontrol & ditandai BARU.", color: T.blue,   bg: T.blueLt,   border: "#93C5FD" },
+          { value: "Non-Aktif", label: "Non-Aktif",  icon: Icon.closeCircle, desc: "Toko tidak aktif, tersembunyi dari dropdown kontrol.", color: T.red,    bg: T.redLt,    border: "#FCA5A5" },
         ];
         const currentOpt = STATUS_OPTS.find(o => o.value === toko.status) || STATUS_OPTS[0];
         const selectedOpt = STATUS_OPTS.find(o => o.value === editStatusValue) || null;
         const changed = editStatusValue && editStatusValue !== toko.status;
         return (
-          <Modal title="🏷️ Edit Status Toko" onClose={() => { setEditStatusModal(null); setEditStatusValue(""); setEditStatusCatatan(""); }} width={480}>
+          <Modal title={<><Icon.tag size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Edit Status Toko</>} onClose={() => { setEditStatusModal(null); setEditStatusValue(""); setEditStatusCatatan(""); }} width={480}>
             {/* Info toko */}
             <div style={{ background: T.gray50, border: `1px solid ${T.gray200}`, borderRadius: 10, padding: "12px 16px", marginBottom: 16, display: "flex", alignItems: "center", gap: 12 }}>
-              <span style={{ fontSize: 28 }}>🏪</span>
+              <Icon.toko size={28} strokeWidth={1.75} color={T.gray400} />
               <div>
                 <div style={{ fontWeight: 800, fontSize: 15, color: T.gray800 }}>{toko.nama}</div>
                 <div style={{ fontSize: 12, color: T.gray400 }}>
                   {toko.kode && <span style={{ marginRight: 8 }}>Kode: <b>{toko.kode}</b></span>}
                   Status saat ini:{" "}
                   <span style={{ fontWeight: 700, color: currentOpt.color, background: currentOpt.bg, borderRadius: 99, padding: "1px 8px", fontSize: 11 }}>
-                    {currentOpt.icon} {toko.status || "Aktif"}
+                    <currentOpt.icon size={11} strokeWidth={2.5} style={{verticalAlign:"-1px"}} /> {toko.status || "Aktif"}
                   </span>
                 </div>
               </div>
@@ -1369,7 +1420,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                         opacity: isCurrent && !isSelected ? 0.6 : 1,
                       }}
                     >
-                      <span style={{ fontSize: 22 }}>{opt.icon}</span>
+                      <opt.icon size={22} strokeWidth={1.75} color={opt.color} />
                       <div style={{ flex: 1 }}>
                         <div style={{ fontWeight: 700, fontSize: 14, color: isSelected ? opt.color : T.gray800 }}>
                           {opt.label}
@@ -1398,8 +1449,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             {/* Peringatan khusus jika pilih Non-Aktif lewat jalur ini */}
             {editStatusValue === "Non-Aktif" && toko.status !== "Non-Aktif" && (
               <div style={{ background: T.orangeLt, border: `1px solid ${T.orange}55`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12 }}>
-                ⚠️ <b>Catatan:</b> Mengubah status ke <b>Non-Aktif</b> via menu ini <b>tidak akan mengubah stok toko</b>.<br/>
-                Jika ingin mencatat pengembalian stok, gunakan tombol <b>🔴 Tarik Toko</b> di view per Rute.
+                <Icon.warning size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> <b>Catatan:</b> Mengubah status ke <b>Non-Aktif</b> via menu ini <b>tidak akan mengubah stok toko</b>.<br/>
+                Jika ingin mencatat pengembalian stok, gunakan tombol <b>Tarik Toko</b> di view per Rute.
               </div>
             )}
 
@@ -1407,7 +1458,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 ke riwayat status toko (dipakai Rekap → Siklus Wilayah). */}
             {changed && (
               <div style={{ marginBottom: 14 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: T.gray600, marginBottom: 4 }}>📅 Tanggal Perubahan (boleh digeser mundur)</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: T.gray600, marginBottom: 4, display:"flex", alignItems:"center", gap:5 }}><Icon.calendar size={13} strokeWidth={2}/> Tanggal Perubahan (boleh digeser mundur)</div>
                 <input type="date" value={editStatusTanggal} onChange={e=>setEditStatusTanggal(e.target.value)}
                   style={{ padding: "7px 10px", border: `1.5px solid ${T.gray200}`, borderRadius: 7, fontSize: 13, fontFamily: "inherit", marginBottom: 10 }} />
                 <Input label="Catatan (opsional)" value={editStatusCatatan} onChange={v=>setEditStatusCatatan(v)}
@@ -1418,7 +1469,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             {/* Pesan info jika status tidak berubah */}
             {!changed && editStatusValue && (
               <div style={{ background: T.blueLt, border: `1px solid #BFDBFE`, borderRadius: 8, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: T.blue }}>
-                ℹ️ Status toko sudah <b>{editStatusValue}</b>. Tidak ada perubahan yang akan disimpan.
+                <Icon.idea size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Status toko sudah <b>{editStatusValue}</b>. Tidak ada perubahan yang akan disimpan.
               </div>
             )}
 
@@ -1438,15 +1489,15 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       })()}
 
       <div style={{ marginBottom:16 }}>
-        <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📋 Kontrol Bulanan</div>
+        <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.kontrol size={19} strokeWidth={2} /> Kontrol Bulanan</div>
         <div style={{ fontSize:12, color:T.gray400, marginBottom:12 }}>
           {data.length} entri
-          {luarRuteDataForSummary.length>0 && <span> · 🛣️ +{luarRuteDataForSummary.length} luar rute</span>}
+          {luarRuteDataForSummary.length>0 && <span style={{display:"inline-flex",alignItems:"center",gap:3}}> · <Icon.rute size={11} strokeWidth={2}/> +{luarRuteDataForSummary.length} luar rute</span>}
           {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevData)}</b>
           {" "}· Bonus: <b style={{ color:T.gold }}>{fmt(totalBonusData)} pcs</b>
           {dataStillSyncing && (
             <span title="Data kontrol masih disinkronkan di latar belakang — angka Rev/Bonus di atas bisa masih bertambah" style={{ marginLeft:6, color:T.gold, fontWeight:700 }}>
-              🔄 masih memuat…
+              <Icon.refresh size={12} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:4}}/> masih memuat…
             </span>
           )}
         </div>
@@ -1464,10 +1515,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 padding:"10px 14px", cursor:"pointer", gap:10, flexWrap:"wrap" }}>
               <div style={{ fontSize:12.5, fontWeight:700,
                 color:cakupanDiagnostik.belumPernah.length>0?T.orange:T.green }}>
-                🩺 Diagnostik Cakupan Kontrol
+                <Icon.stethoscope size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}}/> Diagnostik Cakupan Kontrol
                 {" — "}
                 {cakupanDiagnostik.belumPernah.length===0
-                  ? "semua toko aktif sudah pernah dikontrol ✅"
+                  ? "semua toko aktif sudah pernah dikontrol"
                   : `${fmt(cakupanDiagnostik.belumPernah.length)} dari ${fmt(cakupanDiagnostik.totalRelevan)} toko aktif belum pernah dikontrol`}
               </div>
               <span style={{ fontSize:11, color:T.gray500 }}>{diagnostikOpen?"▲ Tutup":"▼ Detail"}</span>
@@ -1475,7 +1526,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             {diagnostikOpen && (
               <div style={{ padding:"0 14px 14px", fontSize:12.5, color:T.gray700 }}>
                 {cakupanDiagnostik.belumPernah.length===0 ? (
-                  <div>Semua toko berstatus Aktif/Baru sudah punya minimal satu entri Kontrol Bulanan pada data yang termuat saat ini. 🎉</div>
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>Semua toko berstatus Aktif/Baru sudah punya minimal satu entri Kontrol Bulanan pada data yang termuat saat ini. <Icon.party size={15} strokeWidth={2}/></div>
                 ) : (
                   <>
                     <div style={{ marginBottom:8 }}>
@@ -1487,7 +1538,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     {cakupanDiagnostik.berstokTanpaKontrol.length > 0 && (
                       <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:8,
                         padding:"8px 12px", marginBottom:10, color:"#DC2626" }}>
-                        ⚠️ <b>{fmt(cakupanDiagnostik.berstokTanpaKontrol.length)} toko</b> di antaranya sudah
+                        <Icon.warning size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> <b>{fmt(cakupanDiagnostik.berstokTanpaKontrol.length)} toko</b> di antaranya sudah
                         punya <b>Stok tersimpan {'>'}0</b> di Master Toko meski tidak ada entri kontrol termuat —
                         patut dicek manual, karena baseline stoknya bisa salah kalau "Hitung Ulang Semua Stok"
                         dijalankan sebelum histori lamanya (kalau ada) dimuat.
@@ -1496,7 +1547,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     {cakupanDiagnostik.tahunBelumDimuat.length > 0 ? (
                       <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8,
                         padding:"8px 12px", marginBottom:10, color:"#92400E" }}>
-                        📅 Ada data kontrol tahun <b>{cakupanDiagnostik.tahunBelumDimuat.join(", ")}</b> di cloud
+                        <Icon.calendar size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada data kontrol tahun <b>{cakupanDiagnostik.tahunBelumDimuat.join(", ")}</b> di cloud
                         yang belum dimuat ke perangkat ini. Muat dulu lewat menu <b>Cadangan/Admin → Muat Data
                         Tahun Lama</b> sebelum menyimpulkan toko-toko di atas benar-benar "belum pernah dikontrol".
                       </div>
@@ -1589,15 +1640,15 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                         onChange={setDiagnostikFilterRuteId}
                         options={[{value:"",label:"Semua Rute"}, ...diagnostikRuteOpts]} />
                     </div>
-                    <input placeholder="🔍 Cari nama/kode toko..." value={diagnostikSearchQ}
+                    <input placeholder="Cari nama/kode toko..." value={diagnostikSearchQ}
                       onChange={e=>setDiagnostikSearchQ(e.target.value)}
                       style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
                         borderRadius:8, fontSize:12.5, fontFamily:"inherit", boxSizing:"border-box", marginBottom:10 }} />
                     <div style={{ display:"flex", gap:8, flexWrap:"wrap", alignItems:"center" }}>
                       <Btn size="sm" variant="secondary" onClick={()=>setDiagnostikShowList(v=>!v)}>
-                        {diagnostikShowList ? "Sembunyikan Daftar Toko" : "📋 Lihat Daftar Toko"}
+                        {diagnostikShowList ? "Sembunyikan Daftar Toko" : "Lihat Daftar Toko"}
                       </Btn>
-                      <Btn size="sm" variant="secondary" icon="📥" disabled={diagnostikFiltered.length===0} onClick={()=>{
+                      <Btn size="sm" variant="secondary" icon={Icon.download} disabled={diagnostikFiltered.length===0} onClick={()=>{
                         const rows = diagnostikFiltered.map(t => {
                           const rute = (db.rute||[]).find(r=>r.id===t.ruteId);
                           const wilayah = rute ? (db.wilayah||[]).find(w=>w.id===rute.wilayahId) : null;
@@ -1636,7 +1687,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                 <tr key={t.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
                                   <td style={{ padding:"5px 8px" }}>{t.nama}</td>
                                   <td style={{ padding:"5px 8px", color:T.gray500 }}>{wilayah?.nama||"-"} / {rute?.nama||"-"}</td>
-                                  <td style={{ padding:"5px 8px", textAlign:"center" }}>{punyaStok ? "⚠️" : "—"}</td>
+                                  <td style={{ padding:"5px 8px", textAlign:"center" }}>{punyaStok ? <Icon.warning size={13} strokeWidth={2} color={T.orange}/> : "—"}</td>
                                 </tr>
                               );
                             })}
@@ -1664,7 +1715,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           gap:8, background:T.white, border:`1px solid ${T.gray200}`, borderRadius:12,
           padding:10, boxShadow:"0 1px 4px rgba(0,0,0,.05)", marginBottom:8 }}>
           <ImportMenu label="Import Kontrol" onTemplate={()=>downloadKontrolTemplate(db)} onParseRows={importKontrolFromRows} />
-          <Btn variant="secondary" icon="🔄" onClick={recalcAllTokoStok}
+          <Btn variant="secondary" icon={Icon.refresh} onClick={recalcAllTokoStok}
             style={{ width:"100%", justifyContent:"center" }}
             title="Hitung ulang stok Master Toko untuk semua toko yang pernah dikontrol, pakai data kontrol & penyesuaian yang sudah ada">
             Hitung Ulang Semua Stok
@@ -1702,7 +1753,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               ...luarRuteDataForSummary.map(pl => ({
                 ...pl,
                 id: pl.id,
-                tokoNama: `🛣️ Penjualan Luar Rute${pl.ruteNama ? " — "+pl.ruteNama : ""}`,
+                tokoNama: `Penjualan Luar Rute${pl.ruteNama ? " — "+pl.ruteNama : ""}`,
                 wilayahNama: pl.wilayahNama || "-",
                 ruteNama: pl.ruteNama || "-",
                 totalRevFmt: fmtRp(pl.totalRev||0),
@@ -1720,7 +1771,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               // Baris kosong
               { id:"", tokoNama:"", wilayahNama:"", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
               // Ringkasan
-              { id:"", tokoNama:"📊 RINGKASAN",        wilayahNama:"",                          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"RINGKASAN",        wilayahNama:"",                          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Entri Kontrol",  wilayahNama:String(data.length),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Entri Luar Rute", wilayahNama:String(luarRuteDataForSummary.length), ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Revenue",         wilayahNama:fmtRp(totalRevData),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
@@ -1735,24 +1786,24 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               />
             );
           })()}
-          <Btn variant="secondary" size="sm" icon="📅"
+          <Btn variant="secondary" size="sm" icon={Icon.calendar}
             style={{ width:"100%", justifyContent:"center" }}
             onClick={()=>setViewMode(v=>v==="table"?"monthly":"table")}>
-            {viewMode==="table"?"🗺️ View per Rute":"📋 View Tabel"}
+            {viewMode==="table"?<><Icon.map size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/>View per Rute</>:<><Icon.kontrol size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/>View Tabel</>}
           </Btn>
           <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={()=>{
             // Pre-fill rute dari filter aktif jika ada
             setTambahTokoForm({ nama:"", ruteId:filter.ruteId||"", status:"Aktif", catatan:"", produkIds:[] });
             setTambahTokoModal(true);
-          }} icon="🏪">Tambah Toko</Btn>
-          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={()=>openPenyesuaian("")} icon="🔧">Penyesuaian Stok</Btn>
-          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={openLuarRute} icon="🛣️">Penjualan Luar Rute</Btn>
+          }} icon={Icon.toko}>Tambah Toko</Btn>
+          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={()=>openPenyesuaian("")} icon={Icon.wrench}>Penyesuaian Stok</Btn>
+          <Btn variant="secondary" style={{ width:"100%", justifyContent:"center" }} onClick={openLuarRute} icon={Icon.rute}>Penjualan Luar Rute</Btn>
         </div>
 
         {/* ✅ "Tambah Kontrol" tetap jadi tombol utama (hijau, aksi paling
             sering dipakai) — dipisah di bawah grid supaya menonjol, full
             lebar layar, senada dengan gaya tombol utama di tab lain. */}
-        <Btn onClick={openAdd} icon="＋" style={{ width:"100%", justifyContent:"center", padding:"12px 20px", fontSize:14 }}>Tambah Kontrol</Btn>
+        <Btn onClick={openAdd} icon={Icon.add} style={{ width:"100%", justifyContent:"center", padding:"12px 20px", fontSize:14 }}>Tambah Kontrol</Btn>
       </div>
 
       {/* Modal Tambah Toko Cepat */}
@@ -1770,10 +1821,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           return { value:r.id, label:`${r.nama} (${w?.nama||"?"})` };
         });
         return (
-          <Modal title="🏪 Tambah Toko Baru" onClose={()=>setTambahTokoModal(false)} width={480}>
+          <Modal title={<><Icon.toko size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Tambah Toko Baru</>} onClose={()=>setTambahTokoModal(false)} width={480}>
             <div style={{ fontSize:12, color:T.gray400, marginBottom:16, background:T.blueLt,
               border:`1px solid #BFDBFE`, borderRadius:8, padding:"8px 12px" }}>
-              💡 Toko baru langsung bisa dipilih di input Kontrol tanpa menutup halaman ini.
+              <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Toko baru langsung bisa dipilih di input Kontrol tanpa menutup halaman ini.
               Jika status <b>Baru</b>, sistem otomatis mencatat tanggal masuk dan akan upgrade ke <b>Aktif</b> setelah 30 hari.
             </div>
             <Input label="Nama Toko" value={tambahTokoForm.nama}
@@ -1819,7 +1870,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               type="textarea" placeholder="Opsional" />
             <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
               <Btn variant="secondary" onClick={()=>setTambahTokoModal(false)}>Batal</Btn>
-              <Btn onClick={submitTambahToko}>✅ Simpan Toko</Btn>
+              <Btn onClick={submitTambahToko} icon={Icon.checkCircle}>Simpan Toko</Btn>
             </div>
           </Modal>
         );
@@ -1827,10 +1878,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
       {/* Modal Penyesuaian Stok (kejadian lapangan di luar siklus kontrol rutin) */}
       {penyesuaianModal && penyesuaianForm && (
-        <Modal title="🔧 Penyesuaian Stok Lapangan" onClose={()=>{ setPenyesuaianModal(false); setPenyesuaianForm(null); }} width={560}>
+        <Modal title={<><Icon.wrench size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Penyesuaian Stok Lapangan</>} onClose={()=>{ setPenyesuaianModal(false); setPenyesuaianForm(null); }} width={560}>
           <div style={{ fontSize:12, color:T.gray600, marginBottom:14, background:T.blueLt,
             border:`1px solid #BFDBFE`, borderRadius:8, padding:"8px 12px" }}>
-            💡 Gunakan untuk mencatat kejadian di toko <b>di luar kunjungan kontrol rutin</b> — misal laporan sales
+            <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Gunakan untuk mencatat kejadian di toko <b>di luar kunjungan kontrol rutin</b> — misal laporan sales
             ada tambahan stok, stok berkurang (rusak/hilang), atau sebagian produk ditarik. Stok di Master Toko
             akan otomatis diperbarui.
           </div>
@@ -1839,7 +1890,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12 }}>
             <Input label="Tanggal" value={penyesuaianForm.tanggal} onChange={v=>pf("tanggal",v)} type="date" required />
             <Input label="Jenis Penyesuaian" value={penyesuaianForm.jenis} onChange={v=>pf("jenis",v)}
-              options={[{value:"Tambah",label:"➕ Tambah Stok"},{value:"Kurang",label:"➖ Kurang Stok"},{value:"Tarik",label:"🔻 Tarik Sebagian Produk"}]} />
+              options={[{value:"Tambah",label:"Tambah Stok"},{value:"Kurang",label:"Kurang Stok"},{value:"Tarik",label:"Tarik Sebagian Produk"}]} />
           </div>
           <div style={{ marginTop:10, marginBottom:6, fontSize:12, fontWeight:600, color:T.gray600 }}>Jumlah per Produk:</div>
           <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:10 }}>
@@ -1870,7 +1921,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             return adaProdukBaru ? (
               <div style={{ fontSize:11, color:T.blue, background:T.blueLt, border:`1px solid #BFDBFE`,
                 borderRadius:8, padding:"6px 10px", marginBottom:10 }}>
-                ℹ️ Produk bertanda 🆕 akan otomatis ditambahkan ke daftar "Produk yang Dijual" toko ini saat disimpan.
+                <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Produk bertanda <Icon.new size={12} strokeWidth={2} style={{verticalAlign:"-2px"}}/> akan otomatis ditambahkan ke daftar "Produk yang Dijual" toko ini saat disimpan.
               </div>
             ) : null;
           })()}
@@ -1879,17 +1930,17 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             type="textarea" placeholder="cth: Laporan sales — 2 botol rusak saat kunjungan" />
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>{ setPenyesuaianModal(false); setPenyesuaianForm(null); }}>Batal</Btn>
-            <Btn onClick={submitPenyesuaian}>✅ Simpan Penyesuaian</Btn>
+            <Btn onClick={submitPenyesuaian} icon={Icon.checkCircle}>Simpan Penyesuaian</Btn>
           </div>
         </Modal>
       )}
 
       {/* Modal Penjualan Luar Rute (toko/rute tidak diketahui sales) */}
       {luarRuteModal && luarRuteForm && (
-        <Modal title="🛣️ Penjualan Luar Rute" onClose={()=>{ setLuarRuteModal(false); setLuarRuteForm(null); }} width={560}>
+        <Modal title={<><Icon.rute size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Penjualan Luar Rute</>} onClose={()=>{ setLuarRuteModal(false); setLuarRuteForm(null); }} width={560}>
           <div style={{ fontSize:12, color:T.gray600, marginBottom:14, background:T.goldLt||"#FEF9E7",
             border:`1px solid ${T.gold}55`, borderRadius:8, padding:"8px 12px" }}>
-            💡 Gunakan ini jika sales <b>menjual produk di luar rute kontrol saat itu</b> (rute lain pada waktu yang sama,
+            <Icon.idea size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Gunakan ini jika sales <b>menjual produk di luar rute kontrol saat itu</b> (rute lain pada waktu yang sama,
             atau penjualan perorangan) dan <b>tidak tahu/lupa nama toko & rutenya</b>. Penjualan tetap tercatat &
             masuk laporan pendapatan, tanpa terikat ke toko manapun — namun tetap <b>dikaitkan ke wilayah</b>
             supaya ikut terhitung di Rekap Siklus wilayah tsb saat siklus kontrolnya selesai.
@@ -1926,7 +1977,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                         borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
                   </div>
                   <div>
-                    <div style={{ fontSize:11, color:T.gold, marginBottom:3 }}>🎁 Bonus Produk (pcs)</div>
+                    <div style={{ fontSize:11, color:T.gold, marginBottom:3, display:"flex", alignItems:"center", gap:4 }}><Icon.gift size={12} strokeWidth={2}/> Bonus Produk (pcs)</div>
                     <input type="number" value={luarRuteForm[`bonusInput_${p.id}`]||0}
                       onChange={e=>lf(`bonusInput_${p.id}`,e.target.value)} min={0}
                       style={{ width:"100%", padding:"6px 10px", border:`1.5px solid ${T.gray200}`,
@@ -1942,13 +1993,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             return estRev > 0 ? (
               <div style={{ fontSize:12, color:T.green, background:T.greenLt, border:`1px solid ${T.green}33`,
                 borderRadius:8, padding:"8px 12px", marginBottom:10 }}>
-                💰 Estimasi pendapatan: <b>{fmtRp(estRev)}</b>
+                <Icon.wallet size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Estimasi pendapatan: <b>{fmtRp(estRev)}</b>
               </div>
             ) : null;
           })()}
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>{ setLuarRuteModal(false); setLuarRuteForm(null); }}>Batal</Btn>
-            <Btn onClick={submitLuarRute}>✅ Simpan Penjualan</Btn>
+            <Btn onClick={submitLuarRute} icon={Icon.checkCircle}>Simpan Penjualan</Btn>
           </div>
         </Modal>
       )}
@@ -1957,7 +2008,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       {isSalesRestricted && (
         <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
           padding:"8px 14px", marginBottom:12, fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8 }}>
-          🔒 Anda hanya dapat melihat data wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+          <Icon.lock size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Anda hanya dapat melihat data wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
         </div>
       )}
       <FilterBar filters={[
@@ -1967,10 +2018,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
         { key:"catatanStatus", label:"Status Kunjungan", value:filter.catatanStatus,
           options:[
-            { value:"manual",  label:"✅ Isi Manual (normal)" },
-            { value:"tutup",   label:"🔵 Toko Tutup" },
-            { value:"terjual", label:"🟡 Tidak Terjual" },
-            { value:"masalah", label:"🔴 Bermasalah" },
+            { value:"manual",  label:"Isi Manual (normal)" },
+            { value:"tutup",   label:"Toko Tutup" },
+            { value:"terjual", label:"Tidak Terjual" },
+            { value:"masalah", label:"Bermasalah" },
           ] },
       ]} onChange={(k,v)=>{
         if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
@@ -2006,7 +2057,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           borderRadius:7, background:filter.kunjunganBerulang?T.orangeLt:T.white }}>
           <input type="checkbox" checked={!!filter.kunjunganBerulang}
             onChange={e=>setFilter(p=>({...p, kunjunganBerulang:e.target.checked}))} />
-          🔁 Toko Dikunjungi &gt;1× (tutup/lainnya)
+          <Icon.repeat size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Toko Dikunjungi &gt;1× (tutup/lainnya)
         </label>
       </div>
 
@@ -2030,7 +2081,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 label={p.nama}
                 value={`${fmt(totalTerjual)} pcs`}
                 sub={`Bonus: ${fmt(bonusTotal)} pcs`}
-                icon="🧴" color={T.gold} />
+                icon={Icon.produk} color={T.gold} />
             );
           })}
         </div>
@@ -2043,7 +2094,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div style={{ background:T.orangeLt, border:`1px solid ${T.orange}55`, borderRadius:10,
             padding:"10px 16px", marginBottom:14, display:"flex", alignItems:"center", gap:14, flexWrap:"wrap" }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
-              <span style={{ fontSize:13, fontWeight:700, color:T.orange }}>🔎 Cek tanggal:</span>
+              <span style={{ fontSize:13, fontWeight:700, color:T.orange, display:"inline-flex", alignItems:"center", gap:4 }}><Icon.search size={13} strokeWidth={2}/> Cek tanggal:</span>
               <input type="date" value={filter.cekTanggal}
                 onChange={e=>setFilter(p=>({...p, cekTanggal:e.target.value}))}
                 style={{ border:`1px solid ${T.orange}55`, borderRadius:8, padding:"5px 8px", fontSize:13 }} />
@@ -2057,13 +2108,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           {(!filter.wilayahId && !filter.ruteId) && (
             <div style={{ background:T.blueLt, border:`1px solid ${T.blue}33`, borderRadius:10,
               padding:"10px 16px", marginBottom:14, fontSize:13, color:T.blue }}>
-              📋 Menampilkan <b>semua toko</b> dari semua rute. Gunakan filter <b>Wilayah</b> atau <b>Rute</b> untuk mempersempit tampilan.
+              <Icon.kontrol size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Menampilkan <b>semua toko</b> dari semua rute. Gunakan filter <b>Wilayah</b> atau <b>Rute</b> untuk mempersempit tampilan.
             </div>
           )}
           {tokoPerRute.length === 0 ? (
             <Card><div style={{ textAlign:"center", color:T.gray400, padding:24 }}>
               {filter.hanyaBelumHariIni
-                ? "🎉 Semua toko sudah dikontrol pada tanggal ini."
+                ? "Semua toko sudah dikontrol pada tanggal ini."
                 : "Belum ada toko aktif. Tambahkan toko terlebih dahulu di tab Toko."}
             </div></Card>
           ) : tokoPerRute.map(({ rute, wilayah, tokoList }) => (
@@ -2072,7 +2123,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
                 marginBottom:14, paddingBottom:10, borderBottom:`2px solid ${T.gray200}` }}>
                 <div>
-                  <div style={{ fontSize:15, fontWeight:800, color:T.gray800 }}>🛣️ {rute.nama}</div>
+                  <div style={{ fontSize:15, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.rute size={16} strokeWidth={2}/> {rute.nama}</div>
                   <div style={{ fontSize:12, color:T.gray400 }}>{wilayah?.nama||"—"} · {tokoList.length} toko</div>
                 </div>
                 <div style={{ display:"flex", gap:10, fontSize:12 }}>
@@ -2096,7 +2147,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
                       padding:"10px 14px", background:sudahDikontrol?T.greenLt:T.gray50, flexWrap:"wrap", gap:10 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-                        <span style={{ fontSize:18 }}>{sudahDikontrol?"✅":"⏳"}</span>
+                        <span style={{ display:"inline-flex" }}>{sudahDikontrol?<Icon.checkCircle size={18} strokeWidth={2} color={T.green}/>:<Icon.refresh size={18} strokeWidth={2} color={T.gray400}/>}</span>
                         <div>
                           <div style={{ fontWeight:700, fontSize:14, color:T.gray800, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
                             {toko.nama}
@@ -2110,12 +2161,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                       </div>
                       <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
                         {sudahDikontrolHariIni
-                          ? <Badge color={T.green} bg={T.greenLt}>✅ Sudah ({filter.cekTanggal})</Badge>
-                          : <Badge color={T.red} bg={T.redLt}>⚠️ Belum ({filter.cekTanggal})</Badge>}
+                          ? <Badge color={T.green} bg={T.greenLt}><Icon.checkCircle size={11} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:3}}/>Sudah ({filter.cekTanggal})</Badge>
+                          : <Badge color={T.red} bg={T.redLt}><Icon.warning size={11} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:3}}/>Belum ({filter.cekTanggal})</Badge>}
                         {sudahDikontrol
                           ? <Badge color={T.green}>{entries.length}x kontrol</Badge>
                           : <Badge color={T.orange} bg={T.orangeLt}>Belum dikontrol</Badge>}
-                        <Btn size="sm" icon="＋" onClick={()=>{
+                        <Btn size="sm" icon={Icon.add} onClick={()=>{
                           const today = new Date().toISOString().slice(0,10);
                           const initial = { tokoId:toko.id, tanggal:today, catatanStatus:"", catatan:"" };
                           produkAktif.forEach(p => {
@@ -2127,14 +2178,14 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                           setModalFilter({ wilayahId: wilayah?.id||"", ruteId: rute.id });
                           setModal("add");
                         }}>Tambah</Btn>
-                        <Btn size="sm" variant="secondary" icon="🔧" onClick={() => openPenyesuaian(toko.id)}>
+                        <Btn size="sm" variant="secondary" icon={Icon.wrench} onClick={() => openPenyesuaian(toko.id)}>
                           Penyesuaian
                         </Btn>
-                        <Btn size="sm" variant="secondary" icon="🏷️" onClick={() => openEditStatusModal(toko)}>
+                        <Btn size="sm" variant="secondary" icon={Icon.tag} onClick={() => openEditStatusModal(toko)}>
                           Status
                         </Btn>
                         {toko.status !== "Non-Aktif" && (
-                          <Btn size="sm" variant="danger" icon="🔴" onClick={() => openTokoStatusModal(toko)}>
+                          <Btn size="sm" variant="danger" icon={Icon.dot} onClick={() => openTokoStatusModal(toko)}>
                             Tarik Toko
                           </Btn>
                         )}
@@ -2167,8 +2218,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                   <td style={{ padding:"6px 10px", fontWeight:600 }}>{e.tanggal}</td>
                                   {produkAktif.map(p=>(
                                     <td key={p.id} style={{ padding:"6px 10px", textAlign:"center" }}>
-                                      <div style={{ color:T.gray600 }}>📦 {e[`stok_${p.id}`]||0}</div>
-                                      <div style={{ color:T.green, fontWeight:700 }}>✓ {e[`terjual_${p.id}`]||0}</div>
+                                      <div style={{ color:T.gray600, display:"flex", alignItems:"center", gap:3 }}><Icon.package size={11} strokeWidth={2}/>{e[`stok_${p.id}`]||0}</div>
+                                      <div style={{ color:T.green, fontWeight:700, display:"flex", alignItems:"center", gap:3 }}><Icon.check size={12} strokeWidth={2.5}/>{e[`terjual_${p.id}`]||0}</div>
                                     </td>
                                   ))}
                                   <td style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, color:T.green }}>{fmtRp(e.totalRev)}</td>
@@ -2177,20 +2228,20 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                     <div>
                                       {cs
                                         ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
-                                        : <Badge color={T.green}>✅ Terjual</Badge>}
+                                        : <Badge color={T.green}><Icon.checkCircle size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Terjual</Badge>}
                                       {e.catatan && (
                                         <div style={{ fontSize:10, color:T.gray400, marginTop:2,
                                           maxWidth:120, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}
                                           title={e.catatan}>
-                                          📝 {e.catatan}
+                                          <Icon.note size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:4}}/>{e.catatan}
                                         </div>
                                       )}
                                     </div>
                                   </td>
                                   <td style={{ padding:"6px 10px", textAlign:"right" }}>
                                     <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
-                                      <Btn variant="secondary" size="sm" icon="✏️" onClick={()=>openEdit(e)}>Edit</Btn>
-                                      <Btn variant="danger" size="sm" icon="🗑" onClick={()=>setDeleteTarget(e.id)}>Hapus</Btn>
+                                      <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>openEdit(e)}>Edit</Btn>
+                                      <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>setDeleteTarget(e.id)}>Hapus</Btn>
                                     </div>
                                   </td>
                                 </tr>
@@ -2209,7 +2260,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                       if (pzList.length===0) return null;
                       return (
                         <div style={{ overflowX:"auto", borderTop:`1px solid ${T.gray200}` }}>
-                          <div style={{ padding:"6px 10px", fontSize:11, fontWeight:700, color:T.gray500 }}>🔧 Riwayat Penyesuaian Stok</div>
+                          <div style={{ padding:"6px 10px", fontSize:11, fontWeight:700, color:T.gray500, display:"flex", alignItems:"center", gap:5 }}><Icon.wrench size={12} strokeWidth={2}/> Riwayat Penyesuaian Stok</div>
                           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
                             <tbody>
                               {pzList.map(pz => (
@@ -2217,28 +2268,28 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                   <td style={{ padding:"6px 10px", fontWeight:600, whiteSpace:"nowrap" }}>{pz.tanggal}</td>
                                   <td style={{ padding:"6px 10px" }}>
                                     <Badge color={pz.jenis==="Tambah"?T.green:T.red} bg={pz.jenis==="Tambah"?T.greenLt:T.redLt}>
-                                      {pz.jenis==="Tambah"?"➕ Tambah":pz.jenis==="Kurang"?"➖ Kurang":"🔻 Tarik Sebagian"}
+                                      {pz.jenis==="Tambah"?"Tambah":pz.jenis==="Kurang"?"Kurang":"Tarik Sebagian"}
                                     </Badge>
-                                    {pz.status==="menunggu" && <span style={{marginLeft:4}}><Badge color={T.gold} bg="#FFFBEB">⏳ Menunggu</Badge></span>}
-                                    {pz.status==="ditolak" && <span style={{marginLeft:4}}><Badge color={T.red} bg={T.redLt}>❌ Ditolak</Badge></span>}
+                                    {pz.status==="menunggu" && <span style={{marginLeft:4}}><Badge color={T.gold} bg="#FFFBEB"><Icon.refresh size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Menunggu</Badge></span>}
+                                    {pz.status==="ditolak" && <span style={{marginLeft:4}}><Badge color={T.red} bg={T.redLt}><Icon.closeCircle size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Ditolak</Badge></span>}
                                   </td>
                                   <td style={{ padding:"6px 10px" }}>
                                     {produkAktif.filter(p=>Number(pz[`jumlah_${p.id}`]||0)>0)
                                       .map(p=>`${p.nama}: ${pz[`jumlah_${p.id}`]}`).join(" · ")}
                                   </td>
                                   <td style={{ padding:"6px 10px", color:T.gray400, fontSize:11 }}>
-                                    {pz.dicatatOleh && <span>👤 {pz.dicatatOleh}</span>}
-                                    {pz.catatan && <span style={{ marginLeft:6 }}>📝 {pz.catatan}</span>}
+                                    {pz.dicatatOleh && <span style={{display:"inline-flex",alignItems:"center",gap:3}}><Icon.user size={11} strokeWidth={2}/>{pz.dicatatOleh}</span>}
+                                    {pz.catatan && <span style={{ marginLeft:6, display:"inline-flex", alignItems:"center", gap:3 }}><Icon.note size={11} strokeWidth={2}/>{pz.catatan}</span>}
                                   </td>
                                   <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
                                     {pz.status==="menunggu" && !isSalesRestricted && (
                                       <>
-                                        <Btn variant="primary" size="sm" icon="✅" onClick={()=>{
+                                        <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>{
                                           updateRecord("penyesuaian", pz.id, { status:"disetujui", disetujuiOleh:"Manual" });
                                           setTimeout(()=>recalcTokoStok(toko.id), 300);
                                         }}>Setujui</Btn>
                                         {" "}
-                                        <Btn variant="danger" size="sm" icon="❌" onClick={()=>{
+                                        <Btn variant="danger" size="sm" icon={Icon.closeCircle} onClick={()=>{
                                           if (!confirm("Tolak pengajuan penyesuaian stok ini?")) return;
                                           updateRecord("penyesuaian", pz.id, { status:"ditolak", disetujuiOleh:"Manual" });
                                           // ✅ FIX SINKRONISASI: submitPenyesuaian (jenis "Tambah") langsung
@@ -2300,7 +2351,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                         (kalau salah input, bisa dibatalkan sendiri sebelum ditinjau) — begitu
                                         sudah "disetujui"/"ditolak", hanya Admin/Manajer yang boleh menghapus. */}
                                     {(!isSalesRestricted || pz.status==="menunggu") && (
-                                    <Btn variant="danger" size="sm" icon="🗑" onClick={()=>{
+                                    <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>{
                                       if (!confirm("Hapus penyesuaian stok ini?")) return;
                                       deleteRecord("penyesuaian", pz.id);
                                       const remaining = (db.penyesuaian||[]).filter(x=>x.id!==pz.id);
@@ -2411,7 +2462,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             <div style={{ padding:"12px 16px", borderBottom:`1px solid ${T.gray200}`,
               display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8 }}>
               <div>
-                <div style={{ fontSize:14, fontWeight:700, color:T.gray800 }}>🛣️ Penjualan Luar Rute</div>
+                <div style={{ fontSize:14, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.rute size={16} strokeWidth={2}/> Penjualan Luar Rute</div>
                 <div style={{ fontSize:11, color:T.gray400 }}>
                   Penjualan di luar kunjungan rute normal (toko/rute tidak diketahui sales) · {luarList.length} entri
                   {" "}· Rev: <b style={{ color:T.green }}>{fmtRp(totalRevLuar)}</b>
@@ -2427,7 +2478,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Wilayah</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Rute</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Produk Terjual</th>
-                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>🎁 Bonus</th>
+                    <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}><Icon.gift size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}}/>Bonus</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Keterangan</th>
                     <th style={{ padding:"8px 10px", textAlign:"left", fontSize:11, color:T.gray500 }}>Dicatat Oleh</th>
                     <th style={{ padding:"8px 10px", textAlign:"right", fontSize:11, color:T.gray500 }}>Rev</th>
@@ -2458,7 +2509,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                         <td style={{ padding:"6px 10px", color:T.gray500 }}>{pl.dicatatOleh || <span style={{ color:T.gray400 }}>—</span>}</td>
                         <td style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, color:T.green }}>{fmtRp(rev)}</td>
                         <td style={{ padding:"6px 10px", textAlign:"right" }}>
-                          <Btn variant="danger" size="sm" icon="🗑" onClick={()=>deleteLuarRute(pl.id)}>Hapus</Btn>
+                          <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>deleteLuarRute(pl.id)}>Hapus</Btn>
                         </td>
                       </tr>
                     );
@@ -2480,7 +2531,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
               <div>
                 <div style={{ fontSize:12.5, fontWeight:600, color:T.gray600, marginBottom:5 }}>Wilayah</div>
                 <div style={{ padding:"8px 10px", background:T.gray50, border:`1.5px solid ${T.gray200}`, borderRadius:8, fontSize:13, color:T.gray700 }}>
-                  🔒 {(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}
+                  <Icon.lock size={12} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:4}}/>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}
                 </div>
               </div>
             ) : (
@@ -2495,7 +2546,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 <input type="checkbox" checked={hanyaBelumKontrol}
                   onChange={e=>setHanyaBelumKontrol(e.target.checked)}
                   style={{ accentColor:T.red, width:15, height:15, cursor:"pointer" }} />
-                Tampilkan cuma yang <b>Belum Kontrol</b> (🔴/🟠) di siklus berjalan
+                Tampilkan cuma yang <b>Belum Kontrol</b> di siklus berjalan
               </label>
               <SearchableSelect
                 label="Toko"
@@ -2525,7 +2576,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     borderRadius: 8, padding: "8px 12px",
                     display: "flex", alignItems: "flex-start", gap: 10, fontSize: 12
                   }}>
-                    <span style={{ fontSize: 18, flexShrink:0 }}>{isBaru ? "🆕" : "✅"}</span>
+                    <span style={{ display:"flex", flexShrink:0 }}>{isBaru ? <Icon.new size={18} strokeWidth={2} color={T.blue}/> : <Icon.checkCircle size={18} strokeWidth={2} color={T.green}/>}</span>
                     <div style={{ minWidth:0, flex:1, wordBreak:"break-word" }}>
                       {renameToko?.tokoId === toko.id ? (
                         <div style={{ display:"flex", gap:6, alignItems:"center", flexWrap:"wrap" }}>
@@ -2556,7 +2607,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                             <button onClick={()=>setRenameToko({ tokoId: toko.id, value: toko.nama })}
                               style={{ marginLeft:6, border:"none", background:"transparent", cursor:"pointer",
                                 fontSize:11, color:T.gray500, textDecoration:"underline", padding:0 }}>
-                              ✏️ Edit Nama
+                              <Icon.edit size={12} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:4}}/> Edit Nama
                             </button>
                           )}
                           <span style={{
@@ -2582,7 +2633,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                   borderRadius: 8, padding: "8px 12px",
                   display: "flex", alignItems: "flex-start", gap: 10, fontSize: 12
                 }}>
-                  <span style={{ fontSize: 18, flexShrink:0 }}>⚠️</span>
+                  <span style={{ display:"flex", flexShrink:0, color:T.orange }}><Icon.warning size={18} strokeWidth={2}/></span>
                   <div style={{ color: T.red, minWidth:0, flex:1, wordBreak:"break-word" }}>
                     <b>Toko ini sudah dikontrol pada tanggal {form.tanggal}.</b>
                     <div style={{ color: T.gray500, marginTop: 2 }}>
@@ -2607,7 +2658,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           {/* Stok, Terjual, & Bonus per produk */}
           <div style={{ marginBottom:14 }}>
             <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:4 }}>
-              <div style={{ fontSize:12, fontWeight:700, color:T.gray600 }}>📦 Stok, Penjualan & Bonus Produk</div>
+              <div style={{ fontSize:12, fontWeight:700, color:T.gray600, display:"flex", alignItems:"center", gap:5 }}><Icon.package size={13} strokeWidth={2}/> Stok, Penjualan & Bonus Produk</div>
               {/* ✅ Tarik Toko Ini: DISAMAKAN dengan alur "🏪 Tarik / Non-Aktifkan Toko"
                   yang sudah ada di view per rute — bukan sekadar mencentang "Ditarik"
                   di form ini. Klik tombol ini membuka modal konfirmasi yang sama
@@ -2621,7 +2672,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 if (!tokoTerpilih || tokoTerpilih.status === "Non-Aktif") return null;
                 return (
                   <Btn size="sm" variant="danger" onClick={() => openTokoStatusModal(tokoTerpilih)}>
-                    🏪 Tarik / Non-Aktifkan Toko Ini
+                    <Icon.toko size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Tarik / Non-Aktifkan Toko Ini
                   </Btn>
                 );
               })()}
@@ -2642,8 +2693,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     padding:"12px", border:`1.5px solid ${ditarik?T.red:(terjual>0?T.green+"44":T.gray200)}`, transition:"all .2s" }}>
                     <div style={{ fontSize:12, fontWeight:800, color:T.gray800, marginBottom:10 }}>
                       {p.nama}
-                      {terjual>0 && !ditarik && <span style={{ marginLeft:6, fontSize:10, background:T.green, color:"#fff", borderRadius:99, padding:"1px 6px" }}>✓ Laku</span>}
-                      {ditarik && <span style={{ marginLeft:6, fontSize:10, background:T.red, color:"#fff", borderRadius:99, padding:"1px 6px" }}>🔻 Ditarik</span>}
+                      {terjual>0 && !ditarik && <span style={{ marginLeft:6, fontSize:10, background:T.green, color:"#fff", borderRadius:99, padding:"1px 6px", display:"inline-flex", alignItems:"center", gap:2 }}><Icon.check size={9} strokeWidth={2.5}/>Laku</span>}
+                      {ditarik && <span style={{ marginLeft:6, fontSize:10, background:T.red, color:"#fff", borderRadius:99, padding:"1px 6px", display:"inline-flex", alignItems:"center", gap:2 }}><Icon.arrowDown size={9} strokeWidth={2.5}/>Ditarik</span>}
                     </div>
                     <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer", marginBottom:10,
                       padding:"6px 8px", borderRadius:7, background:ditarik?T.red+"22":T.gray100 }}>
@@ -2653,7 +2704,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                           f(`ditarik_${p.id}`, val);
                           if (val) f(`stok_${p.id}`, 0); // Ditarik → Stok Awal otomatis 0
                         }} />
-                      <span style={{ fontSize:11, fontWeight:700, color:ditarik?T.red:T.gray600 }}>🔻 Produk ditarik dari toko ini</span>
+                      <span style={{ fontSize:11, fontWeight:700, color:ditarik?T.red:T.gray600, display:"inline-flex", alignItems:"center", gap:4 }}><Icon.arrowDown size={11} strokeWidth={2}/>Produk ditarik dari toko ini</span>
                     </label>
                     <div style={{ marginBottom:8 }}>
                       <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Stok Awal</div>
@@ -2671,7 +2722,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                           borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
                     </div>
                     <div style={{ marginBottom:4 }}>
-                      <div style={{ fontSize:11, color:T.gold, marginBottom:3 }}>🎁 Bonus Produk (pcs)</div>
+                      <div style={{ fontSize:11, color:T.gold, marginBottom:3, display:"flex", alignItems:"center", gap:4 }}><Icon.gift size={12} strokeWidth={2}/> Bonus Produk (pcs)</div>
                       <input type="number" value={form[`bonusInput_${p.id}`]||0}
                         onChange={e=>f(`bonusInput_${p.id}`,e.target.value)} min={0}
                         style={{ width:"100%", padding:"6px 10px", border:`1.5px solid ${T.gold}44`,
@@ -2679,7 +2730,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                     </div>
                     {bonusPcs>0 && (
                       <div style={{ fontSize:11, color:T.gold, marginTop:6, fontWeight:700 }}>
-                        🎁 {bonusPcs} pcs bonus diberikan
+                        <Icon.gift size={12} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:4}}/>{bonusPcs} pcs bonus diberikan
                       </div>
                     )}
                   </div>
@@ -2711,7 +2762,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:8, flexWrap:"wrap" }}>
               <div style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>Status Kunjungan</div>
               {!adaTerjual
-                ? <Badge color={T.orange} bg={T.orangeLt}>⚠️ Wajib diisi — tidak ada penjualan</Badge>
+                ? <Badge color={T.orange} bg={T.orangeLt}><Icon.warning size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Wajib diisi — tidak ada penjualan</Badge>
                 : <Badge color={T.gray400} bg={T.gray100}>Opsional — untuk catatan tambahan</Badge>
               }
             </div>
@@ -2726,7 +2777,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                   <input type="radio" name="catatanStatus" value="" checked={catatanSt===""}
                     onChange={()=>{ f("catatanStatus",""); f("catatan",""); }}
                     style={{ accentColor:T.green }} />
-                  <span style={{ fontSize:12, fontWeight:600, color:T.green }}>✅ Terjual — tanpa catatan tambahan</span>
+                  <span style={{ fontSize:12, fontWeight:600, color:T.green, display:"inline-flex", alignItems:"center", gap:4 }}><Icon.checkCircle size={13} strokeWidth={2}/>Terjual — tanpa catatan tambahan</span>
                 </label>
               </div>
             )}
@@ -2746,15 +2797,22 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 borderRadius:8, cursor:"pointer", background:catatanSt==="manual" ? T.gray100 : T.white }}>
                 <input type="radio" name="catatanStatus" value="manual" checked={catatanSt==="manual"}
                   onChange={()=>f("catatanStatus","manual")} />
-                <span style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>📝 Isi Manual</span>
+                <span style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"inline-flex", alignItems:"center", gap:4 }}><Icon.note size={13} strokeWidth={2}/>Isi Manual</span>
               </label>
             </div>
 
-            {(catatanSt==="manual" || (adaTerjual && catatanSt && catatanSt!=="")) && (
+            {/* ✅ Toko berstatus Bermasalah WAJIB diberi kolom Keterangan —
+                 sebelumnya kolom ini cuma muncul kalau adaTerjual true,
+                 padahal Bermasalah justru paling sering terjadi TANPA ada
+                 penjualan sama sekali, jadi kolomnya malah hilang tepat saat
+                 paling dibutuhkan. */}
+            {(catatanSt==="manual" || catatanSt==="masalah" || (adaTerjual && catatanSt && catatanSt!=="")) && (
               <div style={{ marginTop:10 }}>
-                <Input label={catatanSt==="manual" ? "Catatan" : "Catatan Tambahan (opsional)"}
+                <Input label={catatanSt==="masalah" ? "Keterangan (wajib diisi)" : catatanSt==="manual" ? "Catatan" : "Catatan Tambahan (opsional)"}
                   value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea"
-                  placeholder={catatanSt==="manual"
+                  placeholder={catatanSt==="masalah"
+                    ? "Jelaskan masalah yang ditemukan di toko ini..."
+                    : catatanSt==="manual"
                     ? "Tulis catatan bebas..."
                     : "Tambahkan keterangan jika perlu..."} />
               </div>

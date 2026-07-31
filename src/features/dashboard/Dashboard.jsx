@@ -3,6 +3,7 @@ import { Badge, Card, ExportMenu, StatCard } from "../../components/ui";
 import { useDB } from "../../hooks/useDB";
 import { fmt, fmtRp } from "../../lib/format";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
+import { Icon } from "../../theme/icons.jsx";
 
 export function MiniBar({ value, max, color }) {
   const pct = max>0 ? Math.round((value/max)*100) : 0;
@@ -113,33 +114,33 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
       {isSalesRestricted && (
         <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:10,
           padding:"10px 16px", marginBottom:14, fontSize:12, color:T.green, display:"flex", alignItems:"center", gap:8, fontWeight:600 }}>
-          🔒 Dashboard ini menampilkan data wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
+          <Icon.lock size={14} strokeWidth={2} /> Dashboard ini menampilkan data wilayah: <b>{(db.wilayah||[]).find(w=>w.id===salesWilayahId)?.nama || salesWilayahId}</b>
         </div>
       )}
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
-        <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📈 Dashboard</div>
+        <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.dashboard size={19} strokeWidth={2} /> Dashboard</div>
         <ExportMenu data={dashboardExportRows} columns={dashboardExportCols} title="Dashboard Ringkasan" filename="dashboard_summary" />
       </div>
       <div style={{ fontSize:12, color:T.gray400, marginBottom:20 }}>Data real-time dari semua master data & kontrol bulanan</div>
 
       <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
-        <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon="🏪" color={T.green} />
-        <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon="📍" color={T.teal} />
-        <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon="💰" color={T.gold}
+        <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon={Icon.toko} color={T.green} />
+        <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon={Icon.wilayah} color={T.teal} />
+        <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon={Icon.wallet} color={T.gold}
           pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Pendapatan bisa masih bertambah" />
-        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon="📊" color={T.green}
+        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon={Icon.rekap} color={T.green}
           pending={dataStillSyncing} pendingTitle="Dihitung dari Total Pendapatan yang masih disinkronkan" />
-        <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon="🧴" color={T.purple} />
-        <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon="📋" color={T.blue}
+        <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon={Icon.produk} color={T.purple} />
+        <StatCard label="Entri Kontrol"   value={(db.kontrol||[]).length} sub="total transaksi"                  icon={Icon.kontrol} color={T.blue}
           pending={dataStillSyncing} pendingTitle="Jumlah entri kontrol masih bertambah, data sedang disinkronkan" />
-        <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon="🎁" color={T.orange}
+        <StatCard label="Total Bonus"     value={`${fmt(analytics.kontrol.reduce((s,k)=>s+(k.totalBonus||0),0))} pcs`} sub="diberikan ke toko" icon={Icon.gift} color={T.orange}
           pending={dataStillSyncing} pendingTitle="Dihitung dari data kontrol yang masih disinkronkan" />
-        <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon="👤" color={T.gray600} />
+        <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon={Icon.user} color={T.gray600} />
       </div>
 
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>📍 Revenue per Wilayah</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.wilayah size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Revenue per Wilayah</div>
           {perWilayah.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data</div>}
           {perWilayah.map(w => (
             <div key={w.id} style={{ marginBottom:14 }}>
@@ -156,7 +157,7 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
         </Card>
 
         <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>🧴 Performa Produk</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.produk size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Performa Produk</div>
           {produkStats.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data produk</div>}
           {produkStats.map((p, i) => {
             const maxP = Math.max(...produkStats.map(x=>x.terjual),1);
@@ -185,7 +186,7 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>🛣️ Rute Aktif</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.rute size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Rute Aktif</div>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
               <tr style={{ borderBottom:`2px solid ${T.gray200}` }}>
@@ -203,7 +204,7 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
                     {r.nama}
                     {r.luarRuteCount>0 && (
                       <span title={`${r.luarRuteCount} penjualan luar rute ikut dihitung di rute ini`}
-                        style={{ marginLeft:5, fontSize:10, color:T.purple }}>🛣️×{r.luarRuteCount}</span>
+                        style={{ marginLeft:5, fontSize:10, color:T.purple, display:"inline-flex", alignItems:"center", gap:2 }}><Icon.rute size={10} strokeWidth={2.5} />×{r.luarRuteCount}</span>
                     )}
                   </td>
                   <td style={{ padding:"7px 8px" }}><Badge color={T.teal}>{r.wilayahNama}</Badge></td>
@@ -218,7 +219,7 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
         {!isSalesRestricted && (
           <Card>
-            <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:4 }}>💰 Simulasi Bagi Hasil</div>
+            <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:4 }}><Icon.wallet size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Simulasi Bagi Hasil</div>
             <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>Asumsi margin laba bersih {marginPctGlobal}% dari pendapatan · ikut konfigurasi Tab Bagi Hasil</div>
             {bagiHasil.map((b,i)=>(
               <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
@@ -240,7 +241,7 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
       {/* Kontrol Terbaru */}
       <Card>
-        <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}>📋 Data Kontrol Terbaru</div>
+        <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.kontrol size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Data Kontrol Terbaru</div>
         {(() => {
           // ✅ Di-scope ke wilayah Sales — sebelumnya menampilkan kontrol
           // terbaru dari SEMUA wilayah, bukan cuma wilayah Sales sendiri.

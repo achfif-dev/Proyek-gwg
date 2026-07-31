@@ -3,6 +3,7 @@ import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, T
 import { genId, normTxt, sortByNama } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { Icon } from "../../theme/icons.jsx";
 
 export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
@@ -48,7 +49,7 @@ export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
         deleteRecord("wilayah", dup.id);
       });
     });
-    alert("✅ Wilayah duplikat berhasil digabungkan.");
+    alert("Wilayah duplikat berhasil digabungkan.");
   }
 
   function toggleSelect(id) {
@@ -92,7 +93,7 @@ export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
       normTxt(w.nama) === normTxt(form.nama) && w.id !== form.id
     );
     if (isDup) {
-      alert(`⚠️ Nama wilayah "${form.nama}" sudah ada di data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama wilayah yang berbeda.`);
+      alert(`Nama wilayah "${form.nama}" sudah ada di data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama wilayah yang berbeda.`);
       return;
     }
     if (modal==="add") addRecord("wilayah", { ...form, id:genId("WIL-",db.wilayah) });
@@ -104,7 +105,7 @@ export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
     { key:"id",        label:"ID",         render: v=><Badge color={T.blue}>{v}</Badge> },
     { key:"nama",      label:"Nama Wilayah", render: (v,row)=>(
         <span style={{ display:"flex", alignItems:"center", gap:6 }}>
-          <b>{v}</b>{row.isDuplikat && <Badge color={T.red}>⚠️ Duplikat</Badge>}
+          <b>{v}</b>{row.isDuplikat && <Badge color={T.red}><Icon.warning size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Duplikat</Badge>}
         </span>
       ) },
     { key:"deskripsi", label:"Deskripsi" },
@@ -116,23 +117,23 @@ export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>📍 Master Wilayah</div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.wilayah size={19} strokeWidth={2} /> Master Wilayah</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.wilayah||[]).length} wilayah terdaftar · terurut abjad</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={enriched} columns={cols} title="Data Wilayah" filename="wilayah" />
           {totalDup > 0 && (
-            <Btn variant="danger" onClick={mergeDuplikat} icon="🧹">
+            <Btn variant="danger" onClick={mergeDuplikat} icon={Icon.eraser}>
               Gabungkan {totalDup} Duplikat
             </Btn>
           )}
-          <Btn onClick={openAdd} icon="＋">Tambah Wilayah</Btn>
+          <Btn onClick={openAdd} icon={Icon.add}>Tambah Wilayah</Btn>
         </div>
       </div>
       {totalDup > 0 && (
         <div style={{ background:T.redLt, color:T.red, padding:"10px 14px", borderRadius:10,
           fontSize:13, marginBottom:14, display:"flex", alignItems:"center", gap:8 }}>
-          ⚠️ Ditemukan nama wilayah yang duplikat (mis. dua "Bangkalan Utara"). Ini bisa membuat
+          <Icon.warning size={15} strokeWidth={2} style={{flexShrink:0}} /> Ditemukan nama wilayah yang duplikat (mis. dua "Bangkalan Utara"). Ini bisa membuat
           nama wilayah muncul dua kali di semua filter. Klik <b>"Gabungkan {totalDup} Duplikat"</b> untuk
           merapikannya secara otomatis — rute yang terhubung akan dipindah ke satu wilayah utama.
         </div>

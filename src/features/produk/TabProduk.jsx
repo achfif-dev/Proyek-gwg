@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { Badge, Btn, Card, ExportMenu, Input, Modal, Table } from "../../components/ui";
 import { fmtRp } from "../../lib/format";
 import { T } from "../../theme/tokens";
+import { Icon } from "../../theme/icons.jsx";
 
 export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
@@ -34,12 +35,12 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
-          <div style={{ fontSize:18, fontWeight:700, color:T.gray800 }}>🧴 Master Produk</div>
+          <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.produk size={19} strokeWidth={2} /> Master Produk</div>
           <div style={{ fontSize:12, color:T.gray400 }}>{(db.produk||[]).length} produk · Tipe bisa diisi bebas</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={db.produk||[]} columns={cols} title="Data Produk" filename="produk" />
-          <Btn onClick={openAdd} icon="＋">Tambah Produk</Btn>
+          <Btn onClick={openAdd} icon={Icon.add}>Tambah Produk</Btn>
         </div>
       </div>
       <Card padding={0}>
