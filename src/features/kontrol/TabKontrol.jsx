@@ -90,6 +90,44 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   }, [db.penyesuaian]);
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
   const [selectedIds, setSelectedIds] = useState([]);
+  // ✅ ALUR PERSETUJUAN HAPUS KONTROL LAMA: Sales hanya boleh menghapus langsung
+  // catatan kontrol yang BARU SAJA dia buat sendiri (<24 jam, dicek dari field
+  // createdAt). Kalau lebih lama dari itu (mis. sales baru sadar salah input
+  // 3 hari lalu), penghapusan WAJIB lewat pengajuan yang ditinjau Admin/Manajer
+  // — supaya tidak ada data historis (yang sudah dipakai Rekap/Bagi Hasil)
+  // hilang diam-diam tanpa jejak/persetujuan. Rules Firebase (kontrol/$tahun/$id)
+  // menegakkan batas 24 jam yang sama di sisi server, ini cuma UX di sisi klien.
+  const KONTROL_DELETE_WINDOW_MS = 24 * 60 * 60 * 1000;
+  const [hapusKontrolPanelOpen, setHapusKontrolPanelOpen] = useState(false);
+  function kontrolBisaLangsungHapus(record) {
+    if (!isSalesRestricted) return true; // Admin/Manajer selalu boleh hapus langsung, kapan pun
+    if (!record || !record.createdAt) return false; // entri lama (migrasi/tanpa createdAt) → wajib pengajuan
+    return (Date.now() - record.createdAt) <= KONTROL_DELETE_WINDOW_MS;
+  }
+  function requestHapusKontrol(id) {
+    const alasan = prompt("Catatan kontrol ini sudah lebih dari 24 jam, jadi penghapusannya perlu disetujui Admin/Manajer dulu.\n\nTulis alasan pengajuan hapus (wajib):");
+    if (alasan === null) return; // dibatalkan
+    if (!String(alasan).trim()) { alert("Alasan wajib diisi supaya Admin/Manajer tahu kenapa entri ini mau dihapus."); return; }
+    updateRecord("kontrol", id, { hapusStatus: "menunggu", hapusDiajukanOleh: alasan.trim(), hapusDiajukanAt: Date.now() });
+    alert("Pengajuan hapus terkirim. Menunggu persetujuan Admin/Manajer — entri masih tampil sampai disetujui.");
+  }
+  function handleHapusKontrolClick(id) {
+    const rec = (db.kontrol||[]).find(k=>k.id===id);
+    if (kontrolBisaLangsungHapus(rec)) setDeleteTarget(id);
+    else requestHapusKontrol(id);
+  }
+  function setujuiHapusKontrol(id) {
+    const tokoIdTerdampak = (db.kontrol||[]).find(k=>k.id===id)?.tokoId;
+    deleteRecord("kontrol", id);
+    if (tokoIdTerdampak) {
+      const remaining = (db.kontrol||[]).filter(k => k.id !== id);
+      recalcTokoStok(tokoIdTerdampak, remaining);
+    }
+  }
+  function tolakHapusKontrol(id) {
+    if (!confirm("Tolak pengajuan hapus catatan kontrol ini? Entri akan tetap ada.")) return;
+    updateRecord("kontrol", id, { hapusStatus: null, hapusDiajukanOleh: null, hapusDiajukanAt: null });
+  }
 
   function toggleSelect(id) {
     setSelectedIds(prev => prev.includes(id) ? prev.filter(x=>x!==id) : [...prev, id]);
@@ -99,12 +137,32 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
   }
   function deleteSelected() {
-    if (!confirm(`Hapus ${selectedIds.length} catatan kontrol terpilih? Tindakan ini permanen.`)) return;
-    // Kumpulkan tokoId yang terdampak agar stoknya disinkronkan ulang setelah hapus
-    const affectedTokoIds = [...new Set(selectedIds.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
-    selectedIds.forEach(id => deleteRecord("kontrol", id));
-    const remaining = (db.kontrol||[]).filter(k => !selectedIds.includes(k.id));
-    affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining));
+    // ✅ Pisahkan mana yang boleh langsung dihapus (Admin/Manajer, atau entri
+    // Sales sendiri yang masih <24 jam) dari yang harus lewat pengajuan
+    // persetujuan (entri Sales yang sudah lama) — lihat kontrolBisaLangsungHapus.
+    const records = selectedIds.map(id => (db.kontrol||[]).find(k=>k.id===id)).filter(Boolean);
+    const langsung = records.filter(kontrolBisaLangsungHapus).map(r=>r.id);
+    const perluAjukan = records.filter(r=>!kontrolBisaLangsungHapus(r));
+
+    if (langsung.length === 0 && perluAjukan.length === 0) { setSelectedIds([]); return; }
+
+    if (langsung.length > 0) {
+      if (!confirm(`Hapus ${langsung.length} catatan kontrol terpilih? Tindakan ini permanen.`)) {
+        if (perluAjukan.length === 0) return;
+      } else {
+        const affectedTokoIds = [...new Set(langsung.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
+        langsung.forEach(id => deleteRecord("kontrol", id));
+        const remaining = (db.kontrol||[]).filter(k => !langsung.includes(k.id));
+        affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining));
+      }
+    }
+    if (perluAjukan.length > 0) {
+      const alasan = prompt(`${perluAjukan.length} catatan kontrol terpilih sudah lebih dari 24 jam, jadi harus diajukan dulu ke Admin/Manajer.\n\nTulis alasan pengajuan hapus untuk semuanya (wajib):`);
+      if (alasan !== null && String(alasan).trim()) {
+        perluAjukan.forEach(r => updateRecord("kontrol", r.id, { hapusStatus:"menunggu", hapusDiajukanOleh: alasan.trim(), hapusDiajukanAt: Date.now() }));
+        alert(`${perluAjukan.length} pengajuan hapus terkirim, menunggu persetujuan Admin/Manajer.`);
+      }
+    }
     setSelectedIds([]);
   }
   // Modal untuk mengubah status toko langsung dari kontrol (tarik/non-aktifkan toko)
@@ -836,7 +894,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       // bergantung pada hitungan data lain, jadi tidak mungkin bentrok
       // walau dua sales submit di detik yang sama.
       const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-      const newEntry = { ...payload, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}` };
+      // ✅ createdAt dipakai rules Firebase & UI untuk menentukan apakah Sales
+      // masih boleh menghapus langsung (entri "baru saja" dibuat, <24 jam) atau
+      // harus mengajukan permintaan hapus yang ditinjau Admin/Manajer (entri lama).
+      const newEntry = { ...payload, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now() };
       addRecord("kontrol", newEntry);
       // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update)
       recalcTokoStok(form.tokoId, [...(db.kontrol||[]), newEntry]);
@@ -1300,6 +1361,57 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             (otomatis disetujui dalam 24 jam kalau tidak ditinjau). Buka detail toko terkait di bawah untuk
             menyetujui/menolak lebih awal.
           </div>
+        );
+      })()}
+      {/* ✅ Ringkasan pengajuan HAPUS catatan Kontrol lama (Admin/Manajer saja).
+          Beda dengan Penyesuaian Stok: TIDAK ada auto-approve 24 jam — sengaja,
+          karena menghapus catatan kunjungan/penjualan yang sudah dipakai Rekap
+          Siklus & Bagi Hasil lebih berisiko daripada penyesuaian stok biasa.
+          Harus ditinjau manual oleh Admin/Manajer. */}
+      {!isSalesRestricted && (() => {
+        const pendingHapus = (db.kontrol||[]).filter(k=>k.hapusStatus==="menunggu");
+        if (pendingHapus.length === 0) return null;
+        return (
+          <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10,
+            padding:"10px 16px", marginBottom:14, fontSize:13, color:"#991B1B",
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+            <span>🗑️ Ada <b>{pendingHapus.length} pengajuan hapus catatan Kontrol lama</b> dari Sales yang menunggu persetujuan.</span>
+            <Btn variant="danger" size="sm" onClick={()=>setHapusKontrolPanelOpen(true)}>Tinjau Pengajuan</Btn>
+          </div>
+        );
+      })()}
+      {hapusKontrolPanelOpen && (() => {
+        const pendingHapus = (db.kontrol||[]).filter(k=>k.hapusStatus==="menunggu")
+          .sort((a,b)=>(b.hapusDiajukanAt||0)-(a.hapusDiajukanAt||0));
+        return (
+          <Modal title={<><Icon.delete size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pengajuan Hapus Catatan Kontrol</>} onClose={()=>setHapusKontrolPanelOpen(false)} width={640}>
+            {pendingHapus.length === 0 ? (
+              <div style={{ padding:"20px 0", textAlign:"center", color:T.gray400, fontSize:13 }}>Tidak ada pengajuan yang menunggu.</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {pendingHapus.map(k => {
+                  const tk = (db.toko||[]).find(t=>t.id===k.tokoId);
+                  return (
+                    <div key={k.id} style={{ border:`1px solid ${T.gray200}`, borderRadius:10, padding:"10px 14px" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                        <div>
+                          <div style={{ fontWeight:700 }}>{tk?.nama || "(toko tidak diketahui)"}</div>
+                          <div style={{ fontSize:12, color:T.gray500 }}>Tanggal kontrol: {k.tanggal}</div>
+                        </div>
+                        <div style={{ display:"flex", gap:6 }}>
+                          <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiHapusKontrol(k.id)}>Setujui Hapus</Btn>
+                          <Btn variant="secondary" size="sm" icon={Icon.closeCircle} onClick={()=>tolakHapusKontrol(k.id)}>Tolak</Btn>
+                        </div>
+                      </div>
+                      <div style={{ fontSize:12, color:"#92400E", background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:6, padding:"4px 8px", marginTop:6 }}>
+                        Alasan: {k.hapusDiajukanOleh || "(tidak diisi)"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Modal>
         );
       })()}
       {/* Fix: ConfirmDelete global untuk view monthly & tabel */}
@@ -2241,7 +2353,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                   <td style={{ padding:"6px 10px", textAlign:"right" }}>
                                     <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
                                       <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>openEdit(e)}>Edit</Btn>
-                                      <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>setDeleteTarget(e.id)}>Hapus</Btn>
+                                      {e.hapusStatus==="menunggu" ? (
+                                        <Badge color={T.gold} bg="#FFFBEB"><Icon.refresh size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Menunggu Hapus</Badge>
+                                      ) : (
+                                        <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>handleHapusKontrolClick(e.id)}>
+                                          {kontrolBisaLangsungHapus(e) ? "Hapus" : "Ajukan Hapus"}
+                                        </Btn>
+                                      )}
                                     </div>
                                   </td>
                                 </tr>
@@ -2421,7 +2539,19 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 if (CATATAN_STATUS[st]) return CATATAN_STATUS[st].bg;
                 return null;
               }}
-              onDelete={id=>setDeleteTarget(id)}
+              onDelete={id=>{
+                // ✅ Sama seperti tombol Hapus di view bulanan: kalau entri sudah
+                // >24 jam & yang menghapus Sales, jangan hapus beneran — ubah jadi
+                // pengajuan yang perlu disetujui Admin/Manajer.
+                const rec = (db.kontrol||[]).find(k=>k.id===id);
+                if (kontrolBisaLangsungHapus(rec)) {
+                  deleteRecord("kontrol", id);
+                  const remaining = (db.kontrol||[]).filter(k=>k.id!==id);
+                  if (rec?.tokoId) recalcTokoStok(rec.tokoId, remaining);
+                } else {
+                  requestHapusKontrol(id);
+                }
+              }}
               selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
           </Card>
         </>
