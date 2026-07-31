@@ -153,6 +153,26 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     const prefix = ruteObj ? "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-" : "GW-XXX-";
     const produkFlags = {};
     produkAktif.forEach(p => { produkFlags[`produk_${p.id}`] = (form.produkIds||[]).includes(p.id); });
+    // ✅ FIX BUG "GAGAL disimpan — tidak ada izin" saat Tambah Toko:
+    // input HTML <input type="number"> SELALU mengembalikan STRING lewat
+    // e.target.value (walau type="number"), sedangkan Firebase Rules
+    // mewajibkan field stok_<id> bertipe Number murni (newData.isNumber())
+    // — kalau tidak, Firebase menolak SELURUH penulisan toko itu (muncul
+    // sebagai "permission denied", padahal sebenarnya gagal validasi tipe
+    // data, bukan soal role/izin). Sebelumnya field stok_<id> ikut
+    // ke-spread apa adanya dari `form` (string) saat modal==="add" dan ada
+    // produk yang dicentang + diisi stok awal — makanya baru ketahuan saat
+    // bikin toko baru yang langsung diisi produk & stok sekaligus (biasa
+    // terjadi saat setup rute/wilayah baru). Dipaksa jadi Number di sini,
+    // sama seperti yang sudah benar dilakukan di TabKontrol.jsx.
+    const stokFlags = {};
+    if (modal === "add") {
+      produkAktif.forEach(p => {
+        if ((form.produkIds||[]).includes(p.id)) {
+          stokFlags[`stok_${p.id}`] = Number(form[`stok_${p.id}`]) || 0;
+        }
+      });
+    }
     if (modal==="add") {
       const newId = genId("T", db.toko);
       const counter = newId.replace("T","");
@@ -162,7 +182,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       // Rekap Siklus Wilayah bisa tahu persis toko ini sudah "Aktif"/"Baru"
       // sejak tanggal berapa (bukan cuma status terkini).
       const statusHistory = appendStatusHistory([], form.status || "Aktif", tanggalMasuk || today, "Toko didaftarkan");
-      addRecord("toko", { ...form, ...produkFlags, id:newId, kode:prefix+counter, tanggalMasuk, statusHistory });
+      addRecord("toko", { ...form, ...produkFlags, ...stokFlags, id:newId, kode:prefix+counter, tanggalMasuk, statusHistory });
     } else {
       // Jika status diubah ke Baru dan belum ada tanggalMasuk, isi sekarang
       const existing = (db.toko||[]).find(t=>t.id===form.id);
@@ -330,7 +350,23 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     function commit(includeDuplicates) {
       const finalNew = includeDuplicates ? [...toAdd, ...dupCandidates.map(d=>d.tokoObj)] : toAdd;
       const skippedDup = includeDuplicates ? 0 : dupCandidates.length;
-      if (finalNew.length > 0) save({ ...db, toko:[...existingToko, ...finalNew] });
+      // ✅ FIX RISIKO IMPORT DI SKALA BESAR: sebelumnya baris ini memakai
+      // save({ ...db, toko:[...existingToko, ...finalNew] }) — yang menulis
+      // ULANG SELURUH koleksi toko (ribuan record lama + yang baru) sebagai
+      // SATU set() raksasa ke Firebase (bukan cuma record yang baru
+      // diimpor). Di skala 4000+ toko ini: (1) boros bandwidth — upload
+      // ulang semua data yang sebenarnya tidak berubah; (2) kalau field
+      // APAPUN di toko MANAPUN (bukan cuma yang baru diimpor) kebetulan
+      // tidak lolos .validate Firebase, SELURUH proses import ikut gagal
+      // tanpa ada petunjuk baris mana penyebabnya; (3) rawan menimpa
+      // perubahan toko lain yang baru saja disimpan device/pengguna lain,
+      // karena snapshot lokal `existingToko` yang dipakai bisa saja sudah
+      // sedikit basi (stale) dibanding data terbaru di server saat commit
+      // ini benar-benar terkirim. Sekarang setiap toko baru ditulis SATU
+      // PER SATU lewat addRecord (path kecil `toko/<id>` masing-masing),
+      // persis sama seperti alur Tambah Toko manual — jauh lebih hemat &
+      // aman, dan kalau ada satu baris gagal, baris lain tetap tersimpan.
+      finalNew.forEach(t => addRecord("toko", t));
       return { added: finalNew.length, skipped: skipped + skippedDup, errors };
     }
 
