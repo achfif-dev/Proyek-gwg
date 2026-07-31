@@ -382,6 +382,31 @@ export default function GWGSuperApp() {
   // Cari role user yang login berdasarkan email di tabel pengguna
   const currentUserRecord = user ? db.pengguna.find(p => p.email?.toLowerCase() === user.email?.toLowerCase()) : null;
 
+  // ✅ SELF-HEAL SUPER ADMIN: sebelumnya, UI (variabel userRole di bawah)
+  // SELALU menganggap email Super Admin sebagai "Admin", TANPA PERNAH
+  // memperbaiki baris pengguna-nya di Firebase kalau baris itu sudah
+  // terlanjur tersimpan dengan role lain (mis. "Viewer" — kejadian umum
+  // kalau akun ini login PERTAMA KALI sebelum email Super Admin diisi lewat
+  // Setup Wizard, atau rolenya sempat berubah lewat cara lain). Akibatnya:
+  // tampilan menunjukkan akses penuh (tombol Tambah, dst tidak disembunyikan),
+  // tapi Firebase Security Rules menolak tulisannya karena rules membaca
+  // role SEBENARNYA dari database (bukan status "Admin sementara" di memori
+  // React ini) — muncul sebagai banner "gagal, tidak punya akses" walau
+  // secara UI kelihatan sudah Admin. Efek ini menyamakan baris pengguna di
+  // database dengan status Super Admin yang seharusnya, begitu terdeteksi
+  // beda, supaya rules & UI selalu konsisten. Pakai rawUpdateRecord (bukan
+  // updateRecord yang dibungkus guard isViewer) karena baris lama justru
+  // BISA berrole Viewer — itulah yang sedang diperbaiki di sini.
+  const superAdminHealDone = useRef(false);
+  useEffect(() => {
+    if (!user || !cloudLoaded || superAdminHealDone.current) return;
+    if (!isSuperAdminEmail(user.email)) return;
+    if (!currentUserRecord) return; // belum terdaftar sama sekali → biarkan alur auto-daftar di atas yang menangani
+    if (currentUserRecord.role === "Admin") return; // sudah benar, tidak perlu apa-apa
+    superAdminHealDone.current = true;
+    rawUpdateRecord("pengguna", currentUserRecord.id, { role: "Admin" });
+  }, [user, cloudLoaded, currentUserRecord, rawUpdateRecord]);
+
   // Daftar pengguna yang sedang aktif (real-time, per sesi/perangkat).
   const activeUsers = usePresence(user, currentUserRecord);
 
