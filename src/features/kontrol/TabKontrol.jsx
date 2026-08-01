@@ -956,6 +956,22 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   }
 
   function openTokoStatusModal(toko) {
+    // ✅ FIX: sebelumnya tombol "Tarik Toko" ini TIDAK ada guard role sama
+    // sekali (beda dengan "Edit Status Toko" di bawah yang sudah digating).
+    // Aksi ini menulis field `statusHistory` ke toko — field itu TIDAK ada
+    // di whitelist Sales pada Firebase Rules (toko/$tokoId/$field hanya
+    // izinkan status/produkIds/stok_*/produk_* untuk Sales) — jadi kalau
+    // Sales membuka & submit modal ini, Firebase MENOLAK tulisannya, tapi
+    // UI sempat menampilkan "berhasil" secara optimistic sebelum akhirnya
+    // balik lagi ke status "Aktif" begitu data real-time dari server masuk
+    // (persis gejala "toko tidak tersinkron, tetap aktif" yang dilaporkan).
+    // Penarikan toko juga punya dampak besar (stok, riwayat status), jadi
+    // untuk sekarang tetap harus lewat Admin/Manajer — BUKAN otomatis
+    // ditolak diam-diam. Kalau Anda ingin Sales bisa MENGAJUKAN penarikan
+    // yang menunggu persetujuan Admin/Manajer (seperti alur Penyesuaian
+    // Stok), itu perlu fitur baru (tabel pengajuan + rule tambahan) — beri
+    // tahu saya kalau mau dibuatkan.
+    if (isSalesRestricted) { alert("Menarik/menonaktifkan toko hanya bisa dilakukan oleh Admin/Manajer. Hubungi Admin/Manajer untuk menarik toko ini."); return; }
     // ✅ FIX: default ke 0 (dianggap SEMUA stok ditarik/habis), bukan stok
     // saat ini — sebelumnya form ini prefill dengan stok yang masih ada,
     // sehingga kalau admin tidak sengaja tidak mengubah apapun lalu langsung
