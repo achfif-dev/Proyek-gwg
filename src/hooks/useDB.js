@@ -718,6 +718,29 @@ export function useDB(user) {
           } else {
             pushUpdates({ [`kontrol/${newYear}/${id}`]: mergedRecord });
           }
+        } else if (table === "toko") {
+          // ✅ FIX: Firebase Rules mendefinisikan izin Sales HANYA di level
+          // `toko/$tokoId/$field` (per field: status/produkIds/stok_*/
+          // produk_*) — TIDAK ADA rule Sales di level `toko/$tokoId` atau di
+          // level `toko` (ancestor-nya, yang cuma izinkan Admin/Manajer).
+          // Sebelumnya baris ini menulis SATU set() raksasa ke path
+          // `toko/{id}` berisi SELURUH record gabungan — karena tidak ada
+          // rule PERSIS di path itu, Firebase mundur ke rule ancestor
+          // terdekat ("toko"), yang TIDAK mengizinkan Sales sama sekali.
+          // Akibatnya SETIAP tulisan ke toko oleh akun Sales selalu ditolak
+          // Firebase ("tidak ada izin"), walau field yang ditulis sebenarnya
+          // ada di daftar yang diizinkan untuk Sales — termasuk Tarik Toko,
+          // sinkronisasi ceklis produk & stok dari Penyesuaian Stok, dan
+          // hitung ulang stok otomatis. Sekarang setiap field dikirim
+          // sebagai path terpisah (`toko/{id}/{field}`), persis granularitas
+          // yang diasumsikan rules — supaya field yang diizinkan untuk Sales
+          // benar-benar bisa tersimpan, sekaligus tetap menolak field yang
+          // memang di luar wewenang Sales (mis. nama, ruteId, statusHistory).
+          const fieldUpdates = {};
+          Object.keys(updated).forEach(field => {
+            fieldUpdates[`toko/${id}/${field}`] = updated[field] === undefined ? null : updated[field];
+          });
+          pushUpdates(fieldUpdates);
         } else {
           pushUpdates({ [`${table}/${id}`]: mergedRecord });
         }
@@ -725,6 +748,7 @@ export function useDB(user) {
       return next;
     });
   }, [pushUpdates, markLocalWrite]);
+
 
   const deleteRecord = useCallback((table, id) => {
     markLocalWrite(table, id);
