@@ -80,12 +80,22 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       pz.status === "menunggu" && pz.autoApproveAt && pz.autoApproveAt <= now
     );
     if (expired.length === 0) return;
+    const expiredIds = new Set(expired.map(pz=>pz.id));
+    // ✅ FIX BUG sama seperti setujuiPenyesuaian: dulu recalcTokoStok dipanggil
+    // lewat setTimeout(...,300) yang closure-nya tetap membaca db.penyesuaian
+    // LAMA (status masih "menunggu") berapa pun lama ditunggu, jadi stok
+    // Master Toko tidak pernah ter-update walau auto-approve ini seharusnya
+    // "diam-diam menyetujui" — paling berbahaya karena jalan otomatis tanpa
+    // ada yang mengklik apa pun. Sekarang list yang sudah mencerminkan status
+    // baru dibangun eksplisit & dipakai langsung, sinkron.
+    const updatedPenyesuaian = (db.penyesuaian||[]).map(pz =>
+      expiredIds.has(pz.id) ? { ...pz, status:"disetujui", disetujuiOleh:"Otomatis (24 jam)" } : pz
+    );
     expired.forEach(pz => {
       updateRecord("penyesuaian", pz.id, { status: "disetujui", disetujuiOleh: "Otomatis (24 jam)" });
     });
-    // Hitung ulang stok toko yang terdampak, sesudah data ter-update.
     const tokoIds = [...new Set(expired.map(pz=>pz.tokoId))];
-    setTimeout(() => tokoIds.forEach(tid => recalcTokoStok(tid)), 300);
+    tokoIds.forEach(tid => recalcTokoStok(tid, undefined, updatedPenyesuaian));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db.penyesuaian]);
 
@@ -100,17 +110,25 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       k.status === "menunggu" && k.autoApproveAt && k.autoApproveAt <= now
     );
     if (expired.length === 0) return;
+    const expiredIds = new Set(expired.map(k=>k.id));
+    // ✅ FIX BUG sama seperti auto-approve Penyesuaian Stok di atas — list
+    // eksplisit, bukan setTimeout+db basi. Ini persis kasus yang dilaporkan:
+    // Sales ajukan Stok Awal, disetujui (manual atau auto 24 jam), ceklis
+    // produk muncul (jalur itu tidak kena bug ini) tapi angka stok di
+    // "Daftar Stok Produk per Toko" tetap 0 karena recalcTokoStok lama
+    // mengabaikan entri yang statusnya (di closure basi) masih "menunggu".
+    const updatedKontrol = (db.kontrol||[]).map(k =>
+      expiredIds.has(k.id) ? { ...k, status:"disetujui", disetujuiOleh:"Otomatis (24 jam)" } : k
+    );
     expired.forEach(k => {
       updateRecord("kontrol", k.id, { status: "disetujui", disetujuiOleh: "Otomatis (24 jam)" });
     });
     const tokoIds = [...new Set(expired.map(k=>k.tokoId))];
-    setTimeout(() => {
-      tokoIds.forEach(tid => {
-        recalcTokoStok(tid);
-        const entri = expired.find(k=>k.tokoId===tid);
-        if (entri) syncProdukIdsDariStokKontrol(tid, entri);
-      });
-    }, 300);
+    tokoIds.forEach(tid => {
+      recalcTokoStok(tid, updatedKontrol);
+      const entri = updatedKontrol.find(k=>k.tokoId===tid && expiredIds.has(k.id));
+      if (entri) syncProdukIdsDariStokKontrol(tid, entri);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db.kontrol]);
 
@@ -174,15 +192,33 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // riwayat kontrol per-toko, supaya logikanya satu tempat (tidak diduplikasi).
   const [kontrolPanelOpen, setKontrolPanelOpen] = useState(false);
   function setujuiKontrolPengajuan(id) {
-    updateRecord("kontrol", id, { status: "disetujui", disetujuiOleh: "Manual" });
     const rec = (db.kontrol||[]).find(k=>k.id===id);
-    if (rec) setTimeout(() => { recalcTokoStok(rec.tokoId); syncProdukIdsDariStokKontrol(rec.tokoId, rec); }, 300);
+    if (!rec) return;
+    // ✅ FIX BUG: sebelumnya dipanggil lewat setTimeout(...,300) dengan asumsi
+    // data lokal `db` sudah ter-update setelah jeda itu — TAPI closure fungsi
+    // ini (recalcTokoStok, syncProdukIdsDariStokKontrol) terikat ke snapshot
+    // `db` dari render SEBELUM tombol diklik, jadi berapa pun lama ditunggu,
+    // tetap membaca status lama ("menunggu") dan recalcTokoStok mengabaikan
+    // entri ini (dianggap belum final) — stok Master Toko tidak pernah
+    // ter-update walau ceklis produk sudah benar (itu tidak bergantung status).
+    // Sekarang dibangun list yang SUDAH mencerminkan status baru secara
+    // eksplisit & sinkron, sama seperti pola "extraKontrolList" yang sudah
+    // benar dipakai di submit() Tambah/Edit Kontrol — tidak perlu menunggu
+    // React re-render sama sekali.
+    const updatedRec = { ...rec, status: "disetujui", disetujuiOleh: "Manual" };
+    updateRecord("kontrol", id, { status: "disetujui", disetujuiOleh: "Manual" });
+    const updatedList = (db.kontrol||[]).map(k => k.id===id ? updatedRec : k);
+    recalcTokoStok(rec.tokoId, updatedList);
+    syncProdukIdsDariStokKontrol(rec.tokoId, updatedRec);
   }
   function tolakKontrolPengajuan(id) {
     if (!confirm("Tolak pengajuan Kontrol Bulanan (Stok Awal) ini? Entri akan tetap tersimpan (ditandai Ditolak) tapi tidak memengaruhi stok Master Toko.")) return;
-    updateRecord("kontrol", id, { status: "ditolak", disetujuiOleh: "Manual" });
     const rec = (db.kontrol||[]).find(k=>k.id===id);
-    if (rec) setTimeout(() => recalcTokoStok(rec.tokoId), 300);
+    updateRecord("kontrol", id, { status: "ditolak", disetujuiOleh: "Manual" });
+    if (rec) {
+      const updatedList = (db.kontrol||[]).map(k => k.id===id ? { ...k, status:"ditolak", disetujuiOleh:"Manual" } : k);
+      recalcTokoStok(rec.tokoId, updatedList);
+    }
   }
 
   // ✅ WORKFLOW PERSETUJUAN "Tarik/Non-Aktifkan Toko" dari Sales — dulu
@@ -232,7 +268,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   const [penyesuaianPanelOpen, setPenyesuaianPanelOpen] = useState(false);
   function setujuiPenyesuaian(pz) {
     updateRecord("penyesuaian", pz.id, { status:"disetujui", disetujuiOleh:"Manual" });
-    setTimeout(()=>recalcTokoStok(pz.tokoId), 300);
+    // ✅ FIX BUG sama seperti setujuiKontrolPengajuan: list eksplisit,
+    // bukan setTimeout+db basi (lihat komentar lengkap di sana).
+    const updatedList = (db.penyesuaian||[]).map(p => p.id===pz.id ? { ...p, status:"disetujui", disetujuiOleh:"Manual" } : p);
+    recalcTokoStok(pz.tokoId, undefined, updatedList);
   }
   function tolakPenyesuaian(pz) {
     if (!confirm("Tolak pengajuan penyesuaian stok ini?")) return;
