@@ -25,6 +25,7 @@ import {
   Plus, PartyPopper, NotebookPen, Minus, Lightbulb, Map, ArrowLeftRight,
   Gift, Medal, Trophy, Award, Flame, Inbox, Eraser, Siren, Leaf, Rocket,
   DoorOpen, LayoutDashboard, Users, Palette, ShieldAlert, SkipForward, Undo2, Sparkles,
+  Hourglass,
 } from "lucide-react";
 
 export const Icon = {
@@ -49,6 +50,7 @@ export const Icon = {
   danger: AlertOctagon,
   ban: Ban,
   siren: Siren,
+  hourglass: Hourglass,
 
   // aksi umum
   save: Save,
