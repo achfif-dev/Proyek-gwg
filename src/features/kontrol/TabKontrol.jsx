@@ -1538,7 +1538,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10,
             padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E",
             display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
-            <span>⏳ Ada <b>{pending.length} pengajuan Penyesuaian Stok</b> dari Sales yang menunggu persetujuan
+            <span><Icon.hourglass size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada <b>{pending.length} pengajuan Penyesuaian Stok</b> dari Sales yang menunggu persetujuan
             (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
             <Btn variant="secondary" size="sm" onClick={()=>setPenyesuaianPanelOpen(true)}>Tinjau Pengajuan</Btn>
           </div>
@@ -1599,7 +1599,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10,
             padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E",
             display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
-            <span>⏳ Ada <b>{pending.length} pengajuan Kontrol Bulanan (Stok Awal)</b> dari Sales yang menunggu persetujuan
+            <span><Icon.hourglass size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada <b>{pending.length} pengajuan Kontrol Bulanan (Stok Awal)</b> dari Sales yang menunggu persetujuan
             (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
             <Btn variant="secondary" size="sm" onClick={()=>setKontrolPanelOpen(true)}>Tinjau Pengajuan</Btn>
           </div>
@@ -1653,7 +1653,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10,
             padding:"10px 16px", marginBottom:14, fontSize:13, color:"#991B1B",
             display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
-            <span>🏚️ Ada <b>{pending.length} pengajuan Tarik/Non-Aktifkan Toko</b> dari Sales yang menunggu persetujuan
+            <span><Icon.ban size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada <b>{pending.length} pengajuan Tarik/Non-Aktifkan Toko</b> dari Sales yang menunggu persetujuan
             (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
             <Btn variant="danger" size="sm" onClick={()=>setPenarikanTokoPanelOpen(true)}>Tinjau Pengajuan</Btn>
           </div>
@@ -1704,7 +1704,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10,
             padding:"10px 16px", marginBottom:14, fontSize:13, color:"#991B1B",
             display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
-            <span>🗑️ Ada <b>{pendingHapus.length} pengajuan hapus catatan Kontrol lama</b> dari Sales yang menunggu persetujuan.</span>
+            <span><Icon.delete size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada <b>{pendingHapus.length} pengajuan hapus catatan Kontrol lama</b> dari Sales yang menunggu persetujuan.</span>
             <Btn variant="danger" size="sm" onClick={()=>setHapusKontrolPanelOpen(true)}>Tinjau Pengajuan</Btn>
           </div>
         );
