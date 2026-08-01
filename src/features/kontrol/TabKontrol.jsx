@@ -1033,6 +1033,14 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
   // ✅ BARU: Buka modal Edit Status Toko
   function openEditStatusModal(toko) {
+    // ✅ FIX BUG: field `statusHistory` yang ditulis modal ini TIDAK ada di
+    // whitelist field Sales pada Firebase Rules (toko/$tokoId/$field hanya
+    // izinkan status/produkIds/stok_*/produk_* untuk role Sales). Tanpa guard
+    // ini, Sales bisa membuka & "berhasil" submit modal secara optimistic di
+    // UI, padahal tulisannya SELALU ditolak rules (statusHistory berubah
+    // nilai) — perubahan lalu balik lagi diam-diam saat data real-time dari
+    // Firebase masuk. Sama seperti gating "Edit Nama" toko di bawah.
+    if (isSalesRestricted) { alert("Ubah status toko hanya bisa dilakukan oleh Admin/Manajer."); return; }
     setEditStatusValue(toko.status || "Aktif");
     setEditStatusCatatan("");
     setEditStatusTanggal(new Date().toISOString().slice(0,10));
@@ -1321,9 +1329,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <b>{v}</b>
           {st && tkObj && (
             <span
-              title={`Status toko: ${tkObj.status} — klik untuk edit`}
-              onClick={e=>{ e.stopPropagation(); openEditStatusModal(tkObj); }}
-              style={{ cursor:"pointer", fontSize:10, background:st.color+"22", color:st.color,
+              title={isSalesRestricted ? `Status toko: ${tkObj.status}` : `Status toko: ${tkObj.status} — klik untuk edit`}
+              onClick={isSalesRestricted ? undefined : (e=>{ e.stopPropagation(); openEditStatusModal(tkObj); })}
+              style={{ cursor:isSalesRestricted ? "default" : "pointer", fontSize:10, background:st.color+"22", color:st.color,
                 border:`1px solid ${st.color}44`, borderRadius:99, padding:"1px 7px", fontWeight:700, lineHeight:1.6,
                 userSelect:"none", flexShrink:0, display:"inline-flex", alignItems:"center", gap:3 }}
             ><st.Icon size={10} strokeWidth={2.5} /> {tkObj.status}</span>
@@ -2293,9 +2301,11 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                         <Btn size="sm" variant="secondary" icon={Icon.wrench} onClick={() => openPenyesuaian(toko.id)}>
                           Penyesuaian
                         </Btn>
-                        <Btn size="sm" variant="secondary" icon={Icon.tag} onClick={() => openEditStatusModal(toko)}>
-                          Status
-                        </Btn>
+                        {!isSalesRestricted && (
+                          <Btn size="sm" variant="secondary" icon={Icon.tag} onClick={() => openEditStatusModal(toko)}>
+                            Status
+                          </Btn>
+                        )}
                         {toko.status !== "Non-Aktif" && (
                           <Btn size="sm" variant="danger" icon={Icon.dot} onClick={() => openTokoStatusModal(toko)}>
                             Tarik Toko
