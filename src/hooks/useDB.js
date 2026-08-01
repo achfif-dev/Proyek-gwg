@@ -965,6 +965,7 @@ export function useDB(user) {
         writeTable("produk", arrToMap(restored.produk)),
         writeTable("pengguna", arrToMap(restored.pengguna)),
         writeTable("penyesuaian", arrToMap(restored.penyesuaian)),
+        writeTable("penarikanToko", arrToMap(restored.penarikanToko)),
         writeTable("penjualanLuar", arrToMap(restored.penjualanLuar)),
         writeTable("stokAwal", restored.stokAwal || {}),
         writeTable("bagiHasilConfig", restored.bagiHasilConfig ?? null),
