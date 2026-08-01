@@ -7,9 +7,13 @@ import { fmt, fmtRp } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
+import { NeracaKeuangan } from "./NeracaKeuangan.jsx";
+import { LaporanPajak } from "./LaporanPajak.jsx";
+import { periodeBounds, hitungAmortisasiPeriode } from "../../lib/neracaHelpers";
 
-export function TabBagiHasil({ db, analytics, save }) {
+export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
+  const [activeSubTab, setActiveSubTab] = usePersistedState("bagihasil.subtab", "ringkasan");
 
   // State untuk konfigurasi bagi hasil (tersimpan di db.bagiHasilConfig)
   const config = db.bagiHasilConfig || {
@@ -71,6 +75,10 @@ export function TabBagiHasil({ db, analytics, save }) {
   }, [kontrol, penjualanLuar, periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
 
 
+  // Batas tanggal periode terpilih (dipakai bareng oleh Amortisasi & Neraca Keuangan)
+  const bounds = useMemo(() => periodeBounds(periodeMode, filterBulan, filterTahun, filterStart, filterEnd),
+    [periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
+
   // Kalkulasi akuntansi lengkap
   const akuntansi = useMemo(() => {
     const pendapatan = revPeriode.rev;
@@ -78,7 +86,12 @@ export function TabBagiHasil({ db, analytics, save }) {
     const biayaBonus = Number(config.biayaBonus)||0;
     const biayaLogistik = Number(config.biayaLogistik)||0;
     const biayaLain = Number(config.biayaLainnya)||0;
-    const totalBiaya = biayaOps + biayaBonus + biayaLogistik + biayaLain;
+    // ✅ NERACA KEUANGAN: Biaya Amortisasi dihitung OTOMATIS dari daftar aset
+    // (Tab Bagi Hasil → Neraca Keuangan → Amortisasi), bukan diisi manual
+    // seperti 4 kategori biaya di atas — supaya SHU/Laba Bersih & ROE
+    // mencerminkan beban penyusutan aset tetap sesuai standar akuntansi.
+    const biayaAmortisasi = hitungAmortisasiPeriode(db.asetAmortisasi||[], bounds).total;
+    const totalBiaya = biayaOps + biayaBonus + biayaLogistik + biayaLain + biayaAmortisasi;
     const labaKotor = pendapatan - totalBiaya;
     const marginPct = Number(config.marginLaba)||70;
     // ✅ Laba Bersih sekarang dihitung dari Laba Kotor (Pendapatan − semua
@@ -98,12 +111,12 @@ export function TabBagiHasil({ db, analytics, save }) {
     const totalDibagi = pihakList.reduce((s,p)=>s+p.nominal, 0);
 
     return {
-      pendapatan, biayaOps, biayaBonus, biayaLogistik, biayaLain, totalBiaya,
+      pendapatan, biayaOps, biayaBonus, biayaLogistik, biayaLain, biayaAmortisasi, totalBiaya,
       labaKotor, labaBersihFinal,
       pihakList, totalDibagi,
       marginPct,
     };
-  }, [revPeriode.rev, config]);
+  }, [revPeriode.rev, config, db.asetAmortisasi, bounds]);
 
   function saveConfig(newCfg) {
     save({ ...db, bagiHasilConfig: newCfg });
@@ -159,6 +172,7 @@ export function TabBagiHasil({ db, analytics, save }) {
       { keterangan:"Biaya Bonus Produk", nilai: fmtRp(akuntansi.biayaBonus) },
       { keterangan:"Biaya Logistik", nilai: fmtRp(akuntansi.biayaLogistik) },
       { keterangan:"Biaya Lainnya", nilai: fmtRp(akuntansi.biayaLain) },
+      { keterangan:"Biaya Amortisasi (Aset Tetap)", nilai: fmtRp(akuntansi.biayaAmortisasi) },
       { keterangan:"TOTAL BIAYA", nilai: fmtRp(akuntansi.totalBiaya) },
       { keterangan:"Laba Kotor", nilai: fmtRp(akuntansi.labaKotor) },
       { keterangan:"", nilai:"" },
@@ -200,6 +214,23 @@ export function TabBagiHasil({ db, analytics, save }) {
             {showDetail?"Sembunyikan Detail":"Lihat Detail Produk"}
           </Btn>
         </div>
+      </div>
+
+      {/* Sub-navigasi: Ringkasan Bagi Hasil | Neraca Keuangan Lengkap | Laporan Pajak (Coretax) */}
+      <div style={{ display:"flex", gap:6, marginBottom:16, flexWrap:"wrap", borderBottom:`1.5px solid ${T.gray200}`, paddingBottom:2 }}>
+        {[
+          { key:"ringkasan", label:"Bagi Hasil & Laba Rugi", icon:Icon.wallet },
+          { key:"neraca", label:"Neraca Keuangan Lengkap", icon:Icon.scale },
+          { key:"pajak", label:"Laporan Pajak (Coretax)", icon:Icon.receipt },
+        ].map(t=>(
+          <button key={t.key} onClick={()=>setActiveSubTab(t.key)}
+            style={{ display:"flex", alignItems:"center", gap:6, padding:"9px 16px", border:"none",
+              borderBottom:`2.5px solid ${activeSubTab===t.key?T.green:"transparent"}`,
+              background:"none", cursor:"pointer", fontFamily:"inherit",
+              fontSize:13, fontWeight:700, color:activeSubTab===t.key?T.green:T.gray400 }}>
+            <t.icon size={15} strokeWidth={2} /> {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Filter Periode */}
@@ -256,6 +287,7 @@ export function TabBagiHasil({ db, analytics, save }) {
         </div>
       </Card>
 
+      {activeSubTab === "ringkasan" && (<>
       {/* Ringkasan Kinerja Periode */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:10, marginBottom:16 }}>
         <StatCard label="Total Revenue" value={fmtRp(akuntansi.pendapatan)} icon={Icon.banknote} color={T.green} sub={PERIODE_LABELS[periodeMode]} />
@@ -290,10 +322,11 @@ export function TabBagiHasil({ db, analytics, save }) {
               { label:"Biaya Bonus Produk", val: akuntansi.biayaBonus },
               { label:"Biaya Logistik/Distribusi", val: akuntansi.biayaLogistik },
               { label:"Biaya Lainnya", val: akuntansi.biayaLain },
-            ].map((b,i)=>(
+              { label:"Biaya Amortisasi (Aset Tetap)", val: akuntansi.biayaAmortisasi, auto:true },
+            ].map((b,i,arr)=>(
               <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px",
-                borderBottom: i<3 ? `1px solid ${T.gray100}` : "none" }}>
-                <span style={{ fontSize:13, color:T.gray600 }}>{b.label}</span>
+                borderBottom: i<arr.length-1 ? `1px solid ${T.gray100}` : "none" }}>
+                <span style={{ fontSize:13, color:T.gray600 }}>{b.label}{b.auto && <span title="Dihitung otomatis dari daftar aset di Neraca Keuangan → Amortisasi" style={{ fontSize:10, color:T.gray400 }}> (otomatis)</span>}</span>
                 <span style={{ fontSize:13, color:T.red }}>({fmtRp(b.val)})</span>
               </div>
             ))}
@@ -502,6 +535,23 @@ export function TabBagiHasil({ db, analytics, save }) {
           );
         })()}
       </Card>
+      </>)}
+
+      {activeSubTab === "neraca" && (
+        <NeracaKeuangan
+          db={db} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord}
+          config={config} saveConfig={saveConfig} akuntansi={akuntansi} revPeriode={revPeriode}
+          periodeMode={periodeMode} PERIODE_LABELS={PERIODE_LABELS} bounds={bounds}
+        />
+      )}
+
+      {activeSubTab === "pajak" && (
+        <LaporanPajak
+          akuntansi={akuntansi} revPeriode={revPeriode} periodeMode={periodeMode}
+          PERIODE_LABELS={PERIODE_LABELS} config={config} saveConfig={saveConfig}
+          filterBulan={filterBulan} filterTahun={filterTahun}
+        />
+      )}
 
       {/* Modal Konfigurasi Bagi Hasil */}
       {editConfig && (
@@ -542,6 +592,18 @@ export function TabBagiHasil({ db, analytics, save }) {
                   style={{ width:"100%", padding:"7px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
               </div>
             ))}
+          </div>
+          <div style={{ marginBottom:4 }}>
+            <div style={{ fontSize:13, fontWeight:700, color:T.gray700, marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>
+              <Icon.landmark size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Ekuitas (untuk ROE)
+            </div>
+            <div style={{ marginBottom:2 }}>
+              <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>Modal Disetor / Total Ekuitas (Rp)</label>
+              <input type="number" value={cfgDraft.modalDisetor||0} min={0}
+                onChange={e=>setCfgDraft(p=>({...p, modalDisetor:e.target.value}))}
+                style={{ width:"100%", padding:"7px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+              <div style={{ fontSize:11, color:T.gray400, marginTop:3 }}>Total modal yang disetorkan Pemilik & Investor — dipakai sebagai pembagi di ROE (Return on Equity) pada tab Neraca Keuangan.</div>
+            </div>
           </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setEditConfig(false)}>Batal</Btn>

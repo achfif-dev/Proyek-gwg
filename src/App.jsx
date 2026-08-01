@@ -1075,7 +1075,7 @@ export default function GWGSuperApp() {
         )}
         {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="bagihasil" ? "block" : "none" }}>
-            <TabBagiHasil db={db} analytics={analytics} save={save} />
+            <TabBagiHasil db={db} analytics={analytics} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
           </div>
         )}
         {canAccessTab("pengguna", { isAdmin, isManajer }) && (

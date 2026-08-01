@@ -25,7 +25,8 @@ import {
   Plus, PartyPopper, NotebookPen, Minus, Lightbulb, Map, ArrowLeftRight,
   Gift, Medal, Trophy, Award, Flame, Inbox, Eraser, Siren, Leaf, Rocket,
   DoorOpen, LayoutDashboard, Users, Palette, ShieldAlert, SkipForward, Undo2, Sparkles,
-  Hourglass,
+  Hourglass, Landmark, Scale, Receipt, Percent, Boxes, Calculator, ListChecks, PiggyBank,
+  FileSpreadsheet,
 } from "lucide-react";
 
 export const Icon = {
@@ -53,6 +54,17 @@ export const Icon = {
   hourglass: Hourglass,
 
   // aksi umum
+  // neraca keuangan / pajak
+  landmark: Landmark,
+  scale: Scale,
+  receipt: Receipt,
+  percent: Percent,
+  boxes: Boxes,
+  calculator: Calculator,
+  checklist: ListChecks,
+  piggyBank: PiggyBank,
+  spreadsheet: FileSpreadsheet,
+
   save: Save,
   edit: Pencil,
   delete: Trash2,
