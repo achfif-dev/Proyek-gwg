@@ -46,6 +46,61 @@ export function appendStatusHistory(existingHistory, status, tanggal, catatan) {
 }
 
 
+// ✅ SHARED: dari daftar produkIds baru, hasilkan juga flag produk_<id>
+// (boolean per produk) yang dipakai Master Toko (kolom tabel & form ceklis
+// "Produk yang Dijual" di TabToko). Diekstrak dari TabKontrol.jsx supaya
+// fitur lain (mis. "Update Stok Awal" di TabToko.jsx) yang juga perlu
+// menyinkronkan ceklis produk memakai LOGIKA YANG SAMA PERSIS, bukan
+// duplikat kode yang bisa diam-diam berbeda seiring waktu.
+export function buildProdukFlagUpdates(produkAktif, newIds) {
+  const flags = {};
+  (produkAktif||[]).forEach(p => { flags[`produk_${p.id}`] = newIds.includes(p.id); });
+  return flags;
+}
+
+// ✅ SHARED: hitung ulang stok Master Toko dari GABUNGAN dua sumber:
+//  1) "Stok Awal" pada entri Kontrol Bulanan TERAKHIR yang berstatus final
+//     (bukan "menunggu"/"ditolak") — dibawa apa adanya.
+//  2) Semua Penyesuaian Stok (Tambah/Kurang/Tarik) berstatus final yang
+//     tanggalnya SAMA ATAU SETELAH kontrol terakhir tsb.
+// Diekstrak dari TabKontrol.jsx (lihat komentar aslinya di sana) supaya
+// SEMUA fitur yang mengubah stok toko lewat "penyesuaian" (Penyesuaian
+// Stok, Tarik/Non-Aktifkan Toko, maupun Update Stok Awal di TabToko.jsx)
+// menghitung ulang stok akhir dengan rumus yang SAMA PERSIS — mencegah
+// nilai yang diset satu fitur "hilang" tertimpa diam-diam oleh fitur lain.
+// extraKontrolList / extraPenyesuaianList: dipakai saat dipanggil tepat
+// setelah addRecord, karena `db` di closure pemanggil belum memuat data terbaru.
+export function recalcTokoStok(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList) {
+  const semuaKontrol = extraKontrolList || (db.kontrol||[]);
+  const semuaPenyesuaian = extraPenyesuaianList || (db.penyesuaian||[]);
+  const entriesToko = semuaKontrol
+    .filter(k => k.tokoId === tokoId && k.status !== "menunggu" && k.status !== "ditolak")
+    .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
+  const terakhir = entriesToko[entriesToko.length-1];
+
+  const baseline = {};
+  (produkAktif||[]).forEach(p => { baseline[p.id] = terakhir ? Number(terakhir[`stok_${p.id}`]||0) : 0; });
+
+  const batasTanggal = terakhir?.tanggal || "0000-00-00";
+  const penyesuaianRelevan = semuaPenyesuaian
+    .filter(pz => pz.tokoId === tokoId && (pz.tanggal||"") >= batasTanggal
+      && pz.status !== "menunggu" && pz.status !== "ditolak")
+    .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
+  penyesuaianRelevan.forEach(pz => {
+    const arah = pz.jenis === "Kurang" || pz.jenis === "Tarik" ? -1 : 1;
+    (produkAktif||[]).forEach(p => {
+      const jumlah = Number(pz[`jumlah_${p.id}`]||0);
+      if (jumlah) baseline[p.id] = (baseline[p.id]||0) + arah*jumlah;
+    });
+  });
+
+  if (!terakhir && penyesuaianRelevan.length === 0) return; // belum ada kontrol maupun penyesuaian → biarkan stok toko (input manual awal) apa adanya
+
+  const updates = {};
+  (produkAktif||[]).forEach(p => { updates[`stok_${p.id}`] = Math.max(0, baseline[p.id]||0); });
+  updateRecord("toko", tokoId, updates);
+}
+
 export function arrToMap(arr) {
   const map = {};
   (arr||[]).forEach(r => { if (r && r.id != null) map[r.id] = r; });
