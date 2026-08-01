@@ -1,8 +1,8 @@
 import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, ImportMenu, Input, Modal, SearchableSelect, Table } from "../../components/ui";
-import { fmt, fmtRp, genId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
+import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
 import { downloadTokoTemplate } from "../../lib/importUtils";
-import { appendStatusHistory } from "../../lib/dataHelpers";
+import { appendStatusHistory, buildProdukFlagUpdates, recalcTokoStok } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
@@ -210,66 +210,85 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     setStokForm({ tokoId:row.id, tokoNama:row.nama, stok:sf });
     setStokModal(true);
   }
+  // ✅ SINKRONISASI (disamakan dengan Penyesuaian Stok / Tarik Toko di Tab
+  // Kontrol): "Update Stok Awal" DULU langsung menimpa field stok_<id> di
+  // Master Toko lewat updateRecord biasa. Ini punya 2 masalah:
+  //  1. Tidak ada jejak audit sama sekali (beda dengan Penyesuaian Stok yang
+  //     selalu tercatat di koleksi "penyesuaian"), dan nilainya bisa "hilang"
+  //     tertimpa diam-diam saat recalcTokoStok() jalan lagi (dipicu entri
+  //     Kontrol/Penyesuaian lain) — karena recalcTokoStok menghitung ulang
+  //     stok dari histori kontrol+penyesuaian, BUKAN dari nilai stok_<id>
+  //     yang ditimpa manual di sini.
+  //  2. Tombolnya disembunyikan TOTAL untuk Sales (lihat kondisi render di
+  //     bawah) — beda dengan Penyesuaian Stok & Tarik Toko yang sudah lama
+  //     boleh diajukan Sales lewat alur menunggu → disetujui/otomatis 24 jam.
+  // Sekarang disamakan: selisih (delta) stok lama vs baru dihitung, lalu
+  // dicatat sebagai entri "penyesuaian" (jenis Tambah/Tarik) — persis pola
+  // yang sama dipakai konfirmasiNonaktifkanToko() di TabKontrol.jsx. Kalau
+  // yang mengajukan Sales, entri masuk status "menunggu" (otomatis disetujui
+  // 24 jam kalau tidak ditinjau); kalau Admin/Manajer, langsung "disetujui".
+  // Baik disetujui manual maupun otomatis, recalcTokoStok() yang akhirnya
+  // menuliskan stok final ke Master Toko — sama seperti 2 fitur lain itu.
   function submitStok() {
     const t = (db.toko||[]).find(x => x.id === stokForm.tokoId);
     if (!t) { setStokModal(false); return; }
-    const updates = {};
-    // ✅ Sinkron ceklis "Produk yang Dijual" (produkIds) dengan perubahan
-    // stok lewat "Update Stok Awal" ini — sebelumnya cuma stok yang berubah,
-    // ceklisnya dibiarkan apa adanya. Sekarang: produk yang diisi stok > 0
-    // otomatis dicentang (kalau belum), dan produk yang diisi 0 otomatis
-    // dihilangkan ceklisnya (kalau sebelumnya sudah tercentang) — sama
-    // seperti sinkronisasi di Kontrol Bulanan & Penyesuaian Stok.
-    // ✅ PENTING: acuan "sudah tercentang atau belum" sekarang membaca
-    // flag produk_<id> LANGSUNG (bukan array produkIds) — karena flag
-    // itu yang sebenarnya ditampilkan sebagai ceklis di tabel/layar. Untuk
-    // toko lama yang produkIds & flag-nya SUDAH TERLANJUR tidak sinkron
-    // dari sebelum perbaikan ini ada (mis. dari hasil import lama), acuan
-    // ke array produkIds gagal mendeteksi ketidaksesuaian itu — makanya
-    // ceklis yang sudah kadung salah tidak pernah ikut terkoreksi. Dengan
-    // membaca flag langsung, perbaikan ini otomatis "menyembuhkan" data
-    // lama yang sudah telanjur tidak sinkron, bukan cuma menjaga data
-    // baru tetap sinkron ke depannya.
-    // ✅ FIX SINKRONISASI LANJUTAN: baris di bawah ini SEBELUMNYA masih
-    // membaca `t.produkIds || []` untuk existingIds — padahal produkIds
-    // toko hasil Import Toko (lihat importTokoFromRows) TIDAK PERNAH diisi
-    // sama sekali (cuma flag produk_<id> yang diisi dari kolom Excel).
-    // Akibatnya, begitu ada SATU produk saja yang butuh ditambah/dihapus
-    // dari ceklis di sini, finalIds dibangun dari existingIds yang kosong
-    // → ceklis "Produk yang Dijual" untuk SEMUA produk lain milik toko itu
-    // (yang sebenarnya sudah benar tercentang lewat import) ikut TERHAPUS
-    // diam-diam. Disamakan dengan syncProdukIdsDariStokKontrol: existingIds
-    // dibaca dari flag produk_<id> langsung, bukan dari array produkIds.
+    if (isSalesRestricted) {
+      const ruteObj = (db.rute||[]).find(r=>r.id===t.ruteId);
+      if (ruteObj?.wilayahId !== salesWilayahId) {
+        alert("Sebagai Sales, kamu hanya boleh mengoreksi stok toko di wilayahmu sendiri.");
+        return;
+      }
+    }
+
+    // ✅ Sinkron ceklis "Produk yang Dijual" (produkIds/produk_<id>) — sumber
+    // kebenaran "sudah tercentang atau belum" dibaca dari flag produk_<id>
+    // langsung (bukan array produkIds), sama seperti perbaikan sebelumnya di
+    // fungsi ini, supaya toko lama yang produkIds-nya belum sinkron (mis.
+    // hasil import) ikut terkoreksi otomatis, bukan malah tertimpa kosong.
     const existingIds = produkAktif.filter(p=>!!t[`produk_${p.id}`]).map(p=>p.id);
     const toAdd = [];
     const toRemove = [];
+    const naik = {}, turun = {};
+    let adaNaik = false, adaTurun = false;
     produkAktif.forEach(p => {
-      const stokBaru = Number(stokForm.stok[p.id]||0);
-      updates[`stok_${p.id}`] = stokBaru;
+      const sebelum = Number(t[`stok_${p.id}`]||0);
+      const sesudah = Number(stokForm.stok[p.id]||0);
+      const delta = sesudah - sebelum;
+      if (delta > 0) { naik[`jumlah_${p.id}`] = delta; adaNaik = true; }
+      else if (delta < 0) { turun[`jumlah_${p.id}`] = -delta; adaTurun = true; }
       const sudahAda = !!t[`produk_${p.id}`];
-      if (stokBaru > 0 && !sudahAda) toAdd.push(p.id);
-      else if (stokBaru === 0 && sudahAda) toRemove.push(p.id);
+      if (sesudah > 0 && !sudahAda) toAdd.push(p.id);
+      else if (sesudah === 0 && sudahAda) toRemove.push(p.id);
     });
+
+    if (!adaNaik && !adaTurun) { setStokModal(false); return; } // tidak ada perubahan stok
+
+    const today = new Date().toISOString().slice(0,10);
+    const status = isSalesRestricted ? "menunggu" : "disetujui";
+    const autoApproveAt = isSalesRestricted ? (Date.now() + 24*60*60*1000) : null;
+    const catatan = `Koreksi manual stok awal toko "${t.nama}" lewat Update Stok Awal (Tab Toko).`;
+    const dicatatOleh = isSalesRestricted ? "Sales" : "Admin/Manajer";
+    const entriesBaru = [];
+    // Dipisah jadi 2 catatan (Tambah & Tarik) kalau campuran, biar arah
+    // naik/turun per kelompok produk tetap benar — sama seperti pola di
+    // konfirmasiNonaktifkanToko (TabKontrol.jsx).
+    if (adaTurun) entriesBaru.push({ id: genUniqueId("PZ"), tokoId: t.id, tanggal: today, jenis:"Tarik", catatan, dicatatOleh, status, autoApproveAt, ...turun });
+    if (adaNaik) entriesBaru.push({ id: genUniqueId("PZ"), tokoId: t.id, tanggal: today, jenis:"Tambah", catatan, dicatatOleh, status, autoApproveAt, ...naik });
+    entriesBaru.forEach(e => addRecord("penyesuaian", e));
+
+    // Ceklis "Produk yang Dijual" disinkron segera (sama seperti perilaku
+    // Penyesuaian Stok yang sudah ada — ceklis tidak menunggu approval,
+    // hanya ANGKA stok yang menunggu lewat recalcTokoStok di bawah).
     if (toAdd.length > 0 || toRemove.length > 0) {
       const finalIds = [...new Set(existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd))];
-      updates.produkIds = finalIds;
-      produkAktif.forEach(p => { updates[`produk_${p.id}`] = finalIds.includes(p.id); });
+      updateRecord("toko", t.id, { produkIds: finalIds, ...buildProdukFlagUpdates(produkAktif, finalIds) });
     }
-    // ✅ FIX: sebelumnya baris ini memakai save(newDB), yang menulis ULANG
-    // SELURUH tabel toko (ribuan record) sebagai SATU set() raksasa ke
-    // Firebase — persis pola yang sudah diperbaiki di importTokoFromRows
-    // (lihat komentar di sana). Akibatnya: kalau field APAPUN di toko
-    // MANAPUN (bukan cuma toko yang sedang diedit stoknya) kebetulan tidak
-    // lolos .validate Firebase (mis. data lama dengan tipe field yang tidak
-    // sesuai), SELURUH penulisan ditolak Firebase — muncul sebagai banner
-    // "tidak ada izin" walau role Admin/Manajer di database sudah benar,
-    // karena Firebase tidak membedakan "ditolak validasi" dari "ditolak
-    // izin" di pesan errornya. Sekarang hanya field yang benar-benar
-    // berubah pada toko yang sedang diedit yang dikirim, lewat updateRecord
-    // (path kecil per-field `toko/<id>/<field>`), sama seperti alur
-    // Tambah/Edit Toko manual.
-    updateRecord("toko", stokForm.tokoId, updates);
+    recalcTokoStok(db, produkAktif, t.id, updateRecord, undefined, [...(db.penyesuaian||[]), ...entriesBaru]);
+
     setStokModal(false);
+    if (isSalesRestricted) {
+      alert(`Pengajuan koreksi stok toko "${t.nama}" terkirim. Menunggu persetujuan Admin/Manajer (otomatis disetujui dalam 24 jam kalau tidak ditinjau) — stok toko masih seperti semula sampai disetujui.`);
+    }
   }
 
   // Opsi Rute & Wilayah diurutkan per wilayah (abjad) lalu nama rute
@@ -583,7 +602,9 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
                             );
                           })}
                           <td style={{ padding:"8px 12px", textAlign:"right" }}>
-                            {!isSalesRestricted && <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>openStok(t)}>Update</Btn>}
+                            <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>openStok(t)}>
+                              {isSalesRestricted ? "Ajukan Koreksi" : "Update"}
+                            </Btn>
                           </td>
                         </tr>
                       ))}
@@ -673,6 +694,14 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
             restock etalase saat kunjungan itu). Gunakan form ini hanya untuk <b>koreksi manual</b>
             (misal: stok opname, retur, atau setup awal sebelum ada kontrol).
           </div>
+          {isSalesRestricted && (
+            <div style={{ background:T.greenLt, border:`1px solid ${T.greenMid}44`, borderRadius:8,
+              padding:"8px 12px", fontSize:12, color:T.green, marginBottom:16 }}>
+              <Icon.lock size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Sebagai Sales, koreksi ini akan
+              tercatat sebagai <b>pengajuan Penyesuaian Stok</b> berstatus menunggu — stok toko baru berubah
+              setelah disetujui Admin/Manajer (atau otomatis disetujui dalam 24 jam kalau tidak ditinjau).
+            </div>
+          )}
           {produkAktif.map(p => (
             <Input key={p.id} label={`Stok ${p.nama} (${p.id})`}
               value={stokForm.stok?.[p.id]||0}
