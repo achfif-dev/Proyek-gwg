@@ -198,7 +198,37 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       const statusHistory = (form.status && existing && form.status !== existing.status)
         ? appendStatusHistory(existing.statusHistory, form.status, today, "Diubah lewat Master Toko")
         : (existing?.statusHistory || undefined);
+
+      // ✅ SINKRONISASI: kalau Admin/Manajer melepas ceklis "Produk yang
+      // Dijual" langsung dari sini (bukan lewat "Tarik Produk" di
+      // Penyesuaian Stok/Kontrol), stok produk itu HARUS ikut dikosongkan —
+      // dicatat sebagai entri "penyesuaian" (jenis Tarik) yang sudah
+      // "disetujui" (Admin/Manajer, tidak perlu approval), bukan langsung
+      // menimpa field stok_<id>. Kenapa lewat penyesuaian, bukan overwrite
+      // langsung? Karena recalcTokoStok() menghitung ulang stok dari HISTORI
+      // kontrol+penyesuaian (bukan dari nilai stok_<id> mentah) — kalau cuma
+      // ditimpa langsung tanpa jejak, nilainya bisa "muncul lagi" diam-diam
+      // begitu recalcTokoStok() terpicu ulang oleh aksi lain di toko ini
+      // (sama seperti pola yang sudah diperbaiki di submitStok() di bawah).
+      const produkDilepasIds = existing
+        ? produkAktif.filter(p => !!existing[`produk_${p.id}`] && !(form.produkIds||[]).includes(p.id)).map(p=>p.id)
+        : [];
+      const turun = {};
+      let adaTurun = false;
+      produkDilepasIds.forEach(pid => {
+        const sisaStok = Number(existing[`stok_${pid}`]||0);
+        if (sisaStok > 0) { turun[`jumlah_${pid}`] = sisaStok; adaTurun = true; }
+      });
+
       updateRecord("toko", form.id, { ...form, ...produkFlags, tanggalMasuk, ...(statusHistory ? { statusHistory } : {}) });
+
+      if (adaTurun) {
+        const catatan = `Produk dilepas dari ceklis "Produk yang Dijual" lewat Edit Toko (Master Toko) — stok ikut dikosongkan.`;
+        const entriBaru = { id: genUniqueId("PZ"), tokoId: form.id, tanggal: today, jenis:"Tarik", catatan, dicatatOleh:"Admin/Manajer", status:"disetujui" };
+        Object.assign(entriBaru, turun);
+        addRecord("penyesuaian", entriBaru);
+        recalcTokoStok(db, produkAktif, form.id, updateRecord, undefined, [...(db.penyesuaian||[]), entriBaru]);
+      }
     }
     setModal(null);
   }
