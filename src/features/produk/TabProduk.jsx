@@ -9,7 +9,42 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
   const [form, setForm] = useState({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0 });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
-  function openAdd() { setForm({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0 }); setModal("add"); }
+  // ✅ Urutan tampil produk (dipakai di sini & di grid "Stok, Penjualan &
+  // Bonus Produk" pada Tambah/Edit Kontrol Bulanan) — SEBELUMNYA urutan
+  // cuma ikut urutan array mentah db.produk (urutan input pertama kali),
+  // ditambah satu pengecualian hardcode: produk bernama "Roll On" selalu
+  // dipaksa tampil paling depan lewat regex nama di TabKontrol.jsx. Itu
+  // spesifik ke bisnis GWG dan tidak cocok untuk client white label lain
+  // yang produknya beda. Sekarang diganti field `urutan` (angka) yang bisa
+  // diatur admin lewat tombol ↑/↓ di bawah — generik untuk produk apa pun.
+  //
+  // Produk lama yang belum punya `urutan` (data existing sebelum fitur ini
+  // ada) otomatis fallback ke posisi aslinya di array db.produk, supaya
+  // urutan yang sudah ada di lapangan tidak tiba-tiba berubah/acak.
+  const produkUrut = React.useMemo(() => {
+    const withEff = (db.produk||[]).map((p,i) => ({ ...p, _eff: typeof p.urutan === "number" ? p.urutan : i }));
+    return withEff.sort((a,b) => a._eff - b._eff);
+  }, [db.produk]);
+
+  function moveProduk(id, dir) {
+    const idx = produkUrut.findIndex(p=>p.id===id);
+    const swapIdx = idx + dir;
+    if (idx < 0 || swapIdx < 0 || swapIdx >= produkUrut.length) return;
+    const reordered = [...produkUrut];
+    [reordered[idx], reordered[swapIdx]] = [reordered[swapIdx], reordered[idx]];
+    // "Materialize" urutan 0..n-1 sesuai posisi baru — sekalian merapikan
+    // produk lama yang tadinya masih pakai fallback (urutan belum tersimpan).
+    reordered.forEach((p, i) => {
+      if (p.urutan !== i) updateRecord("produk", p.id, { urutan: i });
+    });
+  }
+
+  function openAdd() {
+    // Produk baru ditaruh paling akhir secara default.
+    const nextUrutan = produkUrut.length ? Math.max(...produkUrut.map(p=>p._eff)) + 1 : 0;
+    setForm({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0, urutan: nextUrutan });
+    setModal("add");
+  }
   function openEdit(row) { setForm({ ...row }); setModal("edit"); }
   function submit() {
     if (!form.id || !form.nama || !form.harga) return alert("Kode, Nama, & Harga wajib diisi");
@@ -23,6 +58,27 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
   }
 
   const cols = [
+    { key:"_urutanBtn", label:"Urutan", render:(_,row) => {
+        const idx = produkUrut.findIndex(p=>p.id===row.id);
+        return (
+          <div style={{ display:"flex", gap:4 }}>
+            <button onClick={()=>moveProduk(row.id,-1)} disabled={idx<=0}
+              title="Naikkan urutan"
+              style={{ border:`1px solid ${T.gray200}`, background:idx<=0?T.gray50:"#fff",
+                borderRadius:6, width:26, height:26, display:"flex", alignItems:"center", justifyContent:"center",
+                cursor:idx<=0?"default":"pointer", color:idx<=0?T.gray300:T.gray600 }}>
+              <Icon.arrowUp size={13} strokeWidth={2.5}/>
+            </button>
+            <button onClick={()=>moveProduk(row.id,1)} disabled={idx>=produkUrut.length-1}
+              title="Turunkan urutan"
+              style={{ border:`1px solid ${T.gray200}`, background:idx>=produkUrut.length-1?T.gray50:"#fff",
+                borderRadius:6, width:26, height:26, display:"flex", alignItems:"center", justifyContent:"center",
+                cursor:idx>=produkUrut.length-1?"default":"pointer", color:idx>=produkUrut.length-1?T.gray300:T.gray600 }}>
+              <Icon.arrowDown size={13} strokeWidth={2.5}/>
+            </button>
+          </div>
+        );
+      } },
     { key:"id",    label:"Kode",    render:v=><b style={{ color:T.blue }}>{v}</b> },
     { key:"nama",  label:"Nama Produk", render:v=><b>{v}</b> },
     { key:"tipe",  label:"Tipe",    render:v=><Badge color={T.purple}>{v||"—"}</Badge> },
@@ -36,7 +92,7 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <div style={{ fontSize:18, fontWeight:700, color:T.gray800, display:"flex", alignItems:"center", gap:7 }}><Icon.produk size={19} strokeWidth={2} /> Master Produk</div>
-          <div style={{ fontSize:12, color:T.gray400 }}>{(db.produk||[]).length} produk · Tipe bisa diisi bebas</div>
+          <div style={{ fontSize:12, color:T.gray400 }}>{(db.produk||[]).length} produk · Tipe bisa diisi bebas · Urutan pakai tombol ↑/↓, dipakai juga di Kontrol Bulanan</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={db.produk||[]} columns={cols} title="Data Produk" filename="produk" />
@@ -44,7 +100,7 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
         </div>
       </div>
       <Card padding={0}>
-        <Table columns={cols} data={db.produk||[]} onEdit={openEdit}
+        <Table columns={cols} data={produkUrut} onEdit={openEdit}
           onDelete={id=>{ if(confirm("Hapus produk ini?")) deleteRecord("produk",id); }} />
       </Card>
       {modal && (
@@ -60,6 +116,9 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
             hint="Jumlah produk bonus yang diberikan ke toko per kunjungan kontrol (opsional)" />
           <Input label="Aktif" type="checkbox" value={form.aktif} onChange={v=>f("aktif",v)}
             placeholder="Tampilkan di kontrol bulanan" />
+          <div style={{ fontSize:11, color:T.gray400, marginTop:-4, marginBottom:8 }}>
+            Urutan tampil bisa diatur belakangan lewat tombol ↑/↓ di tabel Master Produk.
+          </div>
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
             <Btn onClick={submit}>{modal==="add"?"Simpan":"Update"}</Btn>
