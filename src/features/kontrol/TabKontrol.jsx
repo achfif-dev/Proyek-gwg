@@ -88,6 +88,46 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     setTimeout(() => tokoIds.forEach(tid => recalcTokoStok(tid)), 300);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db.penyesuaian]);
+
+  // ✅ AUTO-APPROVE: pengajuan Kontrol Bulanan (Tambah Kontrol / Stok Awal)
+  // dari Sales — SAMA PERSIS alurnya dengan Penyesuaian Stok di atas, supaya
+  // logika kedua tombol ("Penyesuaian Stok" & "Tambah Kontrol") konsisten:
+  // status "menunggu" otomatis jadi "disetujui" begitu lewat 24 jam kalau
+  // tidak ditinjau/ditolak Admin/Manajer duluan.
+  useEffect(() => {
+    const now = Date.now();
+    const expired = (db.kontrol||[]).filter(k =>
+      k.status === "menunggu" && k.autoApproveAt && k.autoApproveAt <= now
+    );
+    if (expired.length === 0) return;
+    expired.forEach(k => {
+      updateRecord("kontrol", k.id, { status: "disetujui", disetujuiOleh: "Otomatis (24 jam)" });
+    });
+    const tokoIds = [...new Set(expired.map(k=>k.tokoId))];
+    setTimeout(() => {
+      tokoIds.forEach(tid => {
+        recalcTokoStok(tid);
+        const entri = expired.find(k=>k.tokoId===tid);
+        if (entri) syncProdukIdsDariStokKontrol(tid, entri);
+      });
+    }, 300);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db.kontrol]);
+
+  // ✅ AUTO-APPROVE: pengajuan Tarik/Non-Aktifkan Toko dari Sales — sama
+  // seperti dua alur di atas, otomatis "disetujui" lewat 24 jam kalau tidak
+  // ditinjau/ditolak Admin/Manajer duluan. Begitu disetujui, terapkan efeknya
+  // ke Master Toko (status Non-Aktif, ceklis produk, stok) — lihat
+  // terapkanPenarikanToko().
+  useEffect(() => {
+    const now = Date.now();
+    const expired = (db.penarikanToko||[]).filter(pk =>
+      pk.status === "menunggu" && pk.autoApproveAt && pk.autoApproveAt <= now
+    );
+    if (expired.length === 0) return;
+    expired.forEach(pk => terapkanPenarikanToko(pk, "Otomatis (24 jam)"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [db.penarikanToko]);
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
   const [selectedIds, setSelectedIds] = useState([]);
   // ✅ ALUR PERSETUJUAN HAPUS KONTROL LAMA: Sales hanya boleh menghapus langsung
@@ -127,6 +167,107 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   function tolakHapusKontrol(id) {
     if (!confirm("Tolak pengajuan hapus catatan kontrol ini? Entri akan tetap ada.")) return;
     updateRecord("kontrol", id, { hapusStatus: null, hapusDiajukanOleh: null, hapusDiajukanAt: null });
+  }
+
+  // ✅ WORKFLOW PERSETUJUAN "Tambah Kontrol" (Stok Awal) dari Sales — dipakai
+  // baik dari banner ringkasan (panel "Tinjau Pengajuan") maupun dari baris
+  // riwayat kontrol per-toko, supaya logikanya satu tempat (tidak diduplikasi).
+  const [kontrolPanelOpen, setKontrolPanelOpen] = useState(false);
+  function setujuiKontrolPengajuan(id) {
+    updateRecord("kontrol", id, { status: "disetujui", disetujuiOleh: "Manual" });
+    const rec = (db.kontrol||[]).find(k=>k.id===id);
+    if (rec) setTimeout(() => { recalcTokoStok(rec.tokoId); syncProdukIdsDariStokKontrol(rec.tokoId, rec); }, 300);
+  }
+  function tolakKontrolPengajuan(id) {
+    if (!confirm("Tolak pengajuan Kontrol Bulanan (Stok Awal) ini? Entri akan tetap tersimpan (ditandai Ditolak) tapi tidak memengaruhi stok Master Toko.")) return;
+    updateRecord("kontrol", id, { status: "ditolak", disetujuiOleh: "Manual" });
+    const rec = (db.kontrol||[]).find(k=>k.id===id);
+    if (rec) setTimeout(() => recalcTokoStok(rec.tokoId), 300);
+  }
+
+  // ✅ WORKFLOW PERSETUJUAN "Tarik/Non-Aktifkan Toko" dari Sales — dulu
+  // ditolak mentah-mentah (lihat komentar lama di openTokoStatusModal),
+  // sekarang disamakan dengan Penyesuaian Stok & Tambah Kontrol: Sales boleh
+  // MENGAJUKAN, Admin/Manajer yang menyetujui/menolak. Disimpan di koleksi
+  // baru "penarikanToko" (bukan langsung menulis ke "toko") supaya toko tetap
+  // Aktif & tidak berubah apa pun sampai disetujui.
+  const [penarikanTokoPanelOpen, setPenarikanTokoPanelOpen] = useState(false);
+  // Menerapkan efek nyata penarikan toko ke Master Toko — dipanggil saat
+  // disetujui manual oleh Admin/Manajer ATAU otomatis lewat 24 jam.
+  function terapkanPenarikanToko(pk, disetujuiOleh) {
+    const toko = (db.toko||[]).find(t=>t.id===pk.tokoId);
+    updateRecord("penarikanToko", pk.id, { status: "disetujui", disetujuiOleh });
+    if (!toko) return;
+    const tokoUpdates = { status: "Non-Aktif", produkIds: [], ...buildProdukFlagUpdates([]),
+      statusHistory: appendStatusHistory(toko.statusHistory, "Non-Aktif", pk.tanggal,
+        `Pengajuan penarikan dari lapangan disetujui (${disetujuiOleh}) — toko "${toko.nama}"`) };
+    const naik = {}, turun = {};
+    let adaNaik = false, adaTurun = false;
+    produkAktif.forEach(p => {
+      const sebelum = Number(toko[`stok_${p.id}`]||0);
+      const sesudah = Number(pk[`stokAkhir_${p.id}`]||0);
+      const delta = sesudah - sebelum;
+      tokoUpdates[`stok_${p.id}`] = sesudah;
+      if (delta > 0) { naik[`jumlah_${p.id}`] = delta; adaNaik = true; }
+      else if (delta < 0) { turun[`jumlah_${p.id}`] = -delta; adaTurun = true; }
+    });
+    updateRecord("toko", toko.id, tokoUpdates);
+    const catatanOtomatis = `Otomatis tercatat dari penarikan stok saat toko "${toko.nama}" dinonaktifkan (pengajuan disetujui — ${disetujuiOleh}).`;
+    if (adaTurun) addRecord("penyesuaian", { id: genUniqueId("PZ"), tokoId: toko.id, tanggal: pk.tanggal, jenis: "Tarik", catatan: catatanOtomatis, dicatatOleh: `Sistem (${disetujuiOleh})`, ...turun, status:"disetujui" });
+    if (adaNaik) addRecord("penyesuaian", { id: genUniqueId("PZ"), tokoId: toko.id, tanggal: pk.tanggal, jenis: "Tambah", catatan: catatanOtomatis, dicatatOleh: `Sistem (${disetujuiOleh})`, ...naik, status:"disetujui" });
+  }
+  function setujuiPenarikanToko(id) {
+    const pk = (db.penarikanToko||[]).find(p=>p.id===id);
+    if (!pk) return;
+    terapkanPenarikanToko(pk, "Manual");
+  }
+  function tolakPenarikanToko(id) {
+    if (!confirm("Tolak pengajuan tarik/non-aktifkan toko ini? Toko akan tetap Aktif.")) return;
+    updateRecord("penarikanToko", id, { status: "ditolak", disetujuiOleh: "Manual" });
+  }
+
+  // ✅ WORKFLOW PERSETUJUAN "Penyesuaian Stok" — diekstrak dari JSX inline
+  // (dulu duplikat logic Setujui/Tolak per baris di riwayat toko) supaya bisa
+  // dipakai juga oleh panel ringkasan "Tinjau Pengajuan" (banner atas).
+  const [penyesuaianPanelOpen, setPenyesuaianPanelOpen] = useState(false);
+  function setujuiPenyesuaian(pz) {
+    updateRecord("penyesuaian", pz.id, { status:"disetujui", disetujuiOleh:"Manual" });
+    setTimeout(()=>recalcTokoStok(pz.tokoId), 300);
+  }
+  function tolakPenyesuaian(pz) {
+    if (!confirm("Tolak pengajuan penyesuaian stok ini?")) return;
+    updateRecord("penyesuaian", pz.id, { status:"ditolak", disetujuiOleh:"Manual" });
+    // ✅ FIX SINKRONISASI: submitPenyesuaian (jenis "Tambah"/"Tarik") langsung
+    // mendaftarkan/menghapus ceklis "Produk yang Dijual" SEKETIKA saat
+    // diajukan — kalau ditolak, kembalikan lagi ceklisnya kecuali ada alasan
+    // lain (riwayat Kontrol / pengajuan lain yang belum/tidak ditolak).
+    const tokoTerdampak = (db.toko||[]).find(t=>t.id===pz.tokoId);
+    if (tokoTerdampak && pz.jenis === "Tambah") {
+      const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
+      const adaAlasanLain = (p) => {
+        const adaKontrol = (db.kontrol||[]).some(k => k.tokoId===tokoTerdampak.id && k.status!=="menunggu" && k.status!=="ditolak" &&
+          (Number(k[`stok_${p.id}`]||0)>0 || Number(k[`terjual_${p.id}`]||0)>0));
+        const adaPenyesuaianLain = (db.penyesuaian||[]).some(pz2 => pz2.id!==pz.id &&
+          pz2.tokoId===tokoTerdampak.id && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
+        return adaKontrol || adaPenyesuaianLain;
+      };
+      const toRemove = produkDiPengajuanIni.filter(p=>!adaAlasanLain(p)).map(p=>p.id);
+      if (toRemove.length > 0) {
+        const existingIds = produkAktif.filter(p=>!!tokoTerdampak[`produk_${p.id}`]).map(p=>p.id);
+        const finalIds = existingIds.filter(id=>!toRemove.includes(id));
+        updateRecord("toko", tokoTerdampak.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
+      }
+    } else if (tokoTerdampak && pz.jenis === "Tarik") {
+      const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
+      const masihAdaAlasanTarikLain = (p) => (db.penyesuaian||[]).some(pz2 => pz2.id!==pz.id &&
+        pz2.tokoId===tokoTerdampak.id && pz2.jenis==="Tarik" && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
+      const toRestore = produkDiPengajuanIni.filter(p=>!masihAdaAlasanTarikLain(p)).map(p=>p.id);
+      if (toRestore.length > 0) {
+        const existingIds = produkAktif.filter(p=>!!tokoTerdampak[`produk_${p.id}`]).map(p=>p.id);
+        const finalIds = [...new Set(existingIds.concat(toRestore))];
+        updateRecord("toko", tokoTerdampak.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
+      }
+    }
   }
 
   function toggleSelect(id) {
@@ -564,8 +705,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   function recalcTokoStok(tokoId, extraKontrolList, extraPenyesuaianList) {
     const semuaKontrol = extraKontrolList || (db.kontrol||[]);
     const semuaPenyesuaian = extraPenyesuaianList || (db.penyesuaian||[]);
+    // ✅ WORKFLOW PERSETUJUAN (disamakan dengan Penyesuaian Stok): entri Kontrol
+    // Bulanan yang diajukan Sales (status "menunggu") atau yang "ditolak" TIDAK
+    // ikut dihitung ke stok Master Toko — hanya entri "disetujui" (atau data
+    // lama tanpa status sama sekali, dianggap sudah final) yang jadi baseline.
     const entriesToko = semuaKontrol
-      .filter(k => k.tokoId === tokoId)
+      .filter(k => k.tokoId === tokoId && k.status !== "menunggu" && k.status !== "ditolak")
       .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
     const terakhir = entriesToko[entriesToko.length-1];
 
@@ -881,6 +1026,17 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       payload[`bonusInput_${p.id}`] = Number(form[`bonusInput_${p.id}`]||0);
       payload[`ditarik_${p.id}`] = ditarik;
     });
+    // ✅ WORKFLOW PERSETUJUAN (disamakan dengan Penyesuaian Stok): "Stok Awal"
+    // yang diisi Sales lewat Tambah/Edit Kontrol dulu LANGSUNG mengubah stok
+    // Master Toko & ceklis "Produk yang Dijual" tanpa ditinjau siapa pun.
+    // Sekarang pengajuan dari Sales masuk status "menunggu" dulu (tidak
+    // langsung memengaruhi Master Toko), otomatis "disetujui" sendiri kalau
+    // 24 jam tidak ditinjau Admin/Manajer — persis alur Penyesuaian Stok.
+    // Pengajuan dari Admin/Manajer langsung "disetujui" (tidak perlu approval).
+    const approvalFields = {
+      status: isSalesRestricted ? "menunggu" : "disetujui",
+      autoApproveAt: isSalesRestricted ? (Date.now() + 24*60*60*1000) : null,
+    };
     if (modal==="add") {
       // ⚠️ FIX BUG: ID kontrol dulu dihitung dari nomor urut bulan ini
       // (`${y}-${m}-NNN`) berdasarkan snapshot db lokal di browser sales.
@@ -897,21 +1053,29 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       // ✅ createdAt dipakai rules Firebase & UI untuk menentukan apakah Sales
       // masih boleh menghapus langsung (entri "baru saja" dibuat, <24 jam) atau
       // harus mengajukan permintaan hapus yang ditinjau Admin/Manajer (entri lama).
-      const newEntry = { ...payload, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now() };
+      const newEntry = { ...payload, ...approvalFields, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now() };
       addRecord("kontrol", newEntry);
-      // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update)
+      // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update).
+      // recalcTokoStok sendiri sudah mengabaikan entri status "menunggu"/"ditolak",
+      // jadi aman dipanggil selalu — baseline stok Master Toko baru berubah
+      // begitu entri ini "disetujui" (manual atau otomatis 24 jam).
       recalcTokoStok(form.tokoId, [...(db.kontrol||[]), newEntry]);
-      // ✅ Sinkron ceklis "Produk yang Dijual": produk baru dititip saat kunjungan
-      // otomatis dicentang, produk yang stoknya diisi 0 (ditarik) otomatis dihilangkan.
-      syncProdukIdsDariStokKontrol(form.tokoId, payload);
+      // ✅ Sinkron ceklis "Produk yang Dijual": HANYA dijalankan kalau entri
+      // sudah "disetujui" (Admin/Manajer langsung) — kalau masih "menunggu"
+      // (Sales), ceklis Master Toko belum boleh berubah sampai disetujui.
+      if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
     } else {
-      updateRecord("kontrol", form.id, payload);
+      const updatedPayload = { ...payload, ...approvalFields };
+      updateRecord("kontrol", form.id, updatedPayload);
       // Sinkron stok master Toko: ganti entri lama dengan payload terbaru sebelum dihitung ulang
-      const updatedList = (db.kontrol||[]).map(k => k.id===form.id ? { ...k, ...payload } : k);
+      const updatedList = (db.kontrol||[]).map(k => k.id===form.id ? { ...k, ...updatedPayload } : k);
       recalcTokoStok(form.tokoId, updatedList);
-      syncProdukIdsDariStokKontrol(form.tokoId, payload);
+      if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
     }
     setModal(null);
+    if (isSalesRestricted) {
+      alert("Kontrol tersimpan. Perubahan Stok Awal masih menunggu persetujuan Admin/Manajer (otomatis disetujui dalam 24 jam kalau tidak ditinjau) sebelum berlaku di Master Toko.");
+    }
   }
 
   // ─── NONAKTIFKAN TOKO DARI KONTROL (logika penarikan toko) ───
@@ -956,22 +1120,15 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   }
 
   function openTokoStatusModal(toko) {
-    // ✅ FIX: sebelumnya tombol "Tarik Toko" ini TIDAK ada guard role sama
-    // sekali (beda dengan "Edit Status Toko" di bawah yang sudah digating).
-    // Aksi ini menulis field `statusHistory` ke toko — field itu TIDAK ada
-    // di whitelist Sales pada Firebase Rules (toko/$tokoId/$field hanya
-    // izinkan status/produkIds/stok_*/produk_* untuk Sales) — jadi kalau
-    // Sales membuka & submit modal ini, Firebase MENOLAK tulisannya, tapi
-    // UI sempat menampilkan "berhasil" secara optimistic sebelum akhirnya
-    // balik lagi ke status "Aktif" begitu data real-time dari server masuk
-    // (persis gejala "toko tidak tersinkron, tetap aktif" yang dilaporkan).
-    // Penarikan toko juga punya dampak besar (stok, riwayat status), jadi
-    // untuk sekarang tetap harus lewat Admin/Manajer — BUKAN otomatis
-    // ditolak diam-diam. Kalau Anda ingin Sales bisa MENGAJUKAN penarikan
-    // yang menunggu persetujuan Admin/Manajer (seperti alur Penyesuaian
-    // Stok), itu perlu fitur baru (tabel pengajuan + rule tambahan) — beri
-    // tahu saya kalau mau dibuatkan.
-    if (isSalesRestricted) { alert("Menarik/menonaktifkan toko hanya bisa dilakukan oleh Admin/Manajer. Hubungi Admin/Manajer untuk menarik toko ini."); return; }
+    // ✅ FIX (lanjutan): sebelumnya tombol "Tarik Toko" ini TIDAK ada guard role
+    // sama sekali, lalu ditutup total untuk Sales (Firebase menolak tulisan
+    // langsung ke `statusHistory` — field itu di luar whitelist Sales — jadi
+    // dulu diblokir mentah-mentah di sisi Admin/Manajer saja). Sekarang
+    // disamakan dengan alur Penyesuaian Stok & Tambah Kontrol: Sales TETAP
+    // boleh membuka modal ini dan mengajukan penarikan, hanya saja hasilnya
+    // masuk ke koleksi "penarikanToko" berstatus "menunggu" (lihat
+    // konfirmasiNonaktifkanToko) — TIDAK langsung mengubah Master Toko.
+    // Admin/Manajer yang menyetujui/menolak (atau otomatis disetujui 24 jam).
     // ✅ FIX: default ke 0 (dianggap SEMUA stok ditarik/habis), bukan stok
     // saat ini — sebelumnya form ini prefill dengan stok yang masih ada,
     // sehingga kalau admin tidak sengaja tidak mengubah apapun lalu langsung
@@ -993,6 +1150,28 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     // dipakai baik untuk Penyesuaian Stok maupun riwayat status toko —
     // fallback ke hari ini kalau kosong.
     const tanggalPasti = tanggalPenarikan || new Date().toISOString().slice(0,10);
+
+    // ✅ WORKFLOW PERSETUJUAN (Sales): jangan sentuh Master Toko sama sekali —
+    // simpan sebagai pengajuan "menunggu" di koleksi terpisah "penarikanToko".
+    // Efek nyatanya (status Non-Aktif, ceklis produk, stok) baru diterapkan
+    // oleh terapkanPenarikanToko() begitu Admin/Manajer menyetujui (manual
+    // atau otomatis lewat 24 jam) — persis alur Penyesuaian Stok & Tambah
+    // Kontrol, supaya ketiganya konsisten.
+    if (isSalesRestricted) {
+      const stokAkhirFields = {};
+      produkAktif.forEach(p => { stokAkhirFields[`stokAkhir_${p.id}`] = Number(stokPenarikan[p.id]||0); });
+      addRecord("penarikanToko", {
+        id: genUniqueId("PK"), tokoId: toko.id, tanggal: tanggalPasti,
+        status: "menunggu", autoApproveAt: Date.now() + 24*60*60*1000,
+        diajukanOleh: "Sales", ...stokAkhirFields,
+      });
+      setTokoStatusModal(null);
+      setStokPenarikan({});
+      alert(`Pengajuan penarikan toko "${toko.nama}" terkirim. Menunggu persetujuan Admin/Manajer (otomatis disetujui dalam 24 jam kalau tidak ditinjau) — toko masih Aktif sampai disetujui.`);
+      if (modal && form.tokoId === toko.id) setModal(null);
+      return;
+    }
+
     // Update status toko → Non-Aktif di master toko, sekaligus update stok saat penarikan
     // ✅ FIX: toko yang dinonaktifkan sudah tidak menjual produk apapun lagi —
     // kosongkan juga produkIds & ceklis produk_<id> di Master Toko (sebelumnya
@@ -1365,26 +1544,186 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     ]),
     { key:"totalRev",    label:"Revenue",    render:v=><b style={{ color:T.green }}>{fmtRp(v)}</b> },
     { key:"totalBonus",  label:"Ttl Bonus",  render:v=><b style={{ color:T.gold }}>{fmt(v)} pcs</b> },
-    { key:"catatanStatus",label:"Status",    render:(v,row)=>{ if(!v) return <Badge color={T.green}><Icon.checkCircle size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Terjual</Badge>; const s=CATATAN_STATUS[v]||CATATAN_STATUS.manual; return <span title={row.catatan||""} style={{ display:"inline-flex", alignItems:"center", gap:4 }}><Badge color={s.color} bg={s.bg}>{s.label}</Badge>{row.catatan && <Icon.note size={11} strokeWidth={2} style={{ color:s.color, opacity:.7 }} />}</span>; } },
+    { key:"catatanStatus",label:"Status",    render:(v,row)=>{
+      const approvalBadge = row.status==="menunggu"
+        ? <Badge color={T.gold} bg="#FFFBEB"><Icon.refresh size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Menunggu Persetujuan</Badge>
+        : row.status==="ditolak"
+        ? <Badge color={T.red} bg={T.redLt}><Icon.closeCircle size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Stok Awal Ditolak</Badge>
+        : null;
+      if(!v) return <span style={{ display:"inline-flex", flexDirection:"column", gap:2 }}>{approvalBadge}<Badge color={T.green}><Icon.checkCircle size={10} strokeWidth={2.5} style={{verticalAlign:"-1px", marginRight:2}}/>Terjual</Badge></span>;
+      const s=CATATAN_STATUS[v]||CATATAN_STATUS.manual;
+      return <span title={row.catatan||""} style={{ display:"inline-flex", flexDirection:"column", gap:2 }}>{approvalBadge}<span style={{display:"inline-flex", alignItems:"center", gap:4}}><Badge color={s.color} bg={s.bg}>{s.label}</Badge>{row.catatan && <Icon.note size={11} strokeWidth={2} style={{ color:s.color, opacity:.7 }} />}</span></span>;
+    } },
     { key:"catatan",     label:"Catatan" },
   ];
 
   return (
     <div>
-      {/* Ringkasan Penyesuaian Stok yang menunggu persetujuan (Admin/Manajer
-          saja) — supaya tidak perlu buka toko satu-satu untuk ketahuan ada
-          pengajuan dari Sales yang butuh ditinjau. Auto-approve 24 jam sudah
-          jalan sendiri, ini cuma buat yang mau ditinjau/ditolak lebih awal. */}
+      {/* ✅ Ringkasan Penyesuaian Stok yang menunggu persetujuan (Admin/Manajer
+          saja) — dulu cuma banner teks tanpa kejelasan toko mana yang
+          mengajukan (harus buka toko satu-satu untuk ketahuan). Sekarang ada
+          tombol "Tinjau Pengajuan" yang langsung membuka daftar toko + detail
+          produk yang diajukan, sama seperti pola "Pengajuan Hapus Kontrol" di
+          bawah. Auto-approve 24 jam tetap jalan sendiri di background. */}
       {!isSalesRestricted && (() => {
         const pending = (db.penyesuaian||[]).filter(pz=>pz.status==="menunggu");
         if (pending.length === 0) return null;
         return (
           <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10,
-            padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E" }}>
-            ⏳ Ada <b>{pending.length} pengajuan Penyesuaian Stok</b> dari Sales yang menunggu persetujuan
-            (otomatis disetujui dalam 24 jam kalau tidak ditinjau). Buka detail toko terkait di bawah untuk
-            menyetujui/menolak lebih awal.
+            padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E",
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+            <span>⏳ Ada <b>{pending.length} pengajuan Penyesuaian Stok</b> dari Sales yang menunggu persetujuan
+            (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
+            <Btn variant="secondary" size="sm" onClick={()=>setPenyesuaianPanelOpen(true)}>Tinjau Pengajuan</Btn>
           </div>
+        );
+      })()}
+      {penyesuaianPanelOpen && (() => {
+        const pending = (db.penyesuaian||[]).filter(pz=>pz.status==="menunggu")
+          .sort((a,b)=>(b.id||"").localeCompare(a.id||""));
+        return (
+          <Modal title={<><Icon.wrench size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pengajuan Penyesuaian Stok</>} onClose={()=>setPenyesuaianPanelOpen(false)} width={640}>
+            {pending.length === 0 ? (
+              <div style={{ padding:"20px 0", textAlign:"center", color:T.gray400, fontSize:13 }}>Tidak ada pengajuan yang menunggu.</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {pending.map(pz => {
+                  const tk = (db.toko||[]).find(t=>t.id===pz.tokoId);
+                  const detailProduk = produkAktif.filter(p=>Number(pz[`jumlah_${p.id}`]||0)>0)
+                    .map(p=>`${p.nama}: ${pz[`jumlah_${p.id}`]}`).join(" · ");
+                  return (
+                    <div key={pz.id} style={{ border:`1px solid ${T.gray200}`, borderRadius:10, padding:"10px 14px" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                        <div>
+                          <div style={{ fontWeight:700 }}>{tk?.nama || "(toko tidak diketahui)"}</div>
+                          <div style={{ fontSize:12, color:T.gray500 }}>
+                            {pz.jenis==="Tambah"?"Tambah":pz.jenis==="Kurang"?"Kurang":"Tarik Sebagian"} · {pz.tanggal}
+                          </div>
+                        </div>
+                        <div style={{ display:"flex", gap:6 }}>
+                          <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiPenyesuaian(pz)}>Setujui</Btn>
+                          <Btn variant="secondary" size="sm" icon={Icon.closeCircle} onClick={()=>tolakPenyesuaian(pz)}>Tolak</Btn>
+                        </div>
+                      </div>
+                      {detailProduk && (
+                        <div style={{ fontSize:12, color:T.gray600, marginTop:6 }}>{detailProduk}</div>
+                      )}
+                      {pz.catatan && (
+                        <div style={{ fontSize:12, color:"#92400E", background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:6, padding:"4px 8px", marginTop:6 }}>
+                          Catatan: {pz.catatan}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
+      {/* ✅ Ringkasan pengajuan "Stok Awal" lewat Tambah/Edit Kontrol dari Sales
+          — disamakan persis dengan panel Penyesuaian Stok di atas, supaya
+          kedua tombol ("Penyesuaian Stok" & "Tambah Kontrol") konsisten:
+          sama-sama menunggu persetujuan, sama-sama jelas toko mana yang
+          diajukan, sama-sama auto-approve 24 jam. */}
+      {!isSalesRestricted && (() => {
+        const pending = (db.kontrol||[]).filter(k=>k.status==="menunggu");
+        if (pending.length === 0) return null;
+        return (
+          <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10,
+            padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E",
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+            <span>⏳ Ada <b>{pending.length} pengajuan Kontrol Bulanan (Stok Awal)</b> dari Sales yang menunggu persetujuan
+            (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
+            <Btn variant="secondary" size="sm" onClick={()=>setKontrolPanelOpen(true)}>Tinjau Pengajuan</Btn>
+          </div>
+        );
+      })()}
+      {kontrolPanelOpen && (() => {
+        const pending = (db.kontrol||[]).filter(k=>k.status==="menunggu")
+          .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+        return (
+          <Modal title={<><Icon.kontrol size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pengajuan Kontrol Bulanan (Stok Awal)</>} onClose={()=>setKontrolPanelOpen(false)} width={640}>
+            {pending.length === 0 ? (
+              <div style={{ padding:"20px 0", textAlign:"center", color:T.gray400, fontSize:13 }}>Tidak ada pengajuan yang menunggu.</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {pending.map(k => {
+                  const tk = (db.toko||[]).find(t=>t.id===k.tokoId);
+                  const detailProduk = produkAktif.filter(p=>Number(k[`stok_${p.id}`]||0)>0 || k[`ditarik_${p.id}`])
+                    .map(p=>k[`ditarik_${p.id}`] ? `${p.nama}: ditarik` : `${p.nama}: stok awal ${k[`stok_${p.id}`]}`).join(" · ");
+                  return (
+                    <div key={k.id} style={{ border:`1px solid ${T.gray200}`, borderRadius:10, padding:"10px 14px" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                        <div>
+                          <div style={{ fontWeight:700 }}>{tk?.nama || "(toko tidak diketahui)"}</div>
+                          <div style={{ fontSize:12, color:T.gray500 }}>Tanggal kontrol: {k.tanggal}</div>
+                        </div>
+                        <div style={{ display:"flex", gap:6 }}>
+                          <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiKontrolPengajuan(k.id)}>Setujui</Btn>
+                          <Btn variant="secondary" size="sm" icon={Icon.closeCircle} onClick={()=>tolakKontrolPengajuan(k.id)}>Tolak</Btn>
+                        </div>
+                      </div>
+                      {detailProduk && (
+                        <div style={{ fontSize:12, color:T.gray600, marginTop:6 }}>{detailProduk}</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Modal>
+        );
+      })()}
+      {/* ✅ Ringkasan pengajuan Tarik/Non-Aktifkan Toko dari Sales — dulu
+          fitur ini diblokir total untuk Sales, sekarang disamakan dengan dua
+          alur di atas: Sales boleh mengajukan, Admin/Manajer menyetujui/
+          menolak (atau otomatis lewat 24 jam), dan toko mana saja yang
+          diajukan langsung terlihat jelas di sini. */}
+      {!isSalesRestricted && (() => {
+        const pending = (db.penarikanToko||[]).filter(pk=>pk.status==="menunggu");
+        if (pending.length === 0) return null;
+        return (
+          <div style={{ background:"#FEF2F2", border:"1px solid #FCA5A5", borderRadius:10,
+            padding:"10px 16px", marginBottom:14, fontSize:13, color:"#991B1B",
+            display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+            <span>🏚️ Ada <b>{pending.length} pengajuan Tarik/Non-Aktifkan Toko</b> dari Sales yang menunggu persetujuan
+            (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
+            <Btn variant="danger" size="sm" onClick={()=>setPenarikanTokoPanelOpen(true)}>Tinjau Pengajuan</Btn>
+          </div>
+        );
+      })()}
+      {penarikanTokoPanelOpen && (() => {
+        const pending = (db.penarikanToko||[]).filter(pk=>pk.status==="menunggu")
+          .sort((a,b)=>(b.id||"").localeCompare(a.id||""));
+        return (
+          <Modal title={<><Icon.toko size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pengajuan Tarik/Non-Aktifkan Toko</>} onClose={()=>setPenarikanTokoPanelOpen(false)} width={640}>
+            {pending.length === 0 ? (
+              <div style={{ padding:"20px 0", textAlign:"center", color:T.gray400, fontSize:13 }}>Tidak ada pengajuan yang menunggu.</div>
+            ) : (
+              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+                {pending.map(pk => {
+                  const tk = (db.toko||[]).find(t=>t.id===pk.tokoId);
+                  const detailStok = produkAktif.map(p=>`${p.nama}: sisa ${Number(pk[`stokAkhir_${p.id}`]||0)}`).join(" · ");
+                  return (
+                    <div key={pk.id} style={{ border:`1px solid ${T.gray200}`, borderRadius:10, padding:"10px 14px" }}>
+                      <div style={{ display:"flex", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
+                        <div>
+                          <div style={{ fontWeight:700 }}>{tk?.nama || "(toko tidak diketahui)"}</div>
+                          <div style={{ fontSize:12, color:T.gray500 }}>Tanggal penarikan: {pk.tanggal}</div>
+                        </div>
+                        <div style={{ display:"flex", gap:6 }}>
+                          <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiPenarikanToko(pk.id)}>Setujui</Btn>
+                          <Btn variant="secondary" size="sm" icon={Icon.closeCircle} onClick={()=>tolakPenarikanToko(pk.id)}>Tolak</Btn>
+                        </div>
+                      </div>
+                      <div style={{ fontSize:12, color:T.gray600, marginTop:6 }}>{detailStok}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Modal>
         );
       })()}
       {/* ✅ Ringkasan pengajuan HAPUS catatan Kontrol lama (Admin/Manajer saja).
@@ -2351,8 +2690,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                           <tbody>
                             {entries.map(e => {
                               const cs = e.catatanStatus ? (CATATAN_STATUS[e.catatanStatus]||CATATAN_STATUS.manual) : null;
+                              const pendingKontrol = e.status === "menunggu";
+                              const ditolakKontrol = e.status === "ditolak";
                               return (
-                                <tr key={e.id} style={{ background:cs?cs.bg:T.white, borderTop:`1px solid ${T.gray100}` }}>
+                                <tr key={e.id} style={{ background: pendingKontrol ? "#FFFBEB" : (cs?cs.bg:T.white), borderTop:`1px solid ${T.gray100}` }}>
                                   <td style={{ padding:"6px 10px", fontWeight:600 }}>{e.tanggal}</td>
                                   {produkAktif.map(p=>(
                                     <td key={p.id} style={{ padding:"6px 10px", textAlign:"center" }}>
@@ -2364,6 +2705,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                   <td style={{ padding:"6px 10px", textAlign:"right", color:T.gold }}>{fmt(e.totalBonus)} pcs</td>
                                   <td style={{ padding:"6px 10px", textAlign:"center" }}>
                                     <div>
+                                      {pendingKontrol && <div style={{marginBottom:2}}><Badge color={T.gold} bg="#FFFBEB"><Icon.refresh size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Menunggu Persetujuan</Badge></div>}
+                                      {ditolakKontrol && <div style={{marginBottom:2}}><Badge color={T.red} bg={T.redLt}><Icon.closeCircle size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Stok Awal Ditolak</Badge></div>}
                                       {cs
                                         ? <Badge color={cs.color} bg={cs.bg}>{cs.label}</Badge>
                                         : <Badge color={T.green}><Icon.checkCircle size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Terjual</Badge>}
@@ -2377,7 +2720,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                     </div>
                                   </td>
                                   <td style={{ padding:"6px 10px", textAlign:"right" }}>
-                                    <div style={{ display:"flex", gap:4, justifyContent:"flex-end" }}>
+                                    <div style={{ display:"flex", gap:4, justifyContent:"flex-end", flexWrap:"wrap" }}>
+                                      {pendingKontrol && !isSalesRestricted && (
+                                        <>
+                                          <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiKontrolPengajuan(e.id)}>Setujui</Btn>
+                                          <Btn variant="secondary" size="sm" icon={Icon.closeCircle} onClick={()=>tolakKontrolPengajuan(e.id)}>Tolak</Btn>
+                                        </>
+                                      )}
                                       <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>openEdit(e)}>Edit</Btn>
                                       {e.hapusStatus==="menunggu" ? (
                                         <Badge color={T.gold} bg="#FFFBEB"><Icon.refresh size={10} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:2}}/>Menunggu Hapus</Badge>
@@ -2428,58 +2777,9 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                   <td style={{ padding:"6px 10px", textAlign:"right", whiteSpace:"nowrap" }}>
                                     {pz.status==="menunggu" && !isSalesRestricted && (
                                       <>
-                                        <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>{
-                                          updateRecord("penyesuaian", pz.id, { status:"disetujui", disetujuiOleh:"Manual" });
-                                          setTimeout(()=>recalcTokoStok(toko.id), 300);
-                                        }}>Setujui</Btn>
+                                        <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiPenyesuaian(pz)}>Setujui</Btn>
                                         {" "}
-                                        <Btn variant="danger" size="sm" icon={Icon.closeCircle} onClick={()=>{
-                                          if (!confirm("Tolak pengajuan penyesuaian stok ini?")) return;
-                                          updateRecord("penyesuaian", pz.id, { status:"ditolak", disetujuiOleh:"Manual" });
-                                          // ✅ FIX SINKRONISASI: submitPenyesuaian (jenis "Tambah") langsung
-                                          // mendaftarkan produk baru ke ceklis "Produk yang Dijual" toko SEKETIKA
-                                          // saat diajukan — SEBELUM disetujui. Kalau ternyata pengajuannya
-                                          // DITOLAK, ceklis itu sebelumnya tidak pernah dibatalkan lagi, jadi
-                                          // toko permanen tercatat menjual produk yang pengajuannya sendiri
-                                          // ditolak. Sekarang: lepas ceklisnya lagi, KECUALI toko punya alasan
-                                          // lain untuk produk itu (ada riwayat Kontrol atau pengajuan lain yang
-                                          // belum/tidak ditolak yang melibatkan produk yang sama).
-                                          const tokoTerdampak = (db.toko||[]).find(t=>t.id===pz.tokoId);
-                                          if (tokoTerdampak && pz.jenis === "Tambah") {
-                                            const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
-                                            const adaAlasanLain = (p) => {
-                                              const adaKontrol = (db.kontrol||[]).some(k => k.tokoId===tokoTerdampak.id &&
-                                                (Number(k[`stok_${p.id}`]||0)>0 || Number(k[`terjual_${p.id}`]||0)>0));
-                                              const adaPenyesuaianLain = (db.penyesuaian||[]).some(pz2 => pz2.id!==pz.id &&
-                                                pz2.tokoId===tokoTerdampak.id && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
-                                              return adaKontrol || adaPenyesuaianLain;
-                                            };
-                                            const toRemove = produkDiPengajuanIni.filter(p=>!adaAlasanLain(p)).map(p=>p.id);
-                                            if (toRemove.length > 0) {
-                                              const existingIds = produkAktif.filter(p=>!!tokoTerdampak[`produk_${p.id}`]).map(p=>p.id);
-                                              const finalIds = existingIds.filter(id=>!toRemove.includes(id));
-                                              updateRecord("toko", tokoTerdampak.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
-                                            }
-                                          } else if (tokoTerdampak && pz.jenis === "Tarik") {
-                                            // ✅ FIX SINKRONISASI (lanjutan dari fix "Tambah" di atas): submitPenyesuaian
-                                            // untuk jenis "Tarik" JUGA langsung menghilangkan ceklis "Produk yang
-                                            // Dijual" SEKETIKA saat diajukan — sebelum disetujui. Kalau ternyata
-                                            // pengajuannya DITOLAK, ceklis yang sudah terlanjur dihilangkan itu
-                                            // sebelumnya TIDAK PERNAH dikembalikan lagi, jadi toko permanen
-                                            // kehilangan produk dari daftar jualnya walau penarikannya sendiri
-                                            // ditolak. Dikembalikan di sini, KECUALI masih ada pengajuan "Tarik"
-                                            // lain (belum ditolak) untuk produk yang sama di toko ini.
-                                            const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
-                                            const masihAdaAlasanTarikLain = (p) => (db.penyesuaian||[]).some(pz2 => pz2.id!==pz.id &&
-                                              pz2.tokoId===tokoTerdampak.id && pz2.jenis==="Tarik" && pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
-                                            const toRestore = produkDiPengajuanIni.filter(p=>!masihAdaAlasanTarikLain(p)).map(p=>p.id);
-                                            if (toRestore.length > 0) {
-                                              const existingIds = produkAktif.filter(p=>!!tokoTerdampak[`produk_${p.id}`]).map(p=>p.id);
-                                              const finalIds = [...new Set(existingIds.concat(toRestore))];
-                                              updateRecord("toko", tokoTerdampak.id, { produkIds: finalIds, ...buildProdukFlagUpdates(finalIds) });
-                                            }
-                                          }
-                                        }}>Tolak</Btn>
+                                        <Btn variant="danger" size="sm" icon={Icon.closeCircle} onClick={()=>tolakPenyesuaian(pz)}>Tolak</Btn>
                                         {" "}
                                       </>
                                     )}
@@ -2507,7 +2807,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                                       if (pz.jenis === "Tambah") {
                                         const produkDiPengajuanIni = produkAktif.filter(p => Number(pz[`jumlah_${p.id}`]||0) > 0);
                                         const adaAlasanLain = (p) => {
-                                          const adaKontrol = (db.kontrol||[]).some(k => k.tokoId===toko.id &&
+                                          const adaKontrol = (db.kontrol||[]).some(k => k.tokoId===toko.id && k.status!=="menunggu" && k.status!=="ditolak" &&
                                             (Number(k[`stok_${p.id}`]||0)>0 || Number(k[`terjual_${p.id}`]||0)>0));
                                           const adaPenyesuaianLain = remaining.some(pz2 => pz2.tokoId===toko.id &&
                                             pz2.status!=="ditolak" && Number(pz2[`jumlah_${p.id}`]||0)>0);
