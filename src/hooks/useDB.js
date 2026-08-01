@@ -799,7 +799,12 @@ export function useDB(user) {
     LIST_TABLES.forEach(key => { updates[key] = null; });
     updates.stokAwal = null;
     updates.bagiHasilConfig = null;
-    updates.kontrolYearsIndex = null; // index tahun kontrol — ikut dibersihkan saat reset
+    // index tahun kontrol — ikut dibersihkan saat reset. CATATAN: ini butuh
+    // rule kontrolYearsIndex/$tahun yang mengizinkan Admin/Manajer MENGHAPUS
+    // (bukan cuma set `true`) — kalau rules pernah dikembalikan ke versi
+    // lama, baris ini akan gagal per-path (lihat flushWriteQueue) dan
+    // tersangkut di banner "writeDenied", bukan bikin reset gagal total.
+    updates.kontrolYearsIndex = null;
     pushUpdates(updates);
     // Reset juga state lokal partisi-tahun supaya UI tidak menampilkan
     // tahun-tahun "sudah dimuat" dari sesi sebelum reset.
@@ -1027,6 +1032,7 @@ export function useDB(user) {
     year = String(year);
     if (!user || !firebaseDB) return { ok: false, message: "Firebase belum siap." };
     const { db: rtdb, ref, get, set } = firebaseDB;
+    let pointOfNoReturn = false; // true setelah kontrol/{year} berhasil dihapus dari RTDB
     try {
       // 1) Ambil seluruh data tahun ini langsung dari RTDB (bukan dari
       //    state lokal, supaya akurat walau tahun ini belum/sudah pernah
@@ -1059,13 +1065,40 @@ export function useDB(user) {
         delete kontrolYearUnsubsRef.current[year];
       }
       delete kontrolByYearRef.current[year];
+
+      // ✅ FIX BUG #3: sebelum baris ini, kalau salah satu langkah di bawah
+      // gagal (mis. karena permission-denied di rules), error-nya lolos ke
+      // catch paling luar yang isi pesannya "data ASLI tidak diubah" — padahal
+      // `kontrol/{year}` di bawah ini SUDAH dihapus dari database aktif duluan.
+      // Sekarang, begitu baris hapus `kontrol/{year}` di bawah berhasil, kita
+      // anggap sudah "titik tanpa jalan balik" (point of no return): upload
+      // Drive sudah sukses & data live sudah terhapus, jadi pesan error
+      // sesudah titik ini TIDAK BOLEH lagi bilang "data aman/tidak diubah".
+      // Langkah pembersihan index (kontrolYearsIndex, kontrolArchiveIndex)
+      // juga dibuat best-effort satu-satu — kalau salah satu gagal, yang lain
+      // tetap dicoba, dan hasil akhirnya tetap dilaporkan sebagai SUKSES
+      // (recordCount tersimpan) tapi dengan catatan langkah mana yang perlu
+      // dicek manual, bukan seolah-olah seluruh proses gagal total.
       await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), null);
-      await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), null);
-      await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), {
-        fileId: fileData.id,
-        driveLink: fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`,
-        archivedAt, recordCount,
-      });
+      pointOfNoReturn = true;
+
+      const cleanupWarnings = [];
+      try {
+        await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), null);
+      } catch (e) {
+        console.warn(`Gagal membersihkan kontrolYearsIndex/${year}:`, e);
+        cleanupWarnings.push(`index tahun (kontrolYearsIndex) — coba lagi lewat menu Arsip, atau abaikan (tidak memengaruhi data yang sudah diarsipkan).`);
+      }
+      try {
+        await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), {
+          fileId: fileData.id,
+          driveLink: fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`,
+          archivedAt, recordCount,
+        });
+      } catch (e) {
+        console.warn(`Gagal mencatat kontrolArchiveIndex/${year}:`, e);
+        cleanupWarnings.push(`daftar arsip (kontrolArchiveIndex) — file sudah ada di Google Drive, tapi mungkin tidak muncul di daftar "Riwayat Arsip" sampai dicatat ulang.`);
+      }
 
       // 4) Bersihkan tahun ini dari state lokal (db.kontrol gabungan)
       //    supaya UI tidak lagi menampilkan data yang sudah dipindah.
@@ -1077,9 +1110,19 @@ export function useDB(user) {
       });
       await refreshArchivedYears();
 
-      return { ok: true, recordCount, message: `${recordCount} data kontrol tahun ${year} berhasil diarsipkan ke Google Drive dan dihapus dari database aktif.` };
+      const baseMsg = `${recordCount} data kontrol tahun ${year} berhasil diarsipkan ke Google Drive dan dihapus dari database aktif.`;
+      const message = cleanupWarnings.length > 0
+        ? `${baseMsg} Namun ada langkah pembersihan tambahan yang gagal: ${cleanupWarnings.join(" ")}`
+        : baseMsg;
+      return { ok: true, recordCount, cleanupWarnings, message };
     } catch (e) {
       console.warn(`Gagal mengarsipkan tahun ${year}:`, e);
+      if (pointOfNoReturn) {
+        // Data live SUDAH terhapus (dan sudah tersimpan aman di Drive) —
+        // jangan lagi bilang "data ASLI tidak diubah", supaya admin tidak
+        // salah kira proses belum jalan sama sekali dan mengulang upload.
+        return { ok: false, partiallyDone: true, message: `Data kontrol tahun ${year} sudah terlanjur terhapus dari database aktif dan sudah tersimpan di Google Drive, tapi ada masalah lanjutan (${e.message}). Cek menu "Riwayat Arsip" — kalau file Drive-nya ada, data AMAN, tidak perlu upload ulang.` };
+      }
       return { ok: false, message: `Gagal mengarsipkan: ${e.message}. Data ASLI tidak diubah — aman untuk dicoba lagi.` };
     }
   }, [user, refreshArchivedYears]);
