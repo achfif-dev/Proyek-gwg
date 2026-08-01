@@ -80,10 +80,12 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     if (!pindahRuteTarget) return alert("Pilih rute tujuan terlebih dahulu");
     const ruteTujuan = (db.rute||[]).find(r=>r.id===pindahRuteTarget);
     if (!confirm(`Pindahkan ${selectedIds.length} toko terpilih ke rute "${ruteTujuan?.nama||""}"?`)) return;
-    const newToko = (db.toko||[]).map(t =>
-      selectedIds.includes(t.id) ? { ...t, ruteId: pindahRuteTarget } : t
-    );
-    save({ ...db, toko: newToko });
+    // ✅ FIX: sebelumnya baris ini memakai save({ ...db, toko: newToko }),
+    // yang menulis ULANG SELURUH tabel toko sebagai satu set() raksasa —
+    // rawan gagal total kalau ada SATU SAJA toko (di luar yang dipindah)
+    // dengan field yang tidak lolos .validate Firebase. Sekarang hanya toko
+    // yang benar-benar dipindah rutenya yang dikirim, satu per satu.
+    selectedIds.forEach(id => updateRecord("toko", id, { ruteId: pindahRuteTarget }));
     setPindahRuteModal(false);
     setSelectedIds([]);
   }
@@ -256,7 +258,19 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       }
       return { ...t, ...updates };
     });
-    save(newDB);
+    // ✅ FIX: sebelumnya baris ini memakai save(newDB), yang menulis ULANG
+    // SELURUH tabel toko (ribuan record) sebagai SATU set() raksasa ke
+    // Firebase — persis pola yang sudah diperbaiki di importTokoFromRows
+    // (lihat komentar di sana). Akibatnya: kalau field APAPUN di toko
+    // MANAPUN (bukan cuma toko yang sedang diedit stoknya) kebetulan tidak
+    // lolos .validate Firebase (mis. data lama dengan tipe field yang tidak
+    // sesuai), SELURUH penulisan ditolak Firebase — muncul sebagai banner
+    // "tidak ada izin" walau role Admin/Manajer di database sudah benar,
+    // karena Firebase tidak membedakan "ditolak validasi" dari "ditolak
+    // izin" di pesan errornya. Sekarang hanya toko yang benar-benar diedit
+    // yang dikirim, lewat updateRecord (path kecil `toko/<id>`), sama
+    // seperti alur Tambah/Edit Toko manual.
+    updateRecord("toko", stokForm.tokoId, newDB.toko.find(t => t.id === stokForm.tokoId));
     setStokModal(false);
   }
 
