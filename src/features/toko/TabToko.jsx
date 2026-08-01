@@ -231,7 +231,7 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
   // menuliskan stok final ke Master Toko — sama seperti 2 fitur lain itu.
   function submitStok() {
     const t = (db.toko||[]).find(x => x.id === stokForm.tokoId);
-    if (!t) { setStokModal(false); return; }
+    if (!t) { setStokModal(false); alert("Toko tidak ditemukan — mungkin sudah dihapus. Silakan tutup dan coba lagi."); return; }
     if (isSalesRestricted) {
       const ruteObj = (db.rute||[]).find(r=>r.id===t.ruteId);
       if (ruteObj?.wilayahId !== salesWilayahId) {
@@ -261,7 +261,16 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
       else if (sesudah === 0 && sudahAda) toRemove.push(p.id);
     });
 
-    if (!adaNaik && !adaTurun) { setStokModal(false); return; } // tidak ada perubahan stok
+    // ✅ FIX: sebelumnya baris ini `return` diam-diam tanpa notifikasi apa pun
+    // kalau tidak ada selisih stok — dari luar terlihat seperti tombol
+    // "Simpan Stok" tidak melakukan apa-apa (tidak ada tanda berhasil MAUPUN
+    // gagal). Sekarang selalu ada alert, supaya jelas: kalau memang tidak ada
+    // angka yang berubah dari nilai sebelumnya, katakan itu secara eksplisit.
+    if (!adaNaik && !adaTurun) {
+      setStokModal(false);
+      alert(`Tidak ada perubahan — angka stok yang diisi sama dengan stok toko "${t.nama}" saat ini.`);
+      return;
+    }
 
     const today = new Date().toISOString().slice(0,10);
     const status = isSalesRestricted ? "menunggu" : "disetujui";
@@ -286,8 +295,14 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     recalcTokoStok(db, produkAktif, t.id, updateRecord, undefined, [...(db.penyesuaian||[]), ...entriesBaru]);
 
     setStokModal(false);
+    // ✅ FIX: dulu Admin/Manajer TIDAK dapat notifikasi apa pun setelah
+    // "Simpan Stok" (cuma Sales yang dapat alert pengajuan) — sekarang
+    // Admin/Manajer juga dapat konfirmasi eksplisit bahwa perubahan
+    // tersimpan, supaya tidak ambigu dengan kasus "tidak ada perubahan" di atas.
     if (isSalesRestricted) {
       alert(`Pengajuan koreksi stok toko "${t.nama}" terkirim. Menunggu persetujuan Admin/Manajer (otomatis disetujui dalam 24 jam kalau tidak ditinjau) — stok toko masih seperti semula sampai disetujui.`);
+    } else {
+      alert(`Stok toko "${t.nama}" berhasil diupdate.`);
     }
   }
 
