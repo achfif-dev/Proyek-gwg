@@ -211,53 +211,50 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     setStokModal(true);
   }
   function submitStok() {
-    const newDB = { ...db };
-    newDB.toko = db.toko.map(t => {
-      if (t.id !== stokForm.tokoId) return t;
-      const updates = {};
-      // ✅ Sinkron ceklis "Produk yang Dijual" (produkIds) dengan perubahan
-      // stok lewat "Update Stok Awal" ini — sebelumnya cuma stok yang berubah,
-      // ceklisnya dibiarkan apa adanya. Sekarang: produk yang diisi stok > 0
-      // otomatis dicentang (kalau belum), dan produk yang diisi 0 otomatis
-      // dihilangkan ceklisnya (kalau sebelumnya sudah tercentang) — sama
-      // seperti sinkronisasi di Kontrol Bulanan & Penyesuaian Stok.
-      // ✅ PENTING: acuan "sudah tercentang atau belum" sekarang membaca
-      // flag produk_<id> LANGSUNG (bukan array produkIds) — karena flag
-      // itu yang sebenarnya ditampilkan sebagai ceklis di tabel/layar. Untuk
-      // toko lama yang produkIds & flag-nya SUDAH TERLANJUR tidak sinkron
-      // dari sebelum perbaikan ini ada (mis. dari hasil import lama), acuan
-      // ke array produkIds gagal mendeteksi ketidaksesuaian itu — makanya
-      // ceklis yang sudah kadung salah tidak pernah ikut terkoreksi. Dengan
-      // membaca flag langsung, perbaikan ini otomatis "menyembuhkan" data
-      // lama yang sudah telanjur tidak sinkron, bukan cuma menjaga data
-      // baru tetap sinkron ke depannya.
-      // ✅ FIX SINKRONISASI LANJUTAN: baris di bawah ini SEBELUMNYA masih
-      // membaca `t.produkIds || []` untuk existingIds — padahal produkIds
-      // toko hasil Import Toko (lihat importTokoFromRows) TIDAK PERNAH diisi
-      // sama sekali (cuma flag produk_<id> yang diisi dari kolom Excel).
-      // Akibatnya, begitu ada SATU produk saja yang butuh ditambah/dihapus
-      // dari ceklis di sini, finalIds dibangun dari existingIds yang kosong
-      // → ceklis "Produk yang Dijual" untuk SEMUA produk lain milik toko itu
-      // (yang sebenarnya sudah benar tercentang lewat import) ikut TERHAPUS
-      // diam-diam. Disamakan dengan syncProdukIdsDariStokKontrol: existingIds
-      // dibaca dari flag produk_<id> langsung, bukan dari array produkIds.
-      const existingIds = produkAktif.filter(p=>!!t[`produk_${p.id}`]).map(p=>p.id);
-      const toAdd = [];
-      const toRemove = [];
-      produkAktif.forEach(p => {
-        const stokBaru = Number(stokForm.stok[p.id]||0);
-        updates[`stok_${p.id}`] = stokBaru;
-        const sudahAda = !!t[`produk_${p.id}`];
-        if (stokBaru > 0 && !sudahAda) toAdd.push(p.id);
-        else if (stokBaru === 0 && sudahAda) toRemove.push(p.id);
-      });
-      if (toAdd.length > 0 || toRemove.length > 0) {
-        const finalIds = [...new Set(existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd))];
-        updates.produkIds = finalIds;
-        produkAktif.forEach(p => { updates[`produk_${p.id}`] = finalIds.includes(p.id); });
-      }
-      return { ...t, ...updates };
+    const t = (db.toko||[]).find(x => x.id === stokForm.tokoId);
+    if (!t) { setStokModal(false); return; }
+    const updates = {};
+    // ✅ Sinkron ceklis "Produk yang Dijual" (produkIds) dengan perubahan
+    // stok lewat "Update Stok Awal" ini — sebelumnya cuma stok yang berubah,
+    // ceklisnya dibiarkan apa adanya. Sekarang: produk yang diisi stok > 0
+    // otomatis dicentang (kalau belum), dan produk yang diisi 0 otomatis
+    // dihilangkan ceklisnya (kalau sebelumnya sudah tercentang) — sama
+    // seperti sinkronisasi di Kontrol Bulanan & Penyesuaian Stok.
+    // ✅ PENTING: acuan "sudah tercentang atau belum" sekarang membaca
+    // flag produk_<id> LANGSUNG (bukan array produkIds) — karena flag
+    // itu yang sebenarnya ditampilkan sebagai ceklis di tabel/layar. Untuk
+    // toko lama yang produkIds & flag-nya SUDAH TERLANJUR tidak sinkron
+    // dari sebelum perbaikan ini ada (mis. dari hasil import lama), acuan
+    // ke array produkIds gagal mendeteksi ketidaksesuaian itu — makanya
+    // ceklis yang sudah kadung salah tidak pernah ikut terkoreksi. Dengan
+    // membaca flag langsung, perbaikan ini otomatis "menyembuhkan" data
+    // lama yang sudah telanjur tidak sinkron, bukan cuma menjaga data
+    // baru tetap sinkron ke depannya.
+    // ✅ FIX SINKRONISASI LANJUTAN: baris di bawah ini SEBELUMNYA masih
+    // membaca `t.produkIds || []` untuk existingIds — padahal produkIds
+    // toko hasil Import Toko (lihat importTokoFromRows) TIDAK PERNAH diisi
+    // sama sekali (cuma flag produk_<id> yang diisi dari kolom Excel).
+    // Akibatnya, begitu ada SATU produk saja yang butuh ditambah/dihapus
+    // dari ceklis di sini, finalIds dibangun dari existingIds yang kosong
+    // → ceklis "Produk yang Dijual" untuk SEMUA produk lain milik toko itu
+    // (yang sebenarnya sudah benar tercentang lewat import) ikut TERHAPUS
+    // diam-diam. Disamakan dengan syncProdukIdsDariStokKontrol: existingIds
+    // dibaca dari flag produk_<id> langsung, bukan dari array produkIds.
+    const existingIds = produkAktif.filter(p=>!!t[`produk_${p.id}`]).map(p=>p.id);
+    const toAdd = [];
+    const toRemove = [];
+    produkAktif.forEach(p => {
+      const stokBaru = Number(stokForm.stok[p.id]||0);
+      updates[`stok_${p.id}`] = stokBaru;
+      const sudahAda = !!t[`produk_${p.id}`];
+      if (stokBaru > 0 && !sudahAda) toAdd.push(p.id);
+      else if (stokBaru === 0 && sudahAda) toRemove.push(p.id);
     });
+    if (toAdd.length > 0 || toRemove.length > 0) {
+      const finalIds = [...new Set(existingIds.filter(id=>!toRemove.includes(id)).concat(toAdd))];
+      updates.produkIds = finalIds;
+      produkAktif.forEach(p => { updates[`produk_${p.id}`] = finalIds.includes(p.id); });
+    }
     // ✅ FIX: sebelumnya baris ini memakai save(newDB), yang menulis ULANG
     // SELURUH tabel toko (ribuan record) sebagai SATU set() raksasa ke
     // Firebase — persis pola yang sudah diperbaiki di importTokoFromRows
@@ -267,10 +264,11 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
     // sesuai), SELURUH penulisan ditolak Firebase — muncul sebagai banner
     // "tidak ada izin" walau role Admin/Manajer di database sudah benar,
     // karena Firebase tidak membedakan "ditolak validasi" dari "ditolak
-    // izin" di pesan errornya. Sekarang hanya toko yang benar-benar diedit
-    // yang dikirim, lewat updateRecord (path kecil `toko/<id>`), sama
-    // seperti alur Tambah/Edit Toko manual.
-    updateRecord("toko", stokForm.tokoId, newDB.toko.find(t => t.id === stokForm.tokoId));
+    // izin" di pesan errornya. Sekarang hanya field yang benar-benar
+    // berubah pada toko yang sedang diedit yang dikirim, lewat updateRecord
+    // (path kecil per-field `toko/<id>/<field>`), sama seperti alur
+    // Tambah/Edit Toko manual.
+    updateRecord("toko", stokForm.tokoId, updates);
     setStokModal(false);
   }
 
