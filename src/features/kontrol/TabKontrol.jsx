@@ -3140,11 +3140,19 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
             </div>
             <div style={{ fontSize:11, color:T.gray400, marginBottom:10 }}>Kolom <b style={{ color:T.gold }}>Bonus Produk</b> adalah jumlah <b>pcs produk</b> yang diberikan ke toko saat kunjungan ini</div>
             <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(170px,1fr))", gap:10 }}>
-              {/* Roll On ditaruh paling depan karena produk ini paling banyak dititipkan ke toko */}
+              {/* ✅ Urutan sekarang ikut field `urutan` yang diatur admin lewat
+                  tombol ↑/↓ di Master Produk — SEBELUMNYA di sini ada regex
+                  hardcode yang memaksa produk bernama "Roll On" selalu
+                  tampil paling depan, spesifik untuk bisnis GWG dan tidak
+                  cocok untuk client white label lain dengan produk beda.
+                  Produk yang belum pernah diatur urutannya (data lama)
+                  fallback ke urutan aslinya di array db.produk, supaya
+                  tampilan yang sudah ada tidak tiba-tiba berubah. */}
               {[...produkAktif].sort((a,b)=>{
-                const aRoll = /roll\s*on/i.test(a.nama) ? 0 : 1;
-                const bRoll = /roll\s*on/i.test(b.nama) ? 0 : 1;
-                return aRoll - bRoll;
+                const idxA = produkAktif.indexOf(a), idxB = produkAktif.indexOf(b);
+                const effA = typeof a.urutan === "number" ? a.urutan : idxA;
+                const effB = typeof b.urutan === "number" ? b.urutan : idxB;
+                return effA - effB;
               }).map(p => {
                 const terjual = Number(form[`terjual_${p.id}`]||0);
                 const bonusPcs = Number(form[`bonusInput_${p.id}`]||0);
