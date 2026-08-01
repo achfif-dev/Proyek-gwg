@@ -41,28 +41,181 @@ export default function GWGSuperApp() {
   // listener, tapi kalau koneksi sempat putus-nyambung (sinyal lemah) dan
   // listener-nya tidak reconnect otomatis, tombol ini jadi jalan pintas
   // "muat ulang total" — setara reload halaman di browser.
+  //
+  // ✅ UPGRADE "floating nav button" style:
+  //  - Bisa di-drag bebas (naik/turun, geser kiri/kanan).
+  //  - Saat dilepas, otomatis snap ke tepi kiri atau kanan terdekat (seperti
+  //    tombol navigasi assistive touch di HP Android).
+  //  - Kalau tidak disentuh beberapa detik, ia "menyelinap" separuh badan ke
+  //    luar layar (nempel di tepi, cuma nongol dikit) supaya tidak menutupi
+  //    konten. Sentuh/geser sedikit → muncul lagi.
+  //  - Posisi (sisi + tinggi) diingat lewat localStorage, jadi tidak balik
+  //    ke pojok default tiap buka app.
   useEffect(() => {
     if (!Capacitor.isNativePlatform()) return; // di web/PWA tidak perlu, sudah ada gesture bawaan
     if (document.getElementById("gwg-native-refresh-btn")) return;
+
+    const SIZE = 48;            // diameter tombol
+    const EDGE_GAP = 6;         // jarak dari tepi layar saat "muncul penuh"
+    const PEEK = 14;            // sisa bagian yang masih kelihatan saat "sembunyi"
+    const IDLE_MS = 2200;       // jeda tanpa sentuhan sebelum auto-sembunyi
+    const DRAG_THRESHOLD = 6;   // px gerak minimum supaya dianggap "drag", bukan "tap"
+    const STORAGE_KEY = "gwg-refresh-btn-pos";
+
+    const headerH = 90;         // perkiraan tinggi header fixed, jangan sampai ketiban
+    const bottomSafe = 70;      // perkiraan area aman di bawah (nav/tab bar)
+
+    let side = "right";         // "left" | "right"
+    let topY = window.innerHeight - 120;
+    try {
+      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "null");
+      if (saved && (saved.side === "left" || saved.side === "right") && typeof saved.topY === "number") {
+        side = saved.side;
+        topY = saved.topY;
+      }
+    } catch {}
+
+    const clampTop = (y) => Math.min(
+      Math.max(y, headerH),
+      Math.max(headerH, window.innerHeight - SIZE - bottomSafe)
+    );
+    topY = clampTop(topY);
+
     const btn = document.createElement("button");
     btn.id = "gwg-native-refresh-btn";
-    btn.innerHTML = "&#8635;";
+    // ✅ Ikon disamakan dengan yang lain di app: sebelumnya pakai karakter
+    // unicode "&#8635;" (gaya font, gerigi/kotak-kotak di sebagian WebView),
+    // sekarang pakai SVG lucide "refresh-cw" — persis Icon.refresh yang
+    // dipakai di seluruh UI (lihat theme/icons.jsx), jadi konsisten vector,
+    // bukan glyph font.
+    btn.innerHTML =
+      '<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" ' +
+      'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+      '<path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>' +
+      '<path d="M3 3v5h5"/>' +
+      '<path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>' +
+      '<path d="M16 16h5v5"/>' +
+      "</svg>";
     btn.setAttribute("aria-label", "Muat ulang");
-    // ✅ FIX WARNA: sebelumnya hardcode "#16a34a" (hijau) apa pun warna
-    // brand yang dipilih di Setup Wizard — akibatnya tombol ini tetap
-    // hijau walau perusahaan lain sudah ganti warna utama mereka sendiri.
-    // Sekarang ikut T.green (= brand.primaryColor), sama seperti elemen
-    // lain di aplikasi.
+    // ✅ FIX WARNA: ikut T.green (= brand.primaryColor) supaya konsisten
+    // dengan warna brand yang dipilih di Setup Wizard, bukan hijau hardcode.
     Object.assign(btn.style, {
-      position: "fixed", bottom: "20px", right: "16px", zIndex: "99999",
-      width: "48px", height: "48px", borderRadius: "50%", border: "none",
-      background: T.green, color: "#fff", fontSize: "22px",
+      position: "fixed", top: "0px", left: "0px", zIndex: "99999",
+      width: SIZE + "px", height: SIZE + "px", borderRadius: "50%", border: "none",
+      background: T.green, color: "#fff",
       boxShadow: "0 2px 8px rgba(0,0,0,0.3)", display: "flex",
       alignItems: "center", justifyContent: "center",
+      touchAction: "none", userSelect: "none", cursor: "grab",
+      transition: "left 0.28s ease, top 0.15s ease, opacity 0.28s ease",
+      willChange: "left, top",
     });
-    btn.onclick = () => window.location.reload();
     document.body.appendChild(btn);
-    return () => { btn.remove(); };
+
+    let collapsed = false;
+    let dragging = false;
+    let pointerDown = false;
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    let idleTimer = null;
+
+    const expandedLeft = () => (side === "right" ? window.innerWidth - SIZE - EDGE_GAP : EDGE_GAP);
+    const collapsedLeft = () => (side === "right" ? window.innerWidth - PEEK : -(SIZE - PEEK));
+
+    const paint = ({ animate = true } = {}) => {
+      btn.style.transition = animate
+        ? "left 0.28s ease, top 0.15s ease, opacity 0.28s ease"
+        : "none";
+      btn.style.top = topY + "px";
+      btn.style.left = (collapsed ? collapsedLeft() : expandedLeft()) + "px";
+      btn.style.opacity = collapsed ? "0.55" : "1";
+    };
+
+    const savePos = () => {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify({ side, topY })); } catch {}
+    };
+
+    const resetIdleTimer = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { collapsed = true; paint(); }, IDLE_MS);
+    };
+
+    const onPointerDown = (e) => {
+      pointerDown = true;
+      dragging = false;
+      clearTimeout(idleTimer);
+      btn.setPointerCapture?.(e.pointerId);
+      startX = e.clientX; startY = e.clientY;
+      startLeft = collapsed ? collapsedLeft() : expandedLeft();
+      startTop = topY;
+      btn.style.transition = "none";
+      btn.style.cursor = "grabbing";
+    };
+
+    const onPointerMove = (e) => {
+      if (!pointerDown) return;
+      const dx = e.clientX - startX;
+      const dy = e.clientY - startY;
+      if (!dragging && Math.hypot(dx, dy) > DRAG_THRESHOLD) {
+        dragging = true;
+        collapsed = false; // begitu mulai digeser, langsung tampil penuh
+      }
+      if (!dragging) return;
+      let newLeft = startLeft + dx;
+      let newTop = clampTop(startTop + dy);
+      newLeft = Math.min(Math.max(newLeft, -(SIZE - PEEK)), window.innerWidth - PEEK);
+      btn.style.left = newLeft + "px";
+      btn.style.top = newTop + "px";
+      topY = newTop;
+    };
+
+    const onPointerUp = (e) => {
+      if (!pointerDown) return;
+      pointerDown = false;
+      btn.style.cursor = "grab";
+      if (dragging) {
+        // snap ke tepi terdekat berdasar posisi tengah tombol saat dilepas
+        const centerX = e.clientX;
+        side = centerX < window.innerWidth / 2 ? "left" : "right";
+        collapsed = false;
+        savePos();
+        paint();
+        resetIdleTimer();
+      } else {
+        // ini "tap", bukan drag
+        if (collapsed) {
+          // kalau lagi sembunyi, tap pertama cuma memunculkan lagi
+          collapsed = false;
+          paint();
+          resetIdleTimer();
+        } else {
+          window.location.reload();
+        }
+      }
+      dragging = false;
+    };
+
+    const onResize = () => {
+      topY = clampTop(topY);
+      paint({ animate: false });
+    };
+
+    btn.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    window.addEventListener("resize", onResize);
+
+    paint({ animate: false });
+    resetIdleTimer();
+
+    return () => {
+      clearTimeout(idleTimer);
+      btn.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+      window.removeEventListener("resize", onResize);
+      btn.remove();
+    };
   }, []);
 
   const isOnline = useOnlineStatus();
