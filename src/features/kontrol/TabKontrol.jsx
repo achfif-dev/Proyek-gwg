@@ -4,7 +4,7 @@ import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
-import { SIKLUS_GAP_DAYS, appendStatusHistory } from "../../lib/dataHelpers";
+import { SIKLUS_GAP_DAYS, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
@@ -702,45 +702,13 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   //     kontrol rutin.
   // extraKontrolList / extraPenyesuaianList: dipakai saat dipanggil tepat
   // setelah addRecord, karena db di closure ini belum memuat data terbaru.
+  // ✅ Diekstrak ke src/lib/dataHelpers.js (recalcTokoStok) supaya fitur lain
+  // di luar tab ini (mis. "Update Stok Awal" di TabToko.jsx) memakai rumus
+  // yang SAMA PERSIS — wrapper tipis ini cuma mengisi db/produkAktif/updateRecord
+  // dari closure tab ini, supaya semua pemanggilan yang sudah ada di file ini
+  // tidak perlu diubah.
   function recalcTokoStok(tokoId, extraKontrolList, extraPenyesuaianList) {
-    const semuaKontrol = extraKontrolList || (db.kontrol||[]);
-    const semuaPenyesuaian = extraPenyesuaianList || (db.penyesuaian||[]);
-    // ✅ WORKFLOW PERSETUJUAN (disamakan dengan Penyesuaian Stok): entri Kontrol
-    // Bulanan yang diajukan Sales (status "menunggu") atau yang "ditolak" TIDAK
-    // ikut dihitung ke stok Master Toko — hanya entri "disetujui" (atau data
-    // lama tanpa status sama sekali, dianggap sudah final) yang jadi baseline.
-    const entriesToko = semuaKontrol
-      .filter(k => k.tokoId === tokoId && k.status !== "menunggu" && k.status !== "ditolak")
-      .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
-    const terakhir = entriesToko[entriesToko.length-1];
-
-    // Baseline = "Stok Awal" kontrol terakhir apa adanya (sudah termasuk
-    // hasil restock saat kunjungan itu). Kalau belum pernah ada kontrol,
-    // baseline = 0.
-    const baseline = {};
-    produkAktif.forEach(p => {
-      baseline[p.id] = terakhir ? Number(terakhir[`stok_${p.id}`]||0) : 0;
-    });
-
-    // Tambahkan Penyesuaian Stok yang terjadi pada/sesudah tanggal kontrol terakhir
-    const batasTanggal = terakhir?.tanggal || "0000-00-00";
-    const penyesuaianRelevan = semuaPenyesuaian
-      .filter(pz => pz.tokoId === tokoId && (pz.tanggal||"") >= batasTanggal
-        && pz.status !== "menunggu" && pz.status !== "ditolak") // hanya yang disetujui (atau data lama tanpa status)
-      .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
-    penyesuaianRelevan.forEach(pz => {
-      const arah = pz.jenis === "Kurang" || pz.jenis === "Tarik" ? -1 : 1;
-      produkAktif.forEach(p => {
-        const jumlah = Number(pz[`jumlah_${p.id}`]||0);
-        if (jumlah) baseline[p.id] = (baseline[p.id]||0) + arah*jumlah;
-      });
-    });
-
-    if (!terakhir && penyesuaianRelevan.length === 0) return; // belum ada kontrol maupun penyesuaian → biarkan stok toko (input manual awal) apa adanya
-
-    const updates = {};
-    produkAktif.forEach(p => { updates[`stok_${p.id}`] = Math.max(0, baseline[p.id]||0); });
-    updateRecord("toko", tokoId, updates);
+    return recalcTokoStokShared(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList);
   }
 
   // ✅ Helper: dari daftar produkIds baru, hasilkan juga flag produk_<id>
@@ -751,9 +719,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // Bulanan maupun Penyesuaian Stok — sebelumnya cuma produkIds yang
   // terupdate, jadi ceklis di tabel Master Toko tidak ikut berubah.
   function buildProdukFlagUpdates(newIds) {
-    const flags = {};
-    produkAktif.forEach(p => { flags[`produk_${p.id}`] = newIds.includes(p.id); });
-    return flags;
+    return buildProdukFlagUpdatesShared(produkAktif, newIds);
   }
 
   // ✅ SINKRONISASI CEKLIS "Produk yang Dijual" ↔ Stok Kontrol Bulanan
