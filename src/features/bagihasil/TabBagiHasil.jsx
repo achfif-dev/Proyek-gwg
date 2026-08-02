@@ -3,7 +3,7 @@ import { Btn, Card, Modal, StatCard } from "../../components/ui";
 import { Dashboard } from "../../features/dashboard/Dashboard";
 import { useAnalytics } from "../../hooks/useAnalytics";
 import { exportExcel } from "../../lib/exportUtils";
-import { fmt, fmtRp } from "../../lib/format";
+import { fmt, fmtRp, genUniqueId } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
@@ -78,6 +78,31 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
   // Batas tanggal periode terpilih (dipakai bareng oleh Amortisasi & Neraca Keuangan)
   const bounds = useMemo(() => periodeBounds(periodeMode, filterBulan, filterTahun, filterStart, filterEnd),
     [periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
+  // Kunci unik per-periode (dipakai supaya "Cairkan ke Kas" tidak mencatat dobel
+  // untuk periode & pihak yang sama)
+  const periodeKey = `${bounds.start}_${bounds.end}`;
+  const distribusiLog = db.distribusiLog || [];
+  function cariLogPencairan(pihakId) {
+    return distribusiLog.find(d => d.periodeKey === periodeKey && d.pihakId === pihakId);
+  }
+  function cairkanKeKas(p) {
+    const kasId = genUniqueId("KAS");
+    addRecord("kasTransaksi", { id: kasId, tanggal: new Date().toISOString().slice(0,10), tipe:"keluar",
+      kategori:"Pencairan Bagi Hasil", nominal: p.nominal, keterangan: `Bagi hasil ${p.nama} — ${PERIODE_LABELS[periodeMode]}` });
+    addRecord("distribusiLog", { id: genUniqueId("DIST"), periodeKey, periodeLabel: PERIODE_LABELS[periodeMode],
+      pihakId: p.id, pihakNama: p.nama, nominal: p.nominal, tanggal: new Date().toISOString().slice(0,10), kasTransaksiId: kasId });
+  }
+  function batalkanPencairan(log) {
+    if (!confirm(`Batalkan pencairan "${log.pihakNama}" & hapus entri Kas terkait?`)) return;
+    if (log.kasTransaksiId) deleteRecord("kasTransaksi", log.kasTransaksiId);
+    deleteRecord("distribusiLog", log.id);
+  }
+  function cairkanSemua() {
+    const belumCair = akuntansi.pihakList.filter(p => !cariLogPencairan(p.id));
+    if (belumCair.length === 0) return alert("Semua pihak untuk periode ini sudah dicairkan.");
+    if (!confirm(`Catat pencairan ke Kas untuk ${belumCair.length} pihak (total ${fmtRp(belumCair.reduce((s,p)=>s+p.nominal,0))})?`)) return;
+    belumCair.forEach(cairkanKeKas);
+  }
 
   // Kalkulasi akuntansi lengkap
   const akuntansi = useMemo(() => {
@@ -359,7 +384,12 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
         <Card>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, borderBottom:`2px solid ${T.gold}`, paddingBottom:10 }}>
             <div style={{ fontSize:14, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.bagihasil size={16} strokeWidth={2} /> Distribusi Bagi Hasil</div>
-            <Btn size="sm" icon={Icon.add} variant="gold" onClick={tambahPihak}>Tambah Pihak</Btn>
+            <div style={{ display:"flex", gap:8 }}>
+              {akuntansi.pihakList.length > 0 && (
+                <Btn size="sm" icon={Icon.landmark} variant="secondary" onClick={cairkanSemua}>Cairkan Semua ke Kas</Btn>
+              )}
+              <Btn size="sm" icon={Icon.add} variant="gold" onClick={tambahPihak}>Tambah Pihak</Btn>
+            </div>
           </div>
 
           {/* Validasi total pct */}
@@ -382,7 +412,9 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
                 })}
               </div>
 
-              {akuntansi.pihakList.map((p,i)=>(
+              {akuntansi.pihakList.map((p,i)=>{
+                const log = cariLogPencairan(p.id);
+                return (
                 <div key={p.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
                   padding:"10px 14px", borderRadius:10, marginBottom:10,
                   background:p.warna+"12", border:`1.5px solid ${p.warna}30` }}>
@@ -400,13 +432,22 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
                       <div style={{ fontSize:15, fontWeight:800, color:p.warna }}>{fmtRp(p.nominal)}</div>
                       <div style={{ fontSize:10, color:T.gray400 }}>dari {fmtRp(p.basisNilai)}</div>
                     </div>
+                    {log ? (
+                      <button onClick={()=>batalkanPencairan(log)} title={`Dicairkan ${log.tanggal} — klik untuk batalkan`}
+                        style={{ display:"flex", alignItems:"center", gap:4, padding:"5px 10px", borderRadius:99, border:"none",
+                          background:T.greenLt, color:T.green, fontSize:11, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }}>
+                        <Icon.checklist size={12} strokeWidth={2.5} /> Dicairkan
+                      </button>
+                    ) : (
+                      <Btn variant="secondary" size="sm" icon={Icon.landmark} onClick={()=>cairkanKeKas(p)} title="Catat pencairan ini sebagai Kas Keluar" />
+                    )}
                     <div style={{ display:"flex", gap:4 }}>
                       <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>{ setFormPihak({...p}); setModalPihak("edit"); }} />
                       <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>hapusPihak(p.id)} />
                     </div>
                   </div>
                 </div>
-              ))}
+              );})}
 
               <div style={{ borderTop:`2px solid ${T.gray200}`, paddingTop:12, marginTop:4,
                 display:"flex", justifyContent:"space-between", padding:"12px 14px",
