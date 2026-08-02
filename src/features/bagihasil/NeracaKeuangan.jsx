@@ -66,6 +66,16 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     addRecord("stockOpname", { id: genUniqueId("SO"), tanggal: opnameStokForm.tanggal, keterangan: opnameStokForm.keterangan, items, totalSelisihPcs, totalSelisihRp });
     setOpnameStokForm(null);
   }
+  function submitEditOpnameStok() {
+    const items = detailOpnameStok.items.map(it => ({ ...it, stokFisik: Number(it.stokFisik) || 0 }));
+    const totalSelisihPcs = items.reduce((s, it) => s + (it.stokFisik - it.stokSistem), 0);
+    const totalSelisihRp = items.reduce((s, it) => {
+      const p = produkArr.find(pp => pp.id === it.produkId);
+      return s + (it.stokFisik - it.stokSistem) * (p?.harga || 0);
+    }, 0);
+    updateRecord("stockOpname", detailOpnameStok.id, { tanggal: detailOpnameStok.tanggal, keterangan: detailOpnameStok.keterangan, items, totalSelisihPcs, totalSelisihRp });
+    setDetailOpnameStok(null);
+  }
 
   // ── Amortisasi ───────────────────────────────────────────────────
   const [asetForm, setAsetForm] = useState(null);
@@ -338,8 +348,20 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
           )}
 
           {detailOpnameStok && (
-            <Modal title={`Detail Opname — ${detailOpnameStok.tanggal}`} onClose={() => setDetailOpnameStok(null)} width={560}>
-              <div style={{ overflowX: "auto" }}>
+            <Modal title={`Edit Opname — ${detailOpnameStok.tanggal}`} onClose={() => setDetailOpnameStok(null)} width={640}>
+              <div className="gw-grid2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Tanggal</label>
+                  <input type="date" value={detailOpnameStok.tanggal} onChange={e => setDetailOpnameStok(f => ({ ...f, tanggal: e.target.value }))}
+                    style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Keterangan</label>
+                  <input value={detailOpnameStok.keterangan || ""} onChange={e => setDetailOpnameStok(f => ({ ...f, keterangan: e.target.value }))}
+                    style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div style={{ overflowX: "auto", marginBottom: 14 }}>
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
                   <thead>
                     <tr style={{ background: T.gray50 }}>
@@ -349,13 +371,18 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                     </tr>
                   </thead>
                   <tbody>
-                    {(detailOpnameStok.items || []).map(it => {
-                      const selisih = it.stokFisik - it.stokSistem;
+                    {(detailOpnameStok.items || []).map((it, i) => {
+                      const selisih = (Number(it.stokFisik) || 0) - it.stokSistem;
                       return (
                         <tr key={it.produkId} style={{ borderBottom: `1px solid ${T.gray100}` }}>
-                          <td style={{ padding: "6px 10px" }}>{it.nama}</td>
+                          <td style={{ padding: "6px 10px", fontWeight: 600 }}>{it.nama}</td>
                           <td style={{ padding: "6px 10px" }}>{fmt(it.stokSistem)}</td>
-                          <td style={{ padding: "6px 10px" }}>{fmt(it.stokFisik)}</td>
+                          <td style={{ padding: "6px 10px" }}>
+                            <input type="number" value={it.stokFisik} onChange={e => {
+                              const v = e.target.value;
+                              setDetailOpnameStok(f => ({ ...f, items: f.items.map((x, xi) => xi === i ? { ...x, stokFisik: v } : x) }));
+                            }} style={{ width: 90, padding: "5px 8px", border: `1.5px solid ${T.gray200}`, borderRadius: 6, fontSize: 12, fontFamily: "inherit" }} />
+                          </td>
                           <td style={{ padding: "6px 10px", fontWeight: 700, color: selisih === 0 ? T.gray600 : selisih > 0 ? T.green : T.red }}>{selisih > 0 ? "+" : ""}{fmt(selisih)}</td>
                         </tr>
                       );
@@ -363,8 +390,9 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                   </tbody>
                 </table>
               </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
-                <Btn variant="secondary" onClick={() => setDetailOpnameStok(null)}>Tutup</Btn>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <Btn variant="secondary" onClick={() => setDetailOpnameStok(null)}>Batal</Btn>
+                <Btn onClick={submitEditOpnameStok} icon={Icon.save}>Simpan Perubahan</Btn>
               </div>
             </Modal>
           )}
