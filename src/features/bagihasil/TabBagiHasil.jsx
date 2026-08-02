@@ -475,18 +475,19 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
                 const log = cariLogPencairan(p.id);
                 return (
                 <div key={p.id} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+                  flexWrap:"wrap", rowGap:10, columnGap:10,
                   padding:"10px 14px", borderRadius:10, marginBottom:10,
                   background:p.warna+"12", border:`1.5px solid ${p.warna}30` }}>
-                  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:10, minWidth:0, flex:"1 1 140px" }}>
                     <div style={{ width:10, height:10, borderRadius:"50%", background:p.warna, flexShrink:0 }} />
-                    <div>
-                      <div style={{ fontSize:13, fontWeight:700, color:T.gray800 }}>{p.nama}</div>
+                    <div style={{ minWidth:0 }}>
+                      <div style={{ fontSize:13, fontWeight:700, color:T.gray800, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.nama}</div>
                       <div style={{ fontSize:11, color:T.gray400 }}>
                         {p.pct}% dari {p.basis==="laba"?"laba bersih":"revenue"} · {p.keterangan}
                       </div>
                     </div>
                   </div>
-                  <div style={{ display:"flex", alignItems:"center", gap:8 }}>
+                  <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", justifyContent:"flex-end", flex:"0 1 auto" }}>
                     <div style={{ textAlign:"right" }}>
                       <div style={{ fontSize:15, fontWeight:800, color:p.warna }}>{fmtRp(p.nominal)}</div>
                       <div style={{ fontSize:10, color:T.gray400 }}>dari {fmtRp(p.basisNilai)}</div>
@@ -494,13 +495,13 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
                     {log ? (
                       <button onClick={()=>batalkanPencairan(log)} title={`Dicairkan ${log.tanggal} — klik untuk batalkan`}
                         style={{ display:"flex", alignItems:"center", gap:4, padding:"5px 10px", borderRadius:99, border:"none",
-                          background:T.greenLt, color:T.green, fontSize:11, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }}>
+                          background:T.greenLt, color:T.green, fontSize:11, fontWeight:700, fontFamily:"inherit", cursor:"pointer", flexShrink:0 }}>
                         <Icon.checklist size={12} strokeWidth={2.5} /> Dicairkan
                       </button>
                     ) : (
                       <Btn variant="secondary" size="sm" icon={Icon.landmark} onClick={()=>cairkanKeKas(p)} title="Catat pencairan ini sebagai Kas Keluar" />
                     )}
-                    <div style={{ display:"flex", gap:4 }}>
+                    <div style={{ display:"flex", gap:4, flexShrink:0 }}>
                       <Btn variant="secondary" size="sm" icon={Icon.edit} onClick={()=>{ setFormPihak({...p}); setModalPihak("edit"); }} />
                       <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>hapusPihak(p.id)} />
                     </div>

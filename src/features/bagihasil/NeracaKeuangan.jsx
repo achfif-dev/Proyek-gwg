@@ -3,6 +3,7 @@ import { Btn, Card, Modal, StatCard, Table } from "../../components/ui";
 import { fmt, fmtRp, genUniqueId } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
+import { usePersistedState } from "../../hooks/usePersistedState";
 import {
   hitungSaldoKas, hitungStokSistem, hitungAmortisasiPeriode, statusAsetSaatIni,
   ringkasanHutangPiutang, hitungHppPeriode, bulanKeyOf, isPeriodeTerkunci,
@@ -14,7 +15,12 @@ import {
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
 export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord, config, saveConfig, akuntansi, revPeriode, periodeMode, PERIODE_LABELS, bounds, analytics }) {
-  const [section, setSection] = useState("ringkasan"); // ringkasan | kas | stok | amortisasi
+  // ✅ FIX: sebelumnya pakai useState biasa, jadi tiap refresh (tombol
+  // header/APK maupun reload browser) sub-bagian Neraca (Ringkasan/Kas/Stok/
+  // Amortisasi) selalu balik ke "ringkasan" walau user sedang di bagian lain
+  // — beda dari tab-tab lain yang semuanya sudah pakai usePersistedState.
+  // Disamakan di sini supaya ikut tersimpan & pulih setelah refresh.
+  const [section, setSection] = usePersistedState("neraca.section", "ringkasan"); // ringkasan | kas | stok | amortisasi
 
   const produkArr = db.produk || [];
   const tokoArr = db.toko || [];
