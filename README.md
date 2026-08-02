@@ -229,9 +229,10 @@ Ringkasan kondisi bisnis secara real-time:
 - **Panel "Daftar Stok Produk per Toko"** (bisa ditampilkan/disembunyikan): tabel stok tiap toko per produk, bisa difilter per wilayah/rute/produk, dan diupdate manual lewat tombol **Update** (untuk koreksi stok, stok opname, atau setup awal).
 
 ### 6.5 Master Produk
-- Menyimpan daftar produk yang dijual (kode, nama, tipe bebas, harga dasar, bonus per kunjungan, status aktif).
+- Menyimpan daftar produk yang dijual (kode, nama, tipe bebas, harga dasar, bonus per kunjungan, status aktif, urutan tampil yang diatur pakai tombol ↑/↓).
 - Kode produk unik (1–4 huruf, misal `R`, `B`, `P`, `LP`) dan dipakai sebagai identitas kolom di Kontrol Bulanan.
 - Produk yang di-nonaktifkan tidak akan muncul lagi di form Kontrol Bulanan maupun form Toko, tapi data historisnya tetap tersimpan.
+- **Harga Modal / HPP (opsional)** — kalau diisi, dipakai di sub-tab Neraca Keuangan → Ringkasan Rasio untuk menghitung **Laba Kotor Riil**, sebagai pembanding terhadap asumsi Margin Laba % yang dipakai di Laporan Laba Rugi resmi (§6.8.1). Kalau belum diisi untuk suatu produk, sistem akan menandai dengan peringatan supaya angka pembanding ini tidak dianggap akurat.
 
 ### 6.6 Kontrol Bulanan
 Ini adalah **jantung operasional harian** aplikasi — tempat sales mencatat hasil kunjungan ke setiap toko.
@@ -273,33 +274,39 @@ Setiap mode menampilkan: jumlah toko dikunjungi, total stok/terjual/bonus per pr
 Tab ini punya **3 sub-tab**: **Bagi Hasil & Laba Rugi**, **Neraca Keuangan Lengkap**, dan **Laporan Pajak (Coretax)**. Filter periode (Bulanan/Tahunan/Kustom) di bagian atas berlaku untuk ketiga sub-tab sekaligus.
 
 #### 6.8.1 Bagi Hasil & Laba Rugi
-Menghitung simulasi pembagian keuntungan ke beberapa pihak berdasarkan data Kontrol Bulanan pada periode terpilih.
+Menghitung simulasi pembagian keuntungan ke beberapa pihak berdasarkan data Kontrol Bulanan pada periode terpilih, dengan struktur Laporan Laba Rugi berlapis (Pendapatan → Laba Kotor → Laba Usaha → SHU/Laba Bersih) yang bisa disesuaikan lewat tombol **Konfigurasi**:
 
-- **Pengaturan biaya**: margin laba (%), biaya operasional, biaya bonus, biaya logistik, biaya lainnya, ditambah **Biaya Amortisasi** yang terhitung otomatis dari daftar aset (lihat §6.8.2) — semuanya sudah tersambung ke Laporan Laba Rugi.
-- **Modal Disetor / Ekuitas** juga diatur di sini (tombol Konfigurasi), dipakai sebagai pembagi rumus ROE & komponen Ekuitas di Laporan Neraca (§6.8.2).
+- **Metode Hitung Laba Kotor** — bisa dipilih salah satu:
+  - **Margin % (Asumsi)** — cara lama: Laba Kotor = Pendapatan − Beban Usaha, lalu dikalikan persentase Margin yang diisi manual. Cocok kalau belum semua produk diisi Harga Modal/HPP.
+  - **HPP Produk (Riil)** — Laba Kotor = Pendapatan − HPP sesungguhnya, dihitung dari field **Harga Modal** tiap produk (§6.5) dikali jumlah terjual pada periode itu. Lebih akurat, tapi butuh HPP terisi untuk semua produk yang laku (kalau ada yang belum diisi, sistem kasih peringatan karena HPP-nya dianggap Rp0 sementara).
+- **Beban Usaha** — sekarang berupa **daftar item bebas** (bukan 4 kategori tetap lagi): bisa tambah/hapus/ganti nama item sesuai kebutuhan, misalnya "Gaji Karyawan", "Gaji Sales/Komisi", "Sewa Tempat", "Listrik & Internet", dst — masing-masing diisi nominal manual per periode. Ditambah **Biaya Amortisasi** yang terhitung otomatis dari daftar aset (§6.8.2), semuanya sudah tersambung ke Laporan Laba Rugi.
+- **Kewajiban Dana Cadangan (opsional)** — fitur khusus yang bisa diaktif/nonaktifkan sesuai kebijakan masing-masing bisnis (karena aplikasi ini dipakai white-label, tiap perusahaan bisa beda kebijakan): sekian Rupiah dari **setiap pcs produk terjual** otomatis disisihkan sebagai kewajiban/cadangan darurat SEBELUM sisa laba dibagi ke pihak. Contoh: Rp500/pcs. Muncul sebagai pengurang SHU di Laba Rugi, dan sebagai baris **Kewajiban** akumulatif di Laporan Neraca (§6.8.2).
+- **Modal Disetor / Ekuitas** juga diatur di sini (tombol Konfigurasi), dipakai sebagai pembagi rumus ROE & komponen Ekuitas di Laporan Neraca.
 - **Daftar Pihak** (default: Pemilik Utama 60%, Investor A 20%, Manajer Ops 10%, Karyawan Pool 10%) — masing-masing bisa diatur:
-  - **Basis perhitungan**: dari **Laba Bersih** atau dari **Pendapatan (Revenue)**.
+  - **Basis perhitungan**: dari **Laba Bersih/SHU** atau dari **Pendapatan (Revenue)**.
   - **Persentase (%)** bagian masing-masing pihak.
   - Warna & keterangan untuk identifikasi.
 - Pihak bisa ditambah, diedit, atau dihapus sesuai struktur bisnis Anda.
-- Hasil kalkulasi otomatis: Pendapatan → dikurangi Total Biaya (termasuk Amortisasi) → Laba Kotor → Laba Bersih/SHU (setelah margin) → dibagi ke tiap pihak sesuai basis & persentasenya.
+- Grafik **Tren Revenue & Laba (12 Bulan Terakhir)** juga memakai formula yang sama persis (Metode HPP/Margin, Beban Usaha, Dana Cadangan) supaya angkanya konsisten dengan Laporan Laba Rugi periode berjalan, bukan sekadar `revenue × margin%` seperti sebelumnya.
 - **Cairkan ke Kas** — tiap pihak punya tombol untuk mencatat pencairan bagi hasilnya sebagai transaksi **Kas Keluar** otomatis (kategori "Pencairan Bagi Hasil") di Buku Kas, supaya tidak perlu dicatat manual dua kali. Ada juga tombol **"Cairkan Semua ke Kas"** untuk sekaligus semua pihak yang belum dicairkan pada periode berjalan. Sistem menandai pihak yang sudah dicairkan (badge "✓ Dicairkan") berdasarkan kombinasi periode + pihak, supaya tidak tercatat dobel — dan bisa dibatalkan (otomatis menghapus entri Kas terkait) kalau salah catat.
 
 #### 6.8.2 Neraca Keuangan Lengkap
-Kumpulan alat pembukuan & rasio keuangan, terbagi jadi 6 bagian:
+Kumpulan alat pembukuan & rasio keuangan, terbagi jadi 8 bagian:
 
-- **Ringkasan Rasio** — kartu ringkas **BOPO** (Biaya Operasional ÷ Pendapatan), **SHU/Laba Bersih**, **ROE** (Laba Bersih ÷ Modal Disetor, termasuk estimasi disetahunkan untuk mode Bulanan), dan total Biaya Amortisasi periode berjalan.
+- **Ringkasan Rasio** — kartu ringkas **BOPO** (Beban Usaha ÷ Pendapatan), **SHU/Laba Bersih**, **ROE** (Laba Bersih ÷ Modal Disetor, termasuk estimasi disetahunkan untuk mode Bulanan), **Laba Kotor Riil (HPP)** sebagai pembanding kalau masih pakai Metode Margin %, dan total Biaya Amortisasi periode berjalan.
 - **Kas Opname** — **buku kas lengkap** (catat tiap transaksi masuk/keluar dengan kategori & keterangan, saldo berjalan otomatis), plus fitur **cocokkan saldo fisik vs saldo sistem** (opname kas) yang langsung menampilkan selisihnya. Transaksi kas juga bisa masuk otomatis dari fitur Cairkan ke Kas (§6.8.1) dan pelunasan Hutang/Piutang (di bawah).
-- **Stock Opname** — bandingkan **stok sistem** (total stok konsinyasi yang tercatat beredar di semua toko) dengan **stok fisik hasil hitung manual** per produk. Setiap sesi opname disimpan sebagai riwayat (tanggal, selisih pcs, selisih Rp) yang bisa dibuka & **diedit** lagi kapan saja.
+- **Stock Opname** — bandingkan **stok sistem** (total stok konsinyasi yang tercatat beredar di semua toko) dengan **stok fisik hasil hitung manual** per produk. Setiap sesi opname disimpan sebagai riwayat (tanggal, selisih pcs, selisih Rp) yang bisa dibuka & **diedit** lagi kapan saja. (Ini terpisah dari stok Gudang Pusat di bawah.)
 - **Amortisasi Aset** — daftar aset tetap (kendaraan, peralatan toko, sistem/software, dll) dengan nilai perolehan, nilai residu, dan umur ekonomis. Penyusutan bulanan dihitung otomatis (garis lurus) dan nilainya ikut mengurangi Laba Bersih/SHU di sub-tab Bagi Hasil & Laba Rugi.
+- **Gudang Pusat** — ledger stok gudang pusat (terpisah dari stok yang sudah dititip ke toko): catat transaksi **Masuk** (pembelian/produksi baru, retur dari toko) dan **Keluar** (distribusi ke sales/toko, rusak/hilang/kadaluarsa, penyesuaian). Saldo stok per produk dihitung otomatis dari akumulasi semua transaksi, dan nilainya ikut masuk ke Persediaan di Laporan Neraca.
 - **Hutang/Piutang** — catat hutang (ke supplier, bank, investor) dan piutang (dari toko/konsinyasi, karyawan) dengan nominal awal & jumlah terbayar. Tombol **"Bayar"/"Tagih"** per baris otomatis mencatat pelunasan (sebagian atau penuh) sekaligus membuat entri Kas Keluar/Masuk yang bersangkutan — jadi Buku Kas dan Hutang/Piutang selalu sinkron.
 - **Laporan Neraca** — laporan posisi keuangan format **Aset = Kewajiban + Ekuitas** per akhir periode terpilih:
-  - **Aset Lancar**: Kas & Setara Kas, Piutang Usaha, Persediaan (nilai stok konsinyasi dihitung dengan harga jual).
+  - **Aset Lancar**: Kas & Setara Kas, Piutang Usaha, **Persediaan** (gabungan Stok Gudang Pusat + Stok Beredar di Toko, dinilai pakai Harga Modal/HPP — fallback ke Harga Jual kalau HPP produk itu belum diisi, ditandai peringatan).
   - **Aset Tetap**: total nilai buku aset (setelah dikurangi akumulasi amortisasi).
-  - **Kewajiban**: Hutang Usaha yang masih outstanding.
+  - **Kewajiban**: Hutang Usaha yang masih outstanding, ditambah **Kewajiban Dana Cadangan** akumulatif kalau fitur itu diaktifkan (§6.8.1) — dihitung dari total seluruh pcs terjual sepanjang sejarah aplikasi × tarif per pcs, bukan cuma periode berjalan.
   - **Ekuitas**: Modal Disetor + **Laba Ditahan** — karena aplikasi ini belum memakai pembukuan berpasangan (double-entry) penuh, Laba Ditahan dihitung sebagai **angka sisa** (Total Aset − Total Kewajiban − Modal Disetor), bukan akumulasi transaksi historis bulanan, sehingga Neraca selalu balance secara matematis by design.
+- **Tutup Buku** — kunci data bulan tertentu (hanya tersedia saat filter periode = Bulanan) supaya transaksi Kas, Stock Opname, & Hutang/Piutang di bulan itu tidak bisa ditambah/diubah/dihapus lagi tanpa sengaja. Setiap penutupan menyimpan snapshot angka penting (saldo kas, total aset, SHU) sebagai arsip, dan bisa **dibuka kuncinya lagi** kapan saja kalau memang perlu dikoreksi (lewat tombol "Buka Kunci" di riwayat, atau otomatis muncul saat mencoba mengedit data di bulan terkunci).
 
-> Catatan: "Stok Sistem" di Stock Opname & Laporan Neraca mengacu ke stok konsinyasi yang beredar di toko (dari data Kontrol Bulanan) — aplikasi ini belum punya modul gudang pusat terpisah, dan belum punya harga modal/HPP per produk (nilai persediaan dihitung dari harga jual, bukan harga pokok).
+> Catatan: "Stok Sistem" (Stock Opname) mengacu ke stok konsinyasi yang beredar di toko saja; stok Gudang Pusat dicatat & dihitung terpisah di sub-bagian Gudang Pusat, lalu digabung lagi khusus untuk valuasi Persediaan di Laporan Neraca.
 
 #### 6.8.3 Laporan Pajak (Coretax)
 Simulasi kewajiban pajak berdasarkan pendapatan & laba kotor periode terpilih, ditampilkan dalam **2 skema berdampingan** supaya bisa dibandingkan:
@@ -554,7 +561,7 @@ Proyek-gwg-main/
 │   │   ├── config.js               # Baca kredensial Firebase (dari appConfig/.env)
 │   │   └── init.js                 # Inisialisasi Firebase App/Auth/Database
 │   ├── lib/                        # Helper murni: format, export (Excel/PDF/JPG), import, dsb
-│   │   └── neracaHelpers.js        # Kalkulasi Neraca Keuangan: amortisasi, stok sistem, saldo kas, hutang/piutang, nilai persediaan
+│   │   └── neracaHelpers.js        # Kalkulasi Neraca Keuangan: amortisasi, stok sistem, saldo kas, hutang/piutang, nilai persediaan, HPP, kunci periode
 │   ├── theme/
 │   │   ├── tokens.js                # Palet warna (dari brand config, fallback hijau/emas GWG)
 │   │   └── logo.js                  # Logo bawaan (base64, fallback kalau belum upload logo custom)
@@ -592,7 +599,7 @@ Proyek-gwg-main/
 - Email yang dihapus Admin masuk daftar blokir sehingga tidak otomatis mendaftar ulang — mencegah akun bekas karyawan/mitra login kembali tanpa sepengetahuan Admin.
 - Proses arsip ke Google Drive selalu **upload dulu → dapat file ID sukses → baru hapus dari database aktif**, sehingga tidak ada risiko kehilangan data walau koneksi terputus di tengah proses.
 - Perubahan data offline disimpan di antrean lokal (IndexedDB) yang **tidak menumpuk versi lama** — hanya versi terakhir per data yang dikirim, mencegah data usang menimpa data terbaru saat kembali online.
-- Data finansial di sub-tab **Neraca Keuangan** (`kasTransaksi`, `asetAmortisasi`, `stockOpname`, `hutangPiutang`, `distribusiLog`) memakai izin Firebase Rules yang **sama ketatnya dengan `bagiHasilConfig`** — hanya role Admin & Manajer yang bisa baca/tulis, Sales & Viewer tidak bisa mengaksesnya sama sekali (baik dari tampilan maupun langsung ke database).
+- Data finansial di sub-tab **Neraca Keuangan** (`kasTransaksi`, `asetAmortisasi`, `stockOpname`, `hutangPiutang`, `distribusiLog`, `tutupBuku`, `gudangTransaksi`) memakai izin Firebase Rules yang **sama ketatnya dengan `bagiHasilConfig`** — hanya role Admin & Manajer yang bisa baca/tulis, Sales & Viewer tidak bisa mengaksesnya sama sekali (baik dari tampilan maupun langsung ke database).
 
 ---
 
