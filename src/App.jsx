@@ -353,11 +353,27 @@ export default function GWGSuperApp() {
   //   atau logout lalu login lagi) akan benar-benar menampilkan halaman
   //   Login (user === null && loading === false) sebelum akhirnya login
   //   berhasil → transisi INI yang memicu reset otomatis ke tab Dashboard.
+  //
+  // ✅ FIX: onAuthStateChanged di useAuth kadang menembak DUA KALI saat
+  // refresh — sekali dengan user=null (sebelum sesi tersimpan sempat
+  // dipulihkan dari storage), lalu sekali lagi dengan user yang benar
+  // begitu pemulihan selesai. Kedua callback ini seringkali TIDAK di-batch
+  // React jadi 1 render (apalagi di tab yang lebih "berat" komputasinya,
+  // mis. Bagi Hasil/Pajak/Neraca, yang mengubah timing render) — jadi
+  // useEffect di bawah sempat betul-betul menganggap "user null" itu nyata
+  // (ref di-set true), padahal cuma kedipan sesaat, BUKAN sungguh-sungguh
+  // "sempat menampilkan halaman Login". Efeknya: activeTab ikut ke-reset ke
+  // Dashboard walau ini cuma refresh biasa, bukan login ulang.
+  // Solusinya: kondisi "!user" ditunda dulu (debounce singkat) sebelum
+  // dianggap benar-benar logout/belum-login — kalau user yang valid datang
+  // lagi sebelum jeda itu habis, penundaan dibatalkan dan dianggap tidak
+  // pernah terjadi (murni kedipan restorasi sesi, bukan re-login).
   const pernahDiHalamanLoginRef = useRef(false);
   useEffect(() => {
     if (loading) return; // status auth belum pasti, jangan simpulkan apa-apa dulu
     if (!user) {
-      pernahDiHalamanLoginRef.current = true;
+      const timer = setTimeout(() => { pernahDiHalamanLoginRef.current = true; }, 400);
+      return () => clearTimeout(timer);
     } else if (pernahDiHalamanLoginRef.current) {
       pernahDiHalamanLoginRef.current = false;
       setActiveTab("dashboard");
