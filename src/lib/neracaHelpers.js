@@ -56,21 +56,41 @@ export function hitungAmortisasiPeriode(asetArr, bounds) {
   return { total, detail };
 }
 
-// Status aset "hari ini" (dipakai di tabel daftar aset): akumulasi
-// penyusutan sejak tanggal perolehan s.d. bulan berjalan, & nilai buku.
-export function statusAsetSaatIni(aset) {
+// Status aset pada tanggal tertentu (default: hari ini) — dipakai baik di
+// tabel daftar aset (asOf = hari ini) maupun Laporan Neraca (asOf = akhir
+// periode terpilih, supaya Nilai Buku konsisten dengan tanggal neraca).
+export function statusAsetSaatIni(aset, asOfDateStr) {
   const nilaiPerolehan = Number(aset.nilaiPerolehan) || 0;
   const nilaiResidu = Number(aset.nilaiResidu) || 0;
   const umurBulan = Number(aset.umurBulan) || 0;
   const assetStart = ymOf(aset.tanggalPerolehan);
-  const now = new Date();
-  const nowYm = now.getFullYear() * 12 + now.getMonth();
+  const asOf = asOfDateStr ? new Date(asOfDateStr) : new Date();
+  const asOfYm = asOf.getFullYear() * 12 + asOf.getMonth();
   const perBulan = umurBulan > 0 ? Math.max(0, (nilaiPerolehan - nilaiResidu)) / umurBulan : 0;
-  const bulanBerjalan = assetStart === null ? 0 : Math.min(Math.max(0, nowYm - assetStart + 1), umurBulan);
+  const bulanBerjalan = assetStart === null ? 0 : Math.min(Math.max(0, asOfYm - assetStart + 1), umurBulan);
   const akumulasi = bulanBerjalan * perBulan;
   const nilaiBuku = Math.max(nilaiResidu, nilaiPerolehan - akumulasi);
   const lunas = umurBulan > 0 && bulanBerjalan >= umurBulan;
   return { perBulan, bulanBerjalan, akumulasi, nilaiBuku, lunas };
+}
+
+// Total nilai Rp persediaan/stok konsinyasi yang beredar (Stok Sistem × Harga Jual per produk).
+// Catatan: memakai harga JUAL karena aplikasi belum punya harga modal/HPP per produk
+// — jadi ini estimasi nilai persediaan pada harga jual, bukan harga pokok sesungguhnya.
+export function nilaiPersediaan(stokSistemMap, produkArr) {
+  return (produkArr || []).reduce((s, p) => s + (Number(stokSistemMap[p.id]) || 0) * (Number(p.harga) || 0), 0);
+}
+
+// Ringkasan Hutang/Piutang: sisa = nominalAwal - terbayar, lunas otomatis kalau sisa <= 0.
+export function ringkasanHutangPiutang(arr, tipe) {
+  const rows = (arr || []).filter(x => x.tipe === tipe).map(x => {
+    const nominalAwal = Number(x.nominalAwal) || 0;
+    const terbayar = Number(x.terbayar) || 0;
+    const sisa = Math.max(0, nominalAwal - terbayar);
+    return { ...x, nominalAwal, terbayar, sisa, lunas: sisa <= 0 };
+  });
+  const totalOutstanding = rows.filter(r => !r.lunas).reduce((s, r) => s + r.sisa, 0);
+  return { rows, totalOutstanding };
 }
 
 // Total stok konsinyasi yang SEDANG BEREDAR di semua toko per produk
@@ -106,6 +126,8 @@ export function hitungSaldoKas(kasArr, saldoAwal, uptoDate) {
   return { rows: withRunning, saldoAkhir: saldo, totalMasuk, totalKeluar };
 }
 
-export const KATEGORI_KAS_MASUK = ["Setoran Penjualan Konsinyasi", "Modal Investor", "Pinjaman Masuk", "Pendapatan Lain-lain", "Lainnya"];
-export const KATEGORI_KAS_KELUAR = ["Biaya Operasional", "Biaya Logistik/Distribusi", "Bonus/Insentif Sales", "Pencairan Bagi Hasil", "Pembelian Aset", "Pembayaran Pajak", "Pelunasan Pinjaman", "Lainnya"];
+export const KATEGORI_KAS_MASUK = ["Setoran Penjualan Konsinyasi", "Modal Investor", "Pinjaman Masuk", "Piutang Tertagih", "Pendapatan Lain-lain", "Lainnya"];
+export const KATEGORI_KAS_KELUAR = ["Biaya Operasional", "Biaya Logistik/Distribusi", "Bonus/Insentif Sales", "Pencairan Bagi Hasil", "Pembelian Aset", "Pembayaran Pajak", "Pembayaran Hutang Usaha", "Pelunasan Pinjaman", "Lainnya"];
 export const KATEGORI_ASET = ["Kendaraan", "Peralatan Toko/Display", "Sistem/Software", "Perlengkapan Kantor", "Lainnya"];
+export const KATEGORI_HUTANG = ["Hutang Supplier", "Pinjaman Bank", "Pinjaman Investor", "Lainnya"];
+export const KATEGORI_PIUTANG = ["Piutang Toko/Konsinyasi", "Piutang Karyawan", "Lainnya"];
