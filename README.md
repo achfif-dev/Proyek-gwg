@@ -47,7 +47,7 @@ GWG Super App adalah aplikasi web (Progressive Web App) yang menangani seluruh p
 - Pencatatan **kontrol bulanan** (kunjungan rutin sales ke toko: stok awal, terjual, bonus).
 - Pelacakan **stok** otomatis per toko per produk.
 - **Rekap** penjualan harian/bulanan/kuartal/tahunan.
-- Simulasi **bagi hasil** ke beberapa pihak (pemilik, investor, manajer, dll).
+- Simulasi **bagi hasil** ke beberapa pihak (pemilik, investor, manajer, dll), lengkap dengan **Neraca Keuangan** (Kas Opname/buku kas, Stock Opname, Amortisasi Aset, rasio BOPO/SHU/ROE) dan simulasi **Laporan Pajak** (UMKM Non-PKP vs PKP).
 - **Manajemen pengguna** dengan 4 level akses (Admin, Manajer, Sales, Viewer).
 - **Backup otomatis**, restore, dan reset database dengan pengaman berlapis.
 - **Impor/Ekspor** data lewat Excel, CSV, PDF, HTML, JPG, JSON.
@@ -270,15 +270,37 @@ Setiap mode menampilkan: jumlah toko dikunjungi, total stok/terjual/bonus per pr
 ### 6.8 Bagi Hasil
 *(Khusus Admin & Manajer)*
 
-Menghitung simulasi pembagian keuntungan ke beberapa pihak berdasarkan data Kontrol Bulanan pada periode tertentu (Bulanan/Tahunan/Kustom).
+Tab ini punya **3 sub-tab**: **Bagi Hasil & Laba Rugi**, **Neraca Keuangan Lengkap**, dan **Laporan Pajak (Coretax)**. Filter periode (Bulanan/Tahunan/Kustom) di bagian atas berlaku untuk ketiga sub-tab sekaligus.
 
-- **Pengaturan biaya**: margin laba (%), biaya operasional, biaya bonus, biaya logistik, biaya lainnya — semuanya bisa disesuaikan.
+#### 6.8.1 Bagi Hasil & Laba Rugi
+Menghitung simulasi pembagian keuntungan ke beberapa pihak berdasarkan data Kontrol Bulanan pada periode terpilih.
+
+- **Pengaturan biaya**: margin laba (%), biaya operasional, biaya bonus, biaya logistik, biaya lainnya, ditambah **Biaya Amortisasi** yang terhitung otomatis dari daftar aset (lihat §6.8.2) — semuanya sudah tersambung ke Laporan Laba Rugi.
+- **Modal Disetor / Ekuitas** juga diatur di sini (tombol Konfigurasi), dipakai sebagai pembagi rumus ROE di sub-tab Neraca Keuangan.
 - **Daftar Pihak** (default: Pemilik Utama 60%, Investor A 20%, Manajer Ops 10%, Karyawan Pool 10%) — masing-masing bisa diatur:
   - **Basis perhitungan**: dari **Laba Bersih** atau dari **Pendapatan (Revenue)**.
   - **Persentase (%)** bagian masing-masing pihak.
   - Warna & keterangan untuk identifikasi.
 - Pihak bisa ditambah, diedit, atau dihapus sesuai struktur bisnis Anda.
-- Hasil kalkulasi otomatis: Pendapatan → dikurangi Total Biaya → Laba Kotor → Laba Bersih (setelah margin) → dibagi ke tiap pihak sesuai basis & persentasenya.
+- Hasil kalkulasi otomatis: Pendapatan → dikurangi Total Biaya (termasuk Amortisasi) → Laba Kotor → Laba Bersih/SHU (setelah margin) → dibagi ke tiap pihak sesuai basis & persentasenya.
+
+#### 6.8.2 Neraca Keuangan Lengkap
+Kumpulan alat pembukuan & rasio keuangan, terbagi jadi 4 bagian:
+
+- **Ringkasan Rasio** — kartu ringkas **BOPO** (Biaya Operasional ÷ Pendapatan), **SHU/Laba Bersih**, **ROE** (Laba Bersih ÷ Modal Disetor, termasuk estimasi disetahunkan untuk mode Bulanan), dan total Biaya Amortisasi periode berjalan.
+- **Kas Opname** — **buku kas lengkap** (catat tiap transaksi masuk/keluar dengan kategori & keterangan, saldo berjalan otomatis), plus fitur **cocokkan saldo fisik vs saldo sistem** (opname kas) yang langsung menampilkan selisihnya.
+- **Stock Opname** — bandingkan **stok sistem** (total stok konsinyasi yang tercatat beredar di semua toko) dengan **stok fisik hasil hitung manual** per produk. Setiap sesi opname disimpan sebagai riwayat (tanggal, selisih pcs, selisih Rp) yang bisa dibuka lagi detailnya.
+- **Amortisasi Aset** — daftar aset tetap (kendaraan, peralatan toko, sistem/software, dll) dengan nilai perolehan, nilai residu, dan umur ekonomis. Penyusutan bulanan dihitung otomatis (garis lurus) dan nilainya ikut mengurangi Laba Bersih/SHU di sub-tab Bagi Hasil & Laba Rugi.
+
+> Catatan: "Stok Sistem" di Stock Opname mengacu ke stok konsinyasi yang beredar di toko (dari data Kontrol Bulanan) — aplikasi ini belum punya modul gudang pusat terpisah.
+
+#### 6.8.3 Laporan Pajak (Coretax)
+Simulasi kewajiban pajak berdasarkan pendapatan & laba kotor periode terpilih, ditampilkan dalam **2 skema berdampingan** supaya bisa dibandingkan:
+
+- **Skema A — UMKM Non-PKP**: PPh Final 0,5% dari omzet bruto (PP 55/2022), lengkap dengan catatan batas bebas pajak untuk Orang Pribadi (≤ Rp500 juta/tahun), batas maksimal peredaran bruto (Rp4,8 miliar/tahun), dan jangka waktu pemakaian skema per jenis badan usaha.
+- **Skema B — PKP**: PPN Keluaran 11% dari omzet + PPh Badan 22% (atau 11% efektif jika memenuhi fasilitas diskon 50% Pasal 31E).
+- Ada kolom **Nama Usaha & NPWP** opsional untuk kop laporan, dan tombol **Ekspor Excel**.
+- **Fitur ini murni alat bantu hitung** — bukan pengganti pelaporan resmi. Kewajiban sebenarnya tetap harus dilaporkan lewat **Coretax DJP** ([pajak.go.id](https://www.pajak.go.id)), dan angka simulasi belum memperhitungkan Pajak Masukan (kredit PPN), koreksi fiskal, PPh 21 karyawan, atau kompensasi rugi — selalu cek ke konsultan pajak/aturan terbaru sebelum dipakai untuk pelaporan sungguhan.
 
 ### 6.9 Pengguna
 *(Khusus Admin)*
@@ -512,7 +534,11 @@ Proyek-gwg-main/
 │   │   └── SetupWizard.jsx         # Wizard 4 langkah: Branding → Firebase → Super Admin → Selesai
 │   ├── features/                   # Satu folder per tab/menu utama
 │   │   ├── dashboard/  kontrol/  rekap/  toko/  rute/
-│   │   └── wilayah/  produk/  pengguna/  bagihasil/
+│   │   ├── wilayah/  produk/  pengguna/
+│   │   └── bagihasil/
+│   │       ├── TabBagiHasil.jsx     # Sub-nav + Bagi Hasil & Laporan Laba Rugi (SHU)
+│   │       ├── NeracaKeuangan.jsx   # Ringkasan Rasio, Kas Opname, Stock Opname, Amortisasi Aset
+│   │       └── LaporanPajak.jsx     # Simulasi pajak UMKM Non-PKP vs PKP (Coretax)
 │   ├── hooks/
 │   │   ├── useDB.js                # Sinkronisasi Firebase + cache lokal + antrean offline
 │   │   ├── useAnalytics.js         # Kalkulasi revenue/rekap/statistik (dipakai Dashboard & Rekap)
@@ -521,6 +547,7 @@ Proyek-gwg-main/
 │   │   ├── config.js               # Baca kredensial Firebase (dari appConfig/.env)
 │   │   └── init.js                 # Inisialisasi Firebase App/Auth/Database
 │   ├── lib/                        # Helper murni: format, export (Excel/PDF/JPG), import, dsb
+│   │   └── neracaHelpers.js        # Kalkulasi Neraca Keuangan: amortisasi, stok sistem, saldo kas
 │   ├── theme/
 │   │   ├── tokens.js                # Palet warna (dari brand config, fallback hijau/emas GWG)
 │   │   └── logo.js                  # Logo bawaan (base64, fallback kalau belum upload logo custom)
@@ -558,6 +585,7 @@ Proyek-gwg-main/
 - Email yang dihapus Admin masuk daftar blokir sehingga tidak otomatis mendaftar ulang — mencegah akun bekas karyawan/mitra login kembali tanpa sepengetahuan Admin.
 - Proses arsip ke Google Drive selalu **upload dulu → dapat file ID sukses → baru hapus dari database aktif**, sehingga tidak ada risiko kehilangan data walau koneksi terputus di tengah proses.
 - Perubahan data offline disimpan di antrean lokal (IndexedDB) yang **tidak menumpuk versi lama** — hanya versi terakhir per data yang dikirim, mencegah data usang menimpa data terbaru saat kembali online.
+- Data finansial di sub-tab **Neraca Keuangan** (`kasTransaksi`, `asetAmortisasi`, `stockOpname`) memakai izin Firebase Rules yang **sama ketatnya dengan `bagiHasilConfig`** — hanya role Admin & Manajer yang bisa baca/tulis, Sales & Viewer tidak bisa mengaksesnya sama sekali (baik dari tampilan maupun langsung ke database).
 
 ---
 
