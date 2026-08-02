@@ -731,11 +731,30 @@ export default function GWGSuperApp() {
   // Jaga-jaga: jika tab yang aktif sekarang tidak boleh diakses oleh role
   // pengguna saat ini (misal role baru saja diturunkan oleh Admin, atau
   // pengguna Sales mencoba membuka URL/state tab terlarang), alihkan ke Dashboard.
+  //
+  // ✅ FIX: ini SEBAB SEBENARNYA tab "Bagi Hasil" (dan tab manajer-only
+  // lain seperti Wilayah/Rute/Produk/Pengguna) selalu balik ke Dashboard
+  // tiap refresh — BUKAN soal auth flicker. `isManajer` dihitung dari
+  // `currentUserRecord` yang diambil dari `db.pengguna` (data Firebase
+  // Realtime Database), dan data itu BELUM tersedia sesaat setelah
+  // refresh (baru snapshot pertama Firebase yang menentukan role asli).
+  // Selama db.pengguna masih kosong, currentUserRecord = undefined →
+  // userRole jatuh ke default "Viewer" → isManajer sementara jadi FALSE,
+  // walau user sebenarnya Admin/Manajer. Efek di bawah ini langsung
+  // menembak begitu render pertama terjadi (activeTab="bagihasil" dari
+  // sessionStorage, tapi isManajer masih false karena db belum sempat
+  // sinkron) → langsung dialihkan ke Dashboard SEBELUM role asli sempat
+  // termuat. Setelah db.pengguna selesai sinkron & isManajer jadi true,
+  // activeTab sudah kadung "dashboard" dan tidak dikembalikan lagi.
+  // Perbaikannya: tunda pengecekan ini sampai `cloudLoaded` benar-benar
+  // true (snapshot pertama Firebase sudah diterima, role sudah pasti) —
+  // supaya tidak menghakimi akses berdasarkan role sementara yang salah.
   useEffect(() => {
+    if (!cloudLoaded) return; // role belum pasti (data pengguna belum sinkron) — jangan simpulkan dulu
     if (!canAccessTab(activeTab, { isAdmin, isManajer })) {
       setActiveTab("dashboard");
     }
-  }, [activeTab, isAdmin, isManajer]);
+  }, [activeTab, isAdmin, isManajer, cloudLoaded]);
 
   // Auto-upgrade toko "Baru" → "Aktif" setelah 30 hari sejak tanggalMasuk
   // Dijalankan sekali saat data cloud sudah selesai dimuat.
