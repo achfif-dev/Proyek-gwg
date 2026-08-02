@@ -4,7 +4,11 @@ export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pen
   // (daftar aset & penyusutan). Didaftarkan di sini supaya otomatis ikut
   // mekanisme sync/backup/restore yang sama seperti tabel lain (read di
   // useDB paths, tulis granular per-record via addRecord/updateRecord).
-  "kasTransaksi", "asetAmortisasi", "stockOpname"];
+  "kasTransaksi", "asetAmortisasi", "stockOpname",
+  // ✅ NERACA KEUANGAN lanjutan: Hutang/Piutang (buat Laporan Neraca
+  // Aset=Kewajiban+Ekuitas) & log pencairan Bagi Hasil (biar tombol
+  // "Cairkan ke Kas" tidak mencatat dobel ke buku kas).
+  "hutangPiutang", "distribusiLog"];
 
 // Jeda maksimum (hari) antar tanggal kontrol berurutan di satu wilayah supaya
 // masih dianggap 1 putaran/siklus yang sama (dipakai di Rekap → "Siklus
