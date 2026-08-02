@@ -9,7 +9,7 @@ import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
 import { NeracaKeuangan } from "./NeracaKeuangan.jsx";
 import { LaporanPajak } from "./LaporanPajak.jsx";
-import { periodeBounds, hitungAmortisasiPeriode } from "../../lib/neracaHelpers";
+import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode } from "../../lib/neracaHelpers";
 
 export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
@@ -17,11 +17,13 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
 
   // State untuk konfigurasi bagi hasil (tersimpan di db.bagiHasilConfig)
   const config = db.bagiHasilConfig || {
-    marginLaba: 70, // % margin laba bersih dari pendapatan
+    marginLaba: 70, // % margin laba bersih dari pendapatan (dipakai kalau metodeHpp = "manual")
     biayaOperasional: 0,
     biayaBonus: 0,
     biayaLogistik: 0,
     biayaLainnya: 0,
+    metodeHpp: "manual", // "manual" (Margin % asumsi) | "otomatis" (dari HPP produk riil)
+    danaCadangan: { aktif: false, rpPerPcs: 500, keterangan: "Dana Darurat Perusahaan" },
     pihak: [
       { id:"BH001", nama:"Pemilik Utama",  pct: 60, basis:"laba",    warna:"#0F4C35", keterangan:"Keuntungan inti bisnis" },
       { id:"BH002", nama:"Investor A",     pct: 20, basis:"revenue", warna:"#1D4ED8", keterangan:"Return on investment" },
@@ -107,26 +109,51 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
   // Kalkulasi akuntansi lengkap
   const akuntansi = useMemo(() => {
     const pendapatan = revPeriode.rev;
+
+    // ✅ Beban Usaha sekarang list dinamis (Gaji Karyawan, Gaji Sales, dll —
+    // bebas ditambah admin), bukan 4 field tetap lagi. Selama config.bebanUsaha
+    // belum pernah disimpan, dipakai hasil migrasi otomatis dari 4 field lama
+    // (biayaOperasional dkk) supaya nilai yang sudah ada di lapangan TIDAK
+    // hilang/reset — begitu Admin membuka & simpan Konfigurasi sekali, list
+    // ini permanen tersimpan menggantikan 4 field lama.
+    const bebanUsahaList = Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config);
+    const bebanUsahaTotal = bebanUsahaList.reduce((s,b)=>s+(Number(b.nominal)||0), 0);
+    // (field lama tetap dihitung terpisah untuk kompatibilitas ekspor lama, tapi TIDAK dobel-hitung ke totalBiaya)
     const biayaOps = Number(config.biayaOperasional)||0;
     const biayaBonus = Number(config.biayaBonus)||0;
     const biayaLogistik = Number(config.biayaLogistik)||0;
     const biayaLain = Number(config.biayaLainnya)||0;
+
     // ✅ NERACA KEUANGAN: Biaya Amortisasi dihitung OTOMATIS dari daftar aset
-    // (Tab Bagi Hasil → Neraca Keuangan → Amortisasi), bukan diisi manual
-    // seperti 4 kategori biaya di atas — supaya SHU/Laba Bersih & ROE
-    // mencerminkan beban penyusutan aset tetap sesuai standar akuntansi.
+    // (Tab Bagi Hasil → Neraca Keuangan → Amortisasi), bukan diisi manual —
+    // supaya SHU/Laba Bersih & ROE mencerminkan beban penyusutan aset tetap.
     const biayaAmortisasi = hitungAmortisasiPeriode(db.asetAmortisasi||[], bounds).total;
-    const totalBiaya = biayaOps + biayaBonus + biayaLogistik + biayaLain + biayaAmortisasi;
-    const labaKotor = pendapatan - totalBiaya;
+    const totalBiaya = bebanUsahaTotal + biayaAmortisasi;
+
+    // ✅ HPP: kalau produk sudah diisi Harga Modal, bisa dipakai sebagai dasar
+    // Laba Kotor RIIL (akuntansi yang benar) menggantikan asumsi Margin %.
+    const hppInfo = hitungHppPeriode(revPeriode, db.produk||[]);
+    const metodeHpp = config.metodeHpp === "otomatis" ? "otomatis" : "manual";
     const marginPct = Number(config.marginLaba)||70;
-    // ✅ Laba Bersih sekarang dihitung dari Laba Kotor (Pendapatan − semua
-    // Biaya) dikali Margin%, BUKAN langsung dari Pendapatan. Sebelumnya,
-    // biaya yang diisi (Operasional/Bonus/Logistik/Lainnya) cuma tampil di
-    // baris "Laba Kotor" tapi tidak ikut mengurangi Laba Bersih yang benar-
-    // benar dibagi ke semua pihak — jadi mengisi biaya tidak berpengaruh
-    // sama sekali ke hasil bagi hasil. Sekarang biaya benar-benar mengurangi
-    // apa yang dibagi.
-    const labaBersihFinal = Math.max(labaKotor * (marginPct/100), 0);
+
+    let labaKotor, labaSebelumCadangan;
+    if (metodeHpp === "otomatis") {
+      // Laba Kotor (Gross Profit) = Pendapatan − HPP riil (bukan asumsi %)
+      labaKotor = pendapatan - hppInfo.totalHpp;
+      // Laba Usaha = Laba Kotor − Beban Usaha − Amortisasi (tanpa dikali Margin% lagi,
+      // karena HPP sudah jadi dasar biaya yang akurat)
+      labaSebelumCadangan = Math.max(labaKotor - totalBiaya, 0);
+    } else {
+      // Metode lama (tetap sama persis seperti sebelumnya, demi kompatibilitas):
+      // Laba Kotor = Pendapatan − Beban Usaha − Amortisasi, lalu Laba Bersih = Laba Kotor × Margin%
+      labaKotor = pendapatan - totalBiaya;
+      labaSebelumCadangan = Math.max(labaKotor * (marginPct/100), 0);
+    }
+
+    // ✅ Kewajiban Dana Cadangan (OPSIONAL, per white-label beda kebijakan):
+    // sekian Rupiah per pcs terjual disisihkan sebelum sisanya dibagi ke pihak.
+    const danaCadanganPeriode = hitungDanaCadanganPeriode(revPeriode.terjualTotal, config.danaCadangan);
+    const labaBersihFinal = Math.max(labaSebelumCadangan - danaCadanganPeriode, 0);
 
     const pihakList = (config.pihak||[]).map(p => {
       const basis = p.basis === "laba" ? labaBersihFinal : pendapatan;
@@ -137,11 +164,22 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
 
     return {
       pendapatan, biayaOps, biayaBonus, biayaLogistik, biayaLain, biayaAmortisasi, totalBiaya,
-      labaKotor, labaBersihFinal,
+      bebanUsahaList, bebanUsahaTotal, metodeHpp, hppInfo, marginPct,
+      danaCadanganPeriode,
+      labaKotor, labaSebelumCadangan, labaBersihFinal,
       pihakList, totalDibagi,
-      marginPct,
     };
-  }, [revPeriode.rev, config, db.asetAmortisasi, bounds]);
+  }, [revPeriode, config, db.asetAmortisasi, db.produk, bounds]);
+
+  function tambahBebanUsaha() {
+    setCfgDraft(p => ({ ...p, bebanUsaha: [...(p.bebanUsaha||[]), { id: genUniqueId("BU"), nama:"", nominal:0 }] }));
+  }
+  function updateBebanUsaha(id, field, value) {
+    setCfgDraft(p => ({ ...p, bebanUsaha: (p.bebanUsaha||[]).map(b => b.id===id ? { ...b, [field]: value } : b) }));
+  }
+  function hapusBebanUsaha(id) {
+    setCfgDraft(p => ({ ...p, bebanUsaha: (p.bebanUsaha||[]).filter(b => b.id!==id) }));
+  }
 
   function saveConfig(newCfg) {
     save({ ...db, bagiHasilConfig: newCfg });
@@ -192,17 +230,16 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
       { keterangan:"Jumlah Kunjungan", nilai: revPeriode.kunjunganTotal },
       { keterangan:"Toko Aktif Dikunjungi", nilai: revPeriode.tokoUnik },
       { keterangan:"", nilai:"" },
-      { keterangan:"=== BIAYA ===", nilai:"" },
-      { keterangan:"Biaya Operasional", nilai: fmtRp(akuntansi.biayaOps) },
-      { keterangan:"Biaya Bonus Produk", nilai: fmtRp(akuntansi.biayaBonus) },
-      { keterangan:"Biaya Logistik", nilai: fmtRp(akuntansi.biayaLogistik) },
-      { keterangan:"Biaya Lainnya", nilai: fmtRp(akuntansi.biayaLain) },
+      { keterangan:"=== BEBAN USAHA ===", nilai:"" },
+      ...(akuntansi.metodeHpp==="otomatis" ? [{ keterangan:"HPP (Harga Pokok Penjualan)", nilai: fmtRp(akuntansi.hppInfo.totalHpp) }] : []),
+      ...akuntansi.bebanUsahaList.map(b=>({ keterangan:b.nama, nilai: fmtRp(b.nominal) })),
       { keterangan:"Biaya Amortisasi (Aset Tetap)", nilai: fmtRp(akuntansi.biayaAmortisasi) },
-      { keterangan:"TOTAL BIAYA", nilai: fmtRp(akuntansi.totalBiaya) },
-      { keterangan:"Laba Kotor", nilai: fmtRp(akuntansi.labaKotor) },
+      { keterangan:"TOTAL BEBAN USAHA", nilai: fmtRp(akuntansi.totalBiaya) },
+      { keterangan:`Laba Kotor${akuntansi.metodeHpp==="otomatis"?" (Riil, dari HPP)":""}`, nilai: fmtRp(akuntansi.labaKotor) },
+      ...(akuntansi.danaCadanganPeriode > 0 ? [{ keterangan:`Kewajiban Dana Cadangan (${config.danaCadangan?.keterangan||"opsional"})`, nilai: fmtRp(akuntansi.danaCadanganPeriode) }] : []),
       { keterangan:"", nilai:"" },
-      { keterangan:"=== LABA BERSIH ===", nilai:"" },
-      { keterangan:`Laba Bersih (${akuntansi.marginPct}% dari Laba Kotor)`, nilai: fmtRp(akuntansi.labaBersihFinal) },
+      { keterangan:"=== LABA BERSIH / SHU ===", nilai:"" },
+      { keterangan: akuntansi.metodeHpp==="otomatis" ? "Laba Bersih (metode HPP)" : `Laba Bersih (${akuntansi.marginPct}% dari Laba Kotor)`, nilai: fmtRp(akuntansi.labaBersihFinal) },
       { keterangan:"", nilai:"" },
       { keterangan:"=== DISTRIBUSI BAGI HASIL ===", nilai:"" },
       ...akuntansi.pihakList.map(p=>({
@@ -233,7 +270,7 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
           <div style={{ fontSize:12, color:T.gray400 }}>Laporan keuangan & distribusi profit sesuai skema akuntansi</div>
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-          <Btn variant="secondary" size="sm" icon={Icon.settings} onClick={()=>{ setCfgDraft(config); setEditConfig(true); }}>Konfigurasi</Btn>
+          <Btn variant="secondary" size="sm" icon={Icon.settings} onClick={()=>{ setCfgDraft({...config, bebanUsaha: Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config)}); setEditConfig(true); }}>Konfigurasi</Btn>
           <Btn variant="secondary" size="sm" icon={Icon.rekap} onClick={exportLaporanBagiHasil}>Ekspor Excel</Btn>
           <Btn variant="secondary" size="sm" icon={showDetail?Icon.chevronUp:Icon.chevronDown} onClick={()=>setShowDetail(v=>!v)}>
             {showDetail?"Sembunyikan Detail":"Lihat Detail Produk"}
@@ -316,8 +353,9 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
       {/* Ringkasan Kinerja Periode */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:10, marginBottom:16 }}>
         <StatCard label="Total Revenue" value={fmtRp(akuntansi.pendapatan)} icon={Icon.banknote} color={T.green} sub={PERIODE_LABELS[periodeMode]} />
-        <StatCard label="Laba Bersih" value={fmtRp(akuntansi.labaBersihFinal)} icon={Icon.trendingUp} color={T.teal} sub={`${akuntansi.marginPct}% dari Laba Kotor`} />
-        <StatCard label="Total Biaya" value={fmtRp(akuntansi.totalBiaya)} icon={Icon.trendingDown} color={T.red} sub="semua kategori" />
+        <StatCard label="Laba Bersih / SHU" value={fmtRp(akuntansi.labaBersihFinal)} icon={Icon.trendingUp} color={T.teal}
+          sub={akuntansi.metodeHpp==="otomatis" ? "metode HPP (riil)" : `${akuntansi.marginPct}% dari Laba Kotor`} />
+        <StatCard label="Total Beban Usaha" value={fmtRp(akuntansi.totalBiaya)} icon={Icon.trendingDown} color={T.red} sub={`${akuntansi.bebanUsahaList.length} item + amortisasi`} />
         <StatCard label="Produk Terjual" value={fmt(revPeriode.terjualTotal)+" pcs"} icon={Icon.produk} color={T.purple} sub={`${revPeriode.kunjunganTotal} kunjungan`} />
         <StatCard label="Toko Dikunjungi" value={revPeriode.tokoUnik} icon={Icon.toko} color={T.blue} sub="toko unik" />
         <StatCard label="Total Dibagi" value={fmtRp(akuntansi.totalDibagi)} icon={Icon.bagihasil} color={T.gold} sub={`${(config.pihak||[]).length} pihak`} />
@@ -326,9 +364,17 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
       {/* Laporan Laba Rugi */}
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
-          <div style={{ fontSize:14, fontWeight:800, color:T.gray800, marginBottom:16, borderBottom:`2px solid ${T.green}`, paddingBottom:10 }}>
-            <Icon.file size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}} /> Laporan Laba Rugi — {PERIODE_LABELS[periodeMode]}
+          <div style={{ fontSize:14, fontWeight:800, color:T.gray800, marginBottom:6, borderBottom:`2px solid ${T.green}`, paddingBottom:10, display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span><Icon.file size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}} /> Laporan Laba Rugi — {PERIODE_LABELS[periodeMode]}</span>
+            <span style={{ fontSize:10, fontWeight:700, padding:"3px 8px", borderRadius:99, background:akuntansi.metodeHpp==="otomatis"?T.goldLt:T.gray100, color:akuntansi.metodeHpp==="otomatis"?T.gold:T.gray600 }}>
+              {akuntansi.metodeHpp==="otomatis" ? "Metode HPP" : "Metode Margin %"}
+            </span>
           </div>
+          {akuntansi.metodeHpp==="otomatis" && akuntansi.hppInfo.adaYangBelumIsi && (
+            <div style={{ fontSize:11, color:T.orange, marginBottom:10, padding:"6px 10px", background:T.orangeLt, borderRadius:6 }}>
+              <Icon.warning size={11} strokeWidth={2} style={{verticalAlign:"-1px", marginRight:4}} /> Ada produk terjual yang belum diisi Harga Modal/HPP — Laba Kotor di bawah bisa under-estimate biaya (HPP produk itu dianggap Rp0).
+            </div>
+          )}
 
           {/* Pendapatan */}
           <div style={{ marginBottom:14 }}>
@@ -337,26 +383,31 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
               <span style={{ fontSize:13 }}>Pendapatan Konsinyasi</span>
               <span style={{ fontWeight:700, color:T.green }}>{fmtRp(akuntansi.pendapatan)}</span>
             </div>
+            {akuntansi.metodeHpp==="otomatis" && (
+              <div style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px" }}>
+                <span style={{ fontSize:13, color:T.gray600 }}>HPP (Harga Pokok Penjualan)</span>
+                <span style={{ fontSize:13, color:T.red }}>({fmtRp(akuntansi.hppInfo.totalHpp)})</span>
+              </div>
+            )}
           </div>
 
-          {/* Biaya */}
+          {/* Beban Usaha — list dinamis, diatur di tombol Konfigurasi */}
           <div style={{ marginBottom:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>II. Beban Usaha</div>
-            {[
-              { label:"Biaya Operasional", val: akuntansi.biayaOps },
-              { label:"Biaya Bonus Produk", val: akuntansi.biayaBonus },
-              { label:"Biaya Logistik/Distribusi", val: akuntansi.biayaLogistik },
-              { label:"Biaya Lainnya", val: akuntansi.biayaLain },
-              { label:"Biaya Amortisasi (Aset Tetap)", val: akuntansi.biayaAmortisasi, auto:true },
-            ].map((b,i,arr)=>(
-              <div key={i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px",
-                borderBottom: i<arr.length-1 ? `1px solid ${T.gray100}` : "none" }}>
-                <span style={{ fontSize:13, color:T.gray600 }}>{b.label}{b.auto && <span title="Dihitung otomatis dari daftar aset di Neraca Keuangan → Amortisasi" style={{ fontSize:10, color:T.gray400 }}> (otomatis)</span>}</span>
-                <span style={{ fontSize:13, color:T.red }}>({fmtRp(b.val)})</span>
+            {akuntansi.bebanUsahaList.length === 0 ? (
+              <div style={{ fontSize:12, color:T.gray400, padding:"6px 12px" }}>Belum ada item Beban Usaha — atur lewat tombol Konfigurasi.</div>
+            ) : akuntansi.bebanUsahaList.map((b,i)=>(
+              <div key={b.id||i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px", borderBottom:`1px solid ${T.gray100}` }}>
+                <span style={{ fontSize:13, color:T.gray600 }}>{b.nama}</span>
+                <span style={{ fontSize:13, color:T.red }}>({fmtRp(b.nominal)})</span>
               </div>
             ))}
+            <div style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px", borderBottom:`1px solid ${T.gray100}` }}>
+              <span style={{ fontSize:13, color:T.gray600 }}>Biaya Amortisasi (Aset Tetap) <span title="Dihitung otomatis dari daftar aset di Neraca Keuangan → Amortisasi" style={{ fontSize:10, color:T.gray400 }}>(otomatis)</span></span>
+              <span style={{ fontSize:13, color:T.red }}>({fmtRp(akuntansi.biayaAmortisasi)})</span>
+            </div>
             <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", background:T.redLt, borderRadius:7, marginTop:6 }}>
-              <span style={{ fontSize:13, fontWeight:700 }}>Total Beban</span>
+              <span style={{ fontSize:13, fontWeight:700 }}>Total Beban Usaha</span>
               <span style={{ fontWeight:700, color:T.red }}>({fmtRp(akuntansi.totalBiaya)})</span>
             </div>
           </div>
@@ -364,17 +415,25 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
           {/* Laba */}
           <div style={{ borderTop:`2px solid ${T.gray200}`, paddingTop:10 }}>
             <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", background:T.gray50, borderRadius:7, marginBottom:6 }}>
-              <span style={{ fontSize:13, fontWeight:600 }}>Laba Kotor</span>
+              <span style={{ fontSize:13, fontWeight:600 }}>Laba Kotor{akuntansi.metodeHpp==="otomatis" && " (Riil, dari HPP)"}</span>
               <span style={{ fontWeight:700 }}>{fmtRp(akuntansi.labaKotor)}</span>
             </div>
-            <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", marginBottom:4 }}>
-              <span style={{ fontSize:13, color:T.gray600 }}>Penyesuaian Margin ({akuntansi.marginPct}%)</span>
-              <span style={{ fontSize:13, color:T.gray600 }}>{fmtRp(akuntansi.labaBersihFinal)}</span>
-            </div>
+            {akuntansi.metodeHpp==="manual" && (
+              <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", marginBottom:4 }}>
+                <span style={{ fontSize:13, color:T.gray600 }}>Penyesuaian Margin ({akuntansi.marginPct}%)</span>
+                <span style={{ fontSize:13, color:T.gray600 }}>{fmtRp(akuntansi.labaSebelumCadangan)}</span>
+              </div>
+            )}
+            {akuntansi.danaCadanganPeriode > 0 && (
+              <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 12px", marginBottom:4 }}>
+                <span style={{ fontSize:13, color:T.gray600 }}>Kewajiban Dana Cadangan ({config.danaCadangan?.keterangan || "opsional"})</span>
+                <span style={{ fontSize:13, color:T.red }}>({fmtRp(akuntansi.danaCadanganPeriode)})</span>
+              </div>
+            )}
             <div style={{ display:"flex", justifyContent:"space-between", padding:"12px 16px",
               background:`linear-gradient(135deg, ${T.green} 0%, ${T.greenMid} 100%)`,
               borderRadius:10, marginTop:8 }}>
-              <span style={{ fontSize:14, fontWeight:700, color:"#fff", display:"inline-flex", alignItems:"center", gap:6 }}><Icon.wallet size={15} strokeWidth={2} /> LABA BERSIH</span>
+              <span style={{ fontSize:14, fontWeight:700, color:"#fff", display:"inline-flex", alignItems:"center", gap:6 }}><Icon.wallet size={15} strokeWidth={2} /> LABA BERSIH / SHU</span>
               <span style={{ fontSize:16, fontWeight:900, color:"#fff" }}>{fmtRp(akuntansi.labaBersihFinal)}</span>
             </div>
           </div>
@@ -533,13 +592,35 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
         {(() => {
           const months = [];
           const now = new Date();
+          const produkArr = db.produk||[];
           for (let i=11; i>=0; i--) {
             const d = new Date(now.getFullYear(), now.getMonth()-i, 1);
             const key = d.toISOString().slice(0,7);
             const label = d.toLocaleDateString("id-ID", { month:"short", year:"2-digit" });
             const rows = kontrol.filter(k=>k.tanggal?.startsWith(key));
-            const rev = rows.reduce((s,k)=>s+k.totalRev,0);
-            months.push({ key, label, rev, laba: rev*(akuntansi.marginPct/100) });
+            const luarRows = (penjualanLuar||[]).filter(pl=>pl.tanggal?.startsWith(key));
+            const rev = rows.reduce((s,k)=>s+k.totalRev,0) + luarRows.reduce((s,k)=>s+k.totalRev,0);
+            const terjual = rows.reduce((s,k)=>s+(k.totalTerjual||0),0) + luarRows.reduce((s,k)=>s+(k.totalTerjual||0),0);
+            // ✅ Konsisten dengan formula resmi di akuntansi (Metode HPP/Margin,
+            // Beban Usaha, & Dana Cadangan) — bukan cuma rev×margin% seperti
+            // sebelumnya. Beban Usaha & Amortisasi dianggap beban BULANAN yang
+            // relatif tetap (approksimasi wajar untuk item rutin spt gaji),
+            // Amortisasi dihitung ulang khusus utk bulan tsb (bisa beda tiap
+            // bulan kalau ada aset baru/selesai umur di tengah jalan).
+            const monthBounds = { start: `${key}-01`, end: `${key}-${String(new Date(d.getFullYear(),d.getMonth()+1,0).getDate()).padStart(2,"0")}` };
+            const amortisasiBulan = hitungAmortisasiPeriode(db.asetAmortisasi||[], monthBounds).total;
+            let labaKotorBulan, labaSblmCadangan;
+            if (akuntansi.metodeHpp === "otomatis") {
+              const hppBulan = hitungHppPeriode({ rows, luarRows }, produkArr).totalHpp;
+              labaKotorBulan = rev - hppBulan;
+              labaSblmCadangan = Math.max(labaKotorBulan - akuntansi.bebanUsahaTotal - amortisasiBulan, 0);
+            } else {
+              labaKotorBulan = rev - akuntansi.bebanUsahaTotal - amortisasiBulan;
+              labaSblmCadangan = Math.max(labaKotorBulan * (akuntansi.marginPct/100), 0);
+            }
+            const cadanganBulan = hitungDanaCadanganPeriode(terjual, config.danaCadangan);
+            const laba = Math.max(labaSblmCadangan - cadanganBulan, 0);
+            months.push({ key, label, rev, laba });
           }
           const maxRev = Math.max(...months.map(m=>m.rev), 1);
           return (
@@ -582,7 +663,7 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
         <NeracaKeuangan
           db={db} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord}
           config={config} saveConfig={saveConfig} akuntansi={akuntansi} revPeriode={revPeriode}
-          periodeMode={periodeMode} PERIODE_LABELS={PERIODE_LABELS} bounds={bounds}
+          periodeMode={periodeMode} PERIODE_LABELS={PERIODE_LABELS} bounds={bounds} analytics={analytics}
         />
       )}
 
@@ -599,40 +680,110 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
         <Modal title={<><Icon.settings size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Konfigurasi Bagi Hasil & Biaya</>} onClose={()=>setEditConfig(false)} width={520}>
           <div style={{ marginBottom:16 }}>
             <div style={{ fontSize:13, fontWeight:700, color:T.gray700, marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>
-              <Icon.rekap size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Asumsi Margin Laba
+              <Icon.rekap size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Metode Hitung Laba Kotor
             </div>
-            <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-              <div style={{ flex:1 }}>
-                <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>Margin Laba Bersih (%)</label>
-                <input type="number" value={cfgDraft.marginLaba||70} min={0} max={100}
-                  onChange={e=>setCfgDraft(p=>({...p, marginLaba:e.target.value}))}
-                  style={{ width:"100%", padding:"8px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:8, fontSize:13, fontFamily:"inherit" }} />
-              </div>
-              <div style={{ flex:1, padding:"8px 12px", background:T.greenLt, borderRadius:8, fontSize:12 }}>
-                <div style={{ color:T.green, fontWeight:600 }}>Laba dari Revenue:</div>
-                <div style={{ fontSize:16, fontWeight:800, color:T.green }}>
-                  {fmtRp(revPeriode.rev * ((cfgDraft.marginLaba||70)/100))}
+            <div style={{ display:"flex", gap:8, marginBottom:12 }}>
+              {[
+                { key:"manual", label:"Margin % (Asumsi)" },
+                { key:"otomatis", label:"HPP Produk (Riil)" },
+              ].map(m=>(
+                <button key={m.key} onClick={()=>setCfgDraft(p=>({...p, metodeHpp:m.key}))}
+                  style={{ flex:1, padding:"9px 12px", border:`1.5px solid ${(cfgDraft.metodeHpp||"manual")===m.key?T.green:T.gray200}`,
+                    borderRadius:8, background:(cfgDraft.metodeHpp||"manual")===m.key?T.greenLt:T.white, cursor:"pointer",
+                    fontFamily:"inherit", fontSize:12, fontWeight:700, color:(cfgDraft.metodeHpp||"manual")===m.key?T.green:T.gray600 }}>
+                  {m.label}
+                </button>
+              ))}
+            </div>
+            {(cfgDraft.metodeHpp||"manual")==="manual" ? (
+              <div style={{ display:"flex", alignItems:"center", gap:12 }}>
+                <div style={{ flex:1 }}>
+                  <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>Margin Laba Kotor (%)</label>
+                  <input type="number" value={cfgDraft.marginLaba||70} min={0} max={100}
+                    onChange={e=>setCfgDraft(p=>({...p, marginLaba:e.target.value}))}
+                    style={{ width:"100%", padding:"8px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:8, fontSize:13, fontFamily:"inherit" }} />
+                </div>
+                <div style={{ flex:1, padding:"8px 12px", background:T.greenLt, borderRadius:8, fontSize:12 }}>
+                  <div style={{ color:T.green, fontWeight:600 }}>Laba Kotor (asumsi):</div>
+                  <div style={{ fontSize:16, fontWeight:800, color:T.green }}>
+                    {fmtRp(revPeriode.rev * ((cfgDraft.marginLaba||70)/100))}
+                  </div>
                 </div>
               </div>
+            ) : (
+              <div style={{ padding:"10px 14px", background: akuntansi.hppInfo.adaYangBelumIsi ? T.orangeLt : T.greenLt, borderRadius:8, fontSize:12, color:T.gray700 }}>
+                {akuntansi.hppInfo.adaYangBelumIsi ? (
+                  <><Icon.warning size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} />Ada produk terjual yang belum diisi <b>Harga Modal/HPP</b> di Master Produk — HPP-nya dihitung Rp0 sementara, jadi Laba Kotor bisa <b>terlalu tinggi</b>. Lengkapi dulu di tab Master Produk untuk hasil akurat.</>
+                ) : (
+                  <>Laba Kotor riil periode ini: <b>{fmtRp(akuntansi.hppInfo.labaKotorRiil)}</b> (dari HPP total {fmtRp(akuntansi.hppInfo.totalHpp)}). Diambil dari field Harga Modal di Master Produk.</>
+                )}
+              </div>
+            )}
+          </div>
+          <div style={{ marginBottom:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.gray700 }}>
+                <Icon.money size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Beban Usaha
+              </div>
+              <button onClick={tambahBebanUsaha} style={{ display:"flex", alignItems:"center", gap:4, padding:"4px 10px", borderRadius:6,
+                border:`1px solid ${T.green}`, background:T.greenLt, color:T.green, fontSize:11, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }}>
+                <Icon.add size={12} strokeWidth={2.5} /> Tambah Item
+              </button>
+            </div>
+            {(cfgDraft.bebanUsaha||[]).length === 0 ? (
+              <div style={{ fontSize:12, color:T.gray400, padding:"10px 0" }}>Belum ada item. Klik "Tambah Item" — cth: Gaji Karyawan, Gaji Sales/Komisi, Sewa Tempat, Listrik, dll.</div>
+            ) : (cfgDraft.bebanUsaha||[]).map(b=>(
+              <div key={b.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
+                <input value={b.nama} onChange={e=>updateBebanUsaha(b.id,"nama",e.target.value)} placeholder="Nama beban, cth: Gaji Karyawan"
+                  style={{ flex:1.4, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
+                <input type="number" value={b.nominal} min={0} onChange={e=>updateBebanUsaha(b.id,"nominal",e.target.value)} placeholder="Rp"
+                  style={{ flex:1, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
+                <button onClick={()=>hapusBebanUsaha(b.id)} title="Hapus item"
+                  style={{ border:"none", background:T.redLt, color:T.red, borderRadius:6, width:28, height:28, display:"flex",
+                    alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
+                  <Icon.delete size={13} strokeWidth={2} />
+                </button>
+              </div>
+            ))}
+            <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 4px", fontSize:12, fontWeight:700, color:T.gray700, borderTop:`1px solid ${T.gray100}`, marginTop:4 }}>
+              <span>Total Beban Usaha (belum termasuk Amortisasi otomatis)</span>
+              <span>{fmtRp((cfgDraft.bebanUsaha||[]).reduce((s,b)=>s+(Number(b.nominal)||0),0))}</span>
             </div>
           </div>
           <div style={{ marginBottom:16 }}>
-            <div style={{ fontSize:13, fontWeight:700, color:T.gray700, marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>
-              <Icon.money size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Beban Usaha (Nominal Tetap)
-            </div>
-            {[
-              { key:"biayaOperasional", label:"Biaya Operasional (Rp)" },
-              { key:"biayaBonus",       label:"Biaya Bonus Produk (Rp)" },
-              { key:"biayaLogistik",    label:"Biaya Logistik/Distribusi (Rp)" },
-              { key:"biayaLainnya",     label:"Biaya Lainnya (Rp)" },
-            ].map(b=>(
-              <div key={b.key} style={{ marginBottom:10 }}>
-                <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>{b.label}</label>
-                <input type="number" value={cfgDraft[b.key]||0} min={0}
-                  onChange={e=>setCfgDraft(p=>({...p, [b.key]:e.target.value}))}
-                  style={{ width:"100%", padding:"7px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:4 }}>
+              <div style={{ fontSize:13, fontWeight:700, color:T.gray700 }}>
+                <Icon.piggyBank size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}} /> Kewajiban Dana Cadangan (Opsional)
               </div>
-            ))}
+              <label style={{ display:"flex", alignItems:"center", gap:6, cursor:"pointer" }}>
+                <input type="checkbox" checked={cfgDraft.danaCadangan?.aktif||false}
+                  onChange={e=>setCfgDraft(p=>({...p, danaCadangan:{...(p.danaCadangan||{}), aktif:e.target.checked, rpPerPcs:p.danaCadangan?.rpPerPcs??500, keterangan:p.danaCadangan?.keterangan||"Dana Darurat Perusahaan"}}))} />
+                <span style={{ fontSize:12, fontWeight:600, color:T.gray600 }}>Aktifkan</span>
+              </label>
+            </div>
+            <div style={{ fontSize:11, color:T.gray400, marginBottom:10, borderBottom:`1px solid ${T.gray200}`, paddingBottom:10 }}>
+              Kalau aktif, sekian Rupiah dari SETIAP PCS produk terjual otomatis disisihkan sebagai kewajiban/cadangan perusahaan SEBELUM sisa laba dibagi ke pihak — muncul juga sebagai baris Kewajiban di Laporan Neraca. Bersifat opsional karena kebijakan tiap perusahaan (white label) bisa berbeda.
+            </div>
+            {cfgDraft.danaCadangan?.aktif && (
+              <>
+                <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:12, marginBottom:10 }}>
+                  <div>
+                    <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>Rp per pcs terjual</label>
+                    <input type="number" value={cfgDraft.danaCadangan?.rpPerPcs??500} min={0}
+                      onChange={e=>setCfgDraft(p=>({...p, danaCadangan:{...p.danaCadangan, rpPerPcs:e.target.value}}))}
+                      style={{ width:"100%", padding:"7px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  </div>
+                  <div>
+                    <label style={{ fontSize:12, fontWeight:600, color:T.gray600, display:"block", marginBottom:4 }}>Label / Keterangan</label>
+                    <input value={cfgDraft.danaCadangan?.keterangan||""} onChange={e=>setCfgDraft(p=>({...p, danaCadangan:{...p.danaCadangan, keterangan:e.target.value}}))}
+                      style={{ width:"100%", padding:"7px 12px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  </div>
+                </div>
+                <div style={{ padding:"8px 12px", background:T.goldLt, borderRadius:7, fontSize:12, color:T.gray700 }}>
+                  Estimasi periode berjalan: {fmt(revPeriode.terjualTotal)} pcs × {fmtRp(Number(cfgDraft.danaCadangan?.rpPerPcs)||0)} = <b>{fmtRp(revPeriode.terjualTotal * (Number(cfgDraft.danaCadangan?.rpPerPcs)||0))}</b>
+                </div>
+              </>
+            )}
           </div>
           <div style={{ marginBottom:4 }}>
             <div style={{ fontSize:13, fontWeight:700, color:T.gray700, marginBottom:12, borderBottom:`1px solid ${T.gray200}`, paddingBottom:8 }}>

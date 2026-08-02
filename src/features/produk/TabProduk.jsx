@@ -6,7 +6,7 @@ import { Icon } from "../../theme/icons.jsx";
 
 export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0 });
+  const [form, setForm] = useState({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0, hargaModal:0 });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
   // ✅ Urutan tampil produk (dipakai di sini & di grid "Stok, Penjualan &
@@ -42,7 +42,7 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
   function openAdd() {
     // Produk baru ditaruh paling akhir secara default.
     const nextUrutan = produkUrut.length ? Math.max(...produkUrut.map(p=>p._eff)) + 1 : 0;
-    setForm({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0, urutan: nextUrutan });
+    setForm({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0, hargaModal:0, urutan: nextUrutan });
     setModal("add");
   }
   function openEdit(row) { setForm({ ...row }); setModal("edit"); }
@@ -50,9 +50,9 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
     if (!form.id || !form.nama || !form.harga) return alert("Kode, Nama, & Harga wajib diisi");
     if (modal==="add") {
       if ((db.produk||[]).find(p=>p.id===form.id)) return alert("Kode produk sudah ada!");
-      addRecord("produk", { ...form, harga:Number(form.harga), bonus:Number(form.bonus||0) });
+      addRecord("produk", { ...form, harga:Number(form.harga), bonus:Number(form.bonus||0), hargaModal:Number(form.hargaModal||0) });
     } else {
-      updateRecord("produk", form.id, { ...form, harga:Number(form.harga), bonus:Number(form.bonus||0) });
+      updateRecord("produk", form.id, { ...form, harga:Number(form.harga), bonus:Number(form.bonus||0), hargaModal:Number(form.hargaModal||0) });
     }
     setModal(null);
   }
@@ -83,6 +83,7 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
     { key:"nama",  label:"Nama Produk", render:v=><b>{v}</b> },
     { key:"tipe",  label:"Tipe",    render:v=><Badge color={T.purple}>{v||"—"}</Badge> },
     { key:"harga", label:"Harga (Rp)", render:v=><span style={{ fontWeight:700, color:T.green }}>{fmtRp(v)}</span> },
+    { key:"hargaModal", label:"HPP (Rp)", render:v=><span style={{ color:v?T.orange:T.gray300 }}>{v?fmtRp(v):"belum diisi"}</span> },
     { key:"bonus", label:"Bonus (pcs)", render:v=><span style={{ color:T.gold }}>{v?`${v} pcs`:"—"}</span> },
     { key:"aktif", label:"Aktif",   render:v=><Badge color={v?T.green:T.red}>{v?"Ya":"Tidak"}</Badge> },
   ];
@@ -112,6 +113,8 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
           <Input label="Tipe Produk" value={form.tipe} onChange={v=>f("tipe",v)}
             placeholder="cth: Roll, Botol, Legend, Spray — isi bebas" hint="Ketik nama tipe secara manual" />
           <Input label="Harga Dasar (Rp)" value={form.harga} onChange={v=>f("harga",v)} type="number" required />
+          <Input label="Harga Modal / HPP (Rp)" value={form.hargaModal||0} onChange={v=>f("hargaModal",v)} type="number"
+            hint="Opsional — harga pokok/modal produk ini. Dipakai di Neraca Keuangan untuk menghitung estimasi Laba Kotor Riil, terpisah dari asumsi Margin Laba % di tab Bagi Hasil." />
           <Input label="Bonus per Kontrol (pcs)" value={form.bonus||0} onChange={v=>f("bonus",v)} type="number"
             hint="Jumlah produk bonus yang diberikan ke toko per kunjungan kontrol (opsional)" />
           <Input label="Aktif" type="checkbox" value={form.aktif} onChange={v=>f("aktif",v)}

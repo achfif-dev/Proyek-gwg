@@ -5,13 +5,15 @@ import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 import {
   hitungSaldoKas, hitungStokSistem, hitungAmortisasiPeriode, statusAsetSaatIni,
-  nilaiPersediaan, ringkasanHutangPiutang,
+  ringkasanHutangPiutang, hitungHppPeriode, bulanKeyOf, isPeriodeTerkunci,
+  hitungStokGudang, nilaiPersediaanGabungan, hitungDanaCadanganKumulatif,
   KATEGORI_KAS_MASUK, KATEGORI_KAS_KELUAR, KATEGORI_ASET, KATEGORI_HUTANG, KATEGORI_PIUTANG,
+  KATEGORI_GUDANG_MASUK, KATEGORI_GUDANG_KELUAR,
 } from "../../lib/neracaHelpers";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
-export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord, config, saveConfig, akuntansi, revPeriode, periodeMode, PERIODE_LABELS, bounds }) {
+export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord, config, saveConfig, akuntansi, revPeriode, periodeMode, PERIODE_LABELS, bounds, analytics }) {
   const [section, setSection] = useState("ringkasan"); // ringkasan | kas | stok | amortisasi
 
   const produkArr = db.produk || [];
@@ -19,12 +21,25 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   const kasArr = db.kasTransaksi || [];
   const stockOpnameArr = db.stockOpname || [];
   const asetArr = db.asetAmortisasi || [];
+  const tutupBukuArr = db.tutupBuku || [];
+
+  // Cek apakah tanggal tertentu berada di bulan yang sudah "ditutup buku" —
+  // kalau ya, batalkan aksi & kasih tahu user. Dipanggil di awal tiap fungsi
+  // submit/hapus untuk Kas, Stock Opname, & Hutang/Piutang.
+  function cekKunci(dateStr) {
+    if (isPeriodeTerkunci(tutupBukuArr, dateStr)) {
+      alert(`Periode ${bulanKeyOf(dateStr)} sudah ditutup buku (terkunci). Buka kunci dulu di sub-bagian "Tutup Buku" kalau memang perlu diubah.`);
+      return true;
+    }
+    return false;
+  }
 
   // ── Rasio Keuangan ──────────────────────────────────────────────
   const bopoPct = akuntansi.pendapatan > 0 ? (akuntansi.totalBiaya / akuntansi.pendapatan) * 100 : 0;
   const modalDisetor = Number(config.modalDisetor) || 0;
   const roePeriodePct = modalDisetor > 0 ? (akuntansi.labaBersihFinal / modalDisetor) * 100 : null;
   const roeSetahunPct = roePeriodePct !== null && periodeMode === "bulanan" ? roePeriodePct * 12 : null;
+  const hppPeriode = useMemo(() => hitungHppPeriode(revPeriode, produkArr), [revPeriode, produkArr]);
 
   // ── Kas ──────────────────────────────────────────────────────────
   const kasLedgerTerkini = useMemo(() => hitungSaldoKas(kasArr, config.kasSaldoAwal || 0, null), [kasArr, config.kasSaldoAwal]);
@@ -37,10 +52,16 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
   function submitKas() {
     if (!kasForm.tanggal || !kasForm.kategori || !Number(kasForm.nominal)) return alert("Tanggal, kategori, & nominal wajib diisi");
+    if (cekKunci(kasForm.tanggal)) return;
     const rec = { ...kasForm, nominal: Number(kasForm.nominal) };
     if (kasForm.id) updateRecord("kasTransaksi", kasForm.id, rec);
     else addRecord("kasTransaksi", { ...rec, id: genUniqueId("KAS") });
     setKasForm(null);
+  }
+  function hapusKas(id) {
+    const row = kasArr.find(k => k.id === id);
+    if (row && cekKunci(row.tanggal)) return;
+    deleteRecord("kasTransaksi", id);
   }
   function simpanOpnameKas() {
     saveConfig({ ...config, kasOpname: { saldoFisik: Number(opnameFisik) || 0, keterangan: opnameKet, tanggal: todayStr() } });
@@ -58,6 +79,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     setOpnameStokForm({ tanggal: todayStr(), keterangan: "", items });
   }
   function submitOpnameStok() {
+    if (cekKunci(opnameStokForm.tanggal)) return;
     const items = opnameStokForm.items.map(it => ({ ...it, stokFisik: Number(it.stokFisik) || 0 }));
     const totalSelisihPcs = items.reduce((s, it) => s + (it.stokFisik - it.stokSistem), 0);
     const totalSelisihRp = items.reduce((s, it) => {
@@ -68,6 +90,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     setOpnameStokForm(null);
   }
   function submitEditOpnameStok() {
+    if (cekKunci(detailOpnameStok.tanggal)) return;
     const items = detailOpnameStok.items.map(it => ({ ...it, stokFisik: Number(it.stokFisik) || 0 }));
     const totalSelisihPcs = items.reduce((s, it) => s + (it.stokFisik - it.stokSistem), 0);
     const totalSelisihRp = items.reduce((s, it) => {
@@ -76,6 +99,29 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     }, 0);
     updateRecord("stockOpname", detailOpnameStok.id, { tanggal: detailOpnameStok.tanggal, keterangan: detailOpnameStok.keterangan, items, totalSelisihPcs, totalSelisihRp });
     setDetailOpnameStok(null);
+  }
+  function hapusStockOpname(id) {
+    const row = stockOpnameArr.find(o => o.id === id);
+    if (row && cekKunci(row.tanggal)) return;
+    deleteRecord("stockOpname", id);
+  }
+
+  // ── Gudang Pusat ─────────────────────────────────────────────────
+  const gudangArr = db.gudangTransaksi || [];
+  const stokGudangMap = useMemo(() => hitungStokGudang(gudangArr, produkArr), [gudangArr, produkArr]);
+  const [gudangForm, setGudangForm] = useState(null);
+  function submitGudang() {
+    if (!gudangForm.tanggal || !gudangForm.produkId || !Number(gudangForm.qty)) return alert("Tanggal, Produk, & Jumlah wajib diisi");
+    if (cekKunci(gudangForm.tanggal)) return;
+    const rec = { ...gudangForm, qty: Number(gudangForm.qty) };
+    if (gudangForm.id) updateRecord("gudangTransaksi", gudangForm.id, rec);
+    else addRecord("gudangTransaksi", { ...rec, id: genUniqueId("GDG") });
+    setGudangForm(null);
+  }
+  function hapusGudang(id) {
+    const row = gudangArr.find(g => g.id === id);
+    if (row && cekKunci(row.tanggal)) return;
+    deleteRecord("gudangTransaksi", id);
   }
 
   // ── Hutang / Piutang ─────────────────────────────────────────────
@@ -88,14 +134,21 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
   function submitHp() {
     if (!hpForm.pihak || !Number(hpForm.nominalAwal) || !hpForm.tanggal) return alert("Nama Pihak, Nominal, & Tanggal wajib diisi");
+    if (cekKunci(hpForm.tanggal)) return;
     const rec = { ...hpForm, nominalAwal: Number(hpForm.nominalAwal), terbayar: Number(hpForm.terbayar) || 0 };
     if (hpForm.id) updateRecord("hutangPiutang", hpForm.id, rec);
     else addRecord("hutangPiutang", { ...rec, id: genUniqueId(hpForm.tipe === "hutang" ? "HTG" : "PIU") });
     setHpForm(null);
   }
+  function hapusHp(id) {
+    const row = hutangPiutangArr.find(h => h.id === id);
+    if (row && cekKunci(row.tanggal)) return;
+    deleteRecord("hutangPiutang", id);
+  }
   function submitBayar() {
     const nominal = Number(bayarForm.nominal) || 0;
     if (nominal <= 0) return alert("Nominal pembayaran harus lebih dari 0");
+    if (cekKunci(bayarForm.tanggal)) return;
     const row = bayarForm.row;
     const terbayarBaru = (Number(row.terbayar) || 0) + nominal;
     updateRecord("hutangPiutang", row.id, { terbayar: Math.min(terbayarBaru, row.nominalAwal) });
@@ -112,13 +165,37 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   // ── Laporan Neraca (Aset = Kewajiban + Ekuitas) ────────────────────
   const neracaTanggal = bounds?.end || todayStr();
   const kasSistemNeraca = useMemo(() => hitungSaldoKas(kasArr, config.kasSaldoAwal || 0, neracaTanggal).saldoAkhir, [kasArr, config.kasSaldoAwal, neracaTanggal]);
-  const persediaanNeraca = useMemo(() => nilaiPersediaan(stokSistemMap, produkArr), [stokSistemMap, produkArr]);
+  // ✅ Persediaan sekarang gabungan Stok Gudang Pusat + Stok Beredar di Toko,
+  // dinilai pakai Harga Modal/HPP (fallback Harga Jual kalau HPP belum diisi).
+  const persediaanInfo = useMemo(() => nilaiPersediaanGabungan(stokGudangMap, stokSistemMap, produkArr), [stokGudangMap, stokSistemMap, produkArr]);
+  const persediaanNeraca = persediaanInfo.totalNilai;
   const nilaiBukuAsetNeraca = useMemo(() => asetArr.reduce((s, a) => s + statusAsetSaatIni(a, neracaTanggal).nilaiBuku, 0), [asetArr, neracaTanggal]);
   const asetLancar = kasSistemNeraca + ringkasanPiutang.totalOutstanding + persediaanNeraca;
   const totalAset = asetLancar + nilaiBukuAsetNeraca;
-  const totalKewajiban = ringkasanHutang.totalOutstanding;
+  // ✅ Kewajiban Dana Cadangan (opsional, Rp/pcs terjual) — akumulasi SEMUA
+  // waktu (bukan cuma periode terpilih), karena ini kewajiban yang terus
+  // menumpuk sejak diaktifkan sampai benar-benar dipakai/dicairkan.
+  const kewajibanCadangan = useMemo(() => hitungDanaCadanganKumulatif(analytics?.kontrol||[], analytics?.penjualanLuar||[], config.danaCadangan), [analytics, config.danaCadangan]);
+  const totalKewajiban = ringkasanHutang.totalOutstanding + kewajibanCadangan;
   const labaDitahanPlug = totalAset - totalKewajiban - modalDisetor; // residual — lihat catatan di UI
   const totalEkuitas = modalDisetor + labaDitahanPlug;
+
+  // ── Tutup Buku (kunci periode) ──────────────────────────────────
+  const bulanIniKey = bulanKeyOf(bounds?.start);
+  const bulanIniSudahTertutup = tutupBukuArr.some(t => t.id === bulanIniKey);
+  const [catatanTutupBuku, setCatatanTutupBuku] = useState("");
+  function tutupBukuBulanIni() {
+    if (!confirm(`Tutup buku periode ${bulanIniKey}? Setelah ditutup, transaksi Kas/Stock Opname/Hutang-Piutang di bulan ini tidak bisa diubah lagi sampai dibuka kuncinya.`)) return;
+    addRecord("tutupBuku", {
+      id: bulanIniKey, periodeLabel: PERIODE_LABELS[periodeMode], tanggalTutup: todayStr(), catatan: catatanTutupBuku,
+      snapshotSaldoKas: kasLedgerPeriode.saldoAkhir, snapshotTotalAset: totalAset, snapshotTotalKewajiban: totalKewajiban, snapshotSHU: akuntansi.labaBersihFinal,
+    });
+    setCatatanTutupBuku("");
+  }
+  function bukaKunciBulan(id) {
+    if (!confirm(`Buka kunci periode ${id}? Data di bulan ini akan bisa diubah lagi.`)) return;
+    deleteRecord("tutupBuku", id);
+  }
 
   const [asetForm, setAsetForm] = useState(null);
   const amortisasiPeriode = useMemo(() => hitungAmortisasiPeriode(asetArr, bounds), [asetArr, bounds]);
@@ -136,8 +213,10 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     { key: "kas", label: "Kas Opname", icon: Icon.landmark },
     { key: "stok", label: "Stock Opname", icon: Icon.boxes },
     { key: "amortisasi", label: "Amortisasi Aset", icon: Icon.calculator },
+    { key: "gudang", label: "Gudang Pusat", icon: Icon.package },
     { key: "hutangpiutang", label: "Hutang/Piutang", icon: Icon.receipt },
     { key: "neraca", label: "Laporan Neraca", icon: Icon.spreadsheet },
+    { key: "tutupbuku", label: "Tutup Buku", icon: Icon.checklist },
   ];
 
   return (
@@ -170,6 +249,8 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
             )}
             <StatCard label="Biaya Amortisasi" value={fmtRp(akuntansi.biayaAmortisasi)} icon={Icon.calculator} color={T.orange} sub={`${amortisasiPeriode.detail.filter(d=>d.bulanOverlap>0).length} aset aktif`} />
             <StatCard label="Saldo Kas Sistem (terkini)" value={fmtRp(kasLedgerTerkini.saldoAkhir)} icon={Icon.landmark} color={T.blue} sub="saldo awal + kas masuk − kas keluar" />
+            <StatCard label="Laba Kotor Riil (HPP)" value={fmtRp(hppPeriode.labaKotorRiil)} icon={Icon.calculator} color={T.gold}
+              sub={hppPeriode.adaYangBelumIsi ? "⚠ ada produk belum diisi HPP" : "Pendapatan − HPP produk terjual"} />
           </div>
           <Card style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: T.gray700, marginBottom: 10 }}>Rumus yang dipakai</div>
@@ -178,6 +259,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
               <li><b>SHU / Laba Bersih</b> = Pendapatan − Total Biaya (termasuk Amortisasi), lalu disesuaikan Margin Laba.</li>
               <li><b>ROE</b> = SHU ÷ Modal Disetor × 100% — mengukur imbal hasil bagi pemilik modal.</li>
               <li><b>Amortisasi</b> = (Nilai Perolehan − Nilai Residu) ÷ Umur Ekonomis (bulan), diakui merata tiap bulan selama umur aset.</li>
+              <li><b>Laba Kotor Riil (HPP)</b> = Pendapatan − (qty terjual × Harga Modal/HPP per produk, diisi di Master Produk). Ini <i>pembanding</i> — angka resmi Laba Bersih/SHU tetap pakai asumsi Margin Laba % di tab Bagi Hasil & Laba Rugi, supaya perhitungan yang sudah berjalan tidak berubah tiba-tiba. Kalau HPP sudah diisi untuk semua produk, bandingkan kedua angka ini untuk mengecek apakah asumsi Margin % masih realistis.</li>
             </ul>
           </Card>
         </>
@@ -251,7 +333,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                 { key: "saldoBerjalan", label: "Saldo Berjalan", render: v => fmtRp(v) },
               ]}
               onEdit={row => setKasForm(row)}
-              onDelete={id => deleteRecord("kasTransaksi", id)}
+              onDelete={hapusKas}
             />
           </Card>
 
@@ -313,7 +395,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
         <>
           <Card style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 12, color: T.gray400, marginBottom: 10 }}>
-              "Stok Sistem" = total stok konsinyasi yang tercatat sedang beredar di semua toko (belum termasuk stok gudang pusat, karena aplikasi belum punya modul gudang terpisah). Setiap sesi opname membekukan angka sistem saat itu supaya bisa dibandingkan dengan hasil hitung fisik.
+              "Stok Sistem" = total stok konsinyasi yang tercatat sedang beredar di semua toko (belum termasuk Stok Gudang Pusat — untuk itu, lihat tab "Gudang Pusat" terpisah). Setiap sesi opname membekukan angka sistem saat itu supaya bisa dibandingkan dengan hasil hitung fisik.
             </div>
             <Btn size="sm" icon={Icon.add} onClick={bukaOpnameStokBaru}>Opname Baru</Btn>
           </Card>
@@ -335,7 +417,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                 ) },
               ]}
               onEdit={row => setDetailOpnameStok(row)}
-              onDelete={id => deleteRecord("stockOpname", id)}
+              onDelete={hapusStockOpname}
             />
           </Card>
 
@@ -528,6 +610,122 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
         </>
       )}
 
+      {section === "gudang" && (
+        <>
+          <div style={{ fontSize: 12, color: T.gray400, marginBottom: 14 }}>
+            Ledger stok gudang pusat — terpisah dari stok yang sudah dititip ke toko (lihat Stock Opname). "Masuk" = barang baru diterima gudang (pembelian/produksi/retur toko). "Keluar" = barang didistribusikan ke sales/toko, atau penyesuaian (rusak/hilang).
+          </div>
+          <div style={{ overflowX: "auto", marginBottom: 16 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 480 }}>
+              <thead>
+                <tr style={{ background: T.gray50 }}>
+                  {["Produk", "Stok Gudang Saat Ini", "Nilai (HPP/Harga Jual)"].map(h => (
+                    <th key={h} style={{ padding: "8px 10px", textAlign: "left", fontSize: 11, fontWeight: 700, color: T.gray600, textTransform: "uppercase" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {produkArr.map(p => {
+                  const qty = stokGudangMap[p.id] || 0;
+                  const hargaPakai = Number(p.hargaModal) || Number(p.harga) || 0;
+                  return (
+                    <tr key={p.id} style={{ borderBottom: `1px solid ${T.gray100}` }}>
+                      <td style={{ padding: "6px 10px", fontWeight: 600 }}>{p.nama}</td>
+                      <td style={{ padding: "6px 10px", fontWeight: 700, color: qty < 0 ? T.red : T.gray800 }}>{fmt(qty)} pcs</td>
+                      <td style={{ padding: "6px 10px" }}>{fmtRp(qty * hargaPakai)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+
+          <Card>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+              <div style={{ fontSize: 14, fontWeight: 800, color: T.gray800, display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon.package size={16} strokeWidth={2} /> Riwayat Transaksi Gudang
+              </div>
+              <Btn size="sm" icon={Icon.add} onClick={() => setGudangForm({ tanggal: todayStr(), tipe: "masuk", produkId: produkArr[0]?.id || "", qty: "", kategori: KATEGORI_GUDANG_MASUK[0], keterangan: "" })}>
+                Catat Transaksi
+              </Btn>
+            </div>
+            <Table
+              data={[...gudangArr].sort((a, b) => (b.tanggal || "").localeCompare(a.tanggal || ""))}
+              columns={[
+                { key: "tanggal", label: "Tanggal" },
+                { key: "tipe", label: "Tipe", render: v => (
+                  <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 99,
+                    color: v === "masuk" ? T.green : T.red, background: v === "masuk" ? T.greenLt : T.redLt }}>
+                    {v === "masuk" ? "Masuk" : "Keluar"}
+                  </span>
+                ) },
+                { key: "produkId", label: "Produk", render: v => produkArr.find(p => p.id === v)?.nama || v },
+                { key: "qty", label: "Qty", render: (v, row) => (
+                  <span style={{ fontWeight: 700, color: row.tipe === "masuk" ? T.green : T.red }}>{row.tipe === "masuk" ? "+" : "−"}{fmt(v)} pcs</span>
+                ) },
+                { key: "kategori", label: "Kategori" },
+                { key: "keterangan", label: "Keterangan" },
+              ]}
+              onEdit={row => setGudangForm(row)}
+              onDelete={hapusGudang}
+            />
+          </Card>
+
+          {gudangForm && (
+            <Modal title={gudangForm.id ? "Edit Transaksi Gudang" : "Catat Transaksi Gudang"} onClose={() => setGudangForm(null)} width={460}>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Tipe</label>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {["masuk", "keluar"].map(t => (
+                    <button key={t} onClick={() => setGudangForm(f => ({ ...f, tipe: t, kategori: (t === "masuk" ? KATEGORI_GUDANG_MASUK : KATEGORI_GUDANG_KELUAR)[0] }))}
+                      style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${gudangForm.tipe === t ? T.green : T.gray200}`,
+                        borderRadius: 8, background: gudangForm.tipe === t ? T.greenLt : T.white, cursor: "pointer",
+                        fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: gudangForm.tipe === t ? T.green : T.gray600 }}>
+                      {t === "masuk" ? "Stok Masuk" : "Stok Keluar"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Produk</label>
+                <select value={gudangForm.produkId} onChange={e => setGudangForm(f => ({ ...f, produkId: e.target.value }))}
+                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}>
+                  {produkArr.map(p => <option key={p.id} value={p.id}>{p.nama}</option>)}
+                </select>
+              </div>
+              <div className="gw-grid2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Tanggal</label>
+                  <input type="date" value={gudangForm.tanggal} onChange={e => setGudangForm(f => ({ ...f, tanggal: e.target.value }))}
+                    style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+                <div>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Jumlah (pcs)</label>
+                  <input type="number" value={gudangForm.qty} onChange={e => setGudangForm(f => ({ ...f, qty: e.target.value }))}
+                    style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div style={{ marginBottom: 12 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Kategori</label>
+                <select value={gudangForm.kategori} onChange={e => setGudangForm(f => ({ ...f, kategori: e.target.value }))}
+                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}>
+                  {(gudangForm.tipe === "masuk" ? KATEGORI_GUDANG_MASUK : KATEGORI_GUDANG_KELUAR).map(k => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Keterangan</label>
+                <input value={gudangForm.keterangan || ""} onChange={e => setGudangForm(f => ({ ...f, keterangan: e.target.value }))}
+                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+              <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+                <Btn variant="secondary" onClick={() => setGudangForm(null)}>Batal</Btn>
+                <Btn onClick={submitGudang} icon={Icon.save}>Simpan</Btn>
+              </div>
+            </Modal>
+          )}
+        </>
+      )}
+
       {section === "hutangpiutang" && (
         <>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10, marginBottom: 16 }}>
@@ -576,7 +774,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                 ) },
               ]}
               onEdit={row => setHpForm(row)}
-              onDelete={id => deleteRecord("hutangPiutang", id)}
+              onDelete={hapusHp}
             />
           </Card>
 
@@ -684,12 +882,18 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
               {[
                 ["Kas & Setara Kas", kasSistemNeraca],
                 ["Piutang Usaha", ringkasanPiutang.totalOutstanding],
-                ["Persediaan (Stok Konsinyasi, harga jual)", persediaanNeraca],
+                ["Persediaan (Gudang Pusat + Beredar di Toko)", persediaanNeraca],
               ].map(([label, val], i) => (
                 <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: T.gray600 }}>
                   <span>{label}</span><span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(val)}</span>
                 </div>
               ))}
+              {persediaanInfo.adaFallbackHarga && (
+                <div style={{ fontSize: 10, color: T.orange, marginTop: -2, marginBottom: 4 }}>
+                  <Icon.warning size={10} strokeWidth={2} style={{ verticalAlign: "-1px", marginRight: 3 }} />
+                  Ada produk yang belum diisi Harga Modal/HPP — dinilai pakai Harga Jual sebagai fallback (kurang akurat).
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 12, fontWeight: 700, color: T.blue, borderTop: `1px solid ${T.gray100}`, marginTop: 4 }}>
                 <span>Subtotal Aset Lancar</span><span>{fmtRp(asetLancar)}</span>
               </div>
@@ -708,8 +912,13 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
               <div style={{ fontSize: 14, fontWeight: 800, color: T.gray800, marginBottom: 4, borderBottom: `2px solid ${T.red}`, paddingBottom: 10 }}>KEWAJIBAN & EKUITAS</div>
               <div style={{ fontSize: 11, fontWeight: 700, color: T.gray400, textTransform: "uppercase", margin: "12px 0 6px" }}>Kewajiban (Liabilitas)</div>
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: T.gray600 }}>
-                <span>Hutang Usaha</span><span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(totalKewajiban)}</span>
+                <span>Hutang Usaha</span><span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(ringkasanHutang.totalOutstanding)}</span>
               </div>
+              {config.danaCadangan?.aktif && (
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 13, color: T.gray600 }}>
+                  <span>Kewajiban Dana Cadangan ({config.danaCadangan?.keterangan || "opsional"})</span><span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(kewajibanCadangan)}</span>
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 12, fontWeight: 700, color: T.red, borderTop: `1px solid ${T.gray100}`, marginTop: 4 }}>
                 <span>Subtotal Kewajiban</span><span>{fmtRp(totalKewajiban)}</span>
               </div>
@@ -737,6 +946,60 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
               Modal Disetor belum diisi (masih Rp0) — isi di tombol Konfigurasi pada sub-tab "Bagi Hasil & Laba Rugi" supaya Laba Ditahan & ROE lebih akurat.
             </div>
           )}
+        </>
+      )}
+
+      {section === "tutupbuku" && (
+        <>
+          <Card style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.gray800, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon.checklist size={16} strokeWidth={2} /> Tutup Buku Bulan Berjalan
+            </div>
+            <div style={{ fontSize: 12, color: T.gray400, marginBottom: 14 }}>
+              Menutup buku bulan tertentu akan mengunci transaksi Kas, Stock Opname, & Hutang/Piutang bertanggal di bulan itu — mencegah perubahan tidak sengaja pada data yang sudah final. Bisa dibuka kuncinya lagi kapan saja kalau memang perlu dikoreksi.
+            </div>
+            {periodeMode !== "bulanan" ? (
+              <div style={{ padding: "10px 14px", background: T.gray50, borderRadius: 8, fontSize: 12, color: T.gray600 }}>
+                Pilih mode periode <b>Bulanan</b> di bagian atas (Filter Periode) untuk menutup buku bulan tertentu.
+              </div>
+            ) : bulanIniSudahTertutup ? (
+              <div style={{ padding: "12px 16px", background: T.greenLt, borderRadius: 8, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: T.green }}>✓ Periode {bulanIniKey} sudah ditutup buku</span>
+                <Btn size="sm" variant="secondary" onClick={() => bukaKunciBulan(bulanIniKey)}>Buka Kunci</Btn>
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: 12 }}>
+                  <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Catatan Penutupan (opsional)</label>
+                  <input value={catatanTutupBuku} onChange={e => setCatatanTutupBuku(e.target.value)} placeholder="cth: sudah dicek & cocok per akhir bulan"
+                    style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                </div>
+                <Btn icon={Icon.save} onClick={tutupBukuBulanIni}>Tutup Buku Periode {bulanIniKey}</Btn>
+              </>
+            )}
+          </Card>
+
+          <Card>
+            <div style={{ fontSize: 14, fontWeight: 800, color: T.gray800, marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>
+              <Icon.landmark size={16} strokeWidth={2} /> Riwayat Periode Tertutup
+            </div>
+            {tutupBukuArr.length === 0 ? (
+              <div style={{ textAlign: "center", color: T.gray400, padding: 24, fontSize: 12 }}>Belum ada periode yang ditutup buku.</div>
+            ) : (
+              <Table
+                data={[...tutupBukuArr].sort((a, b) => (b.id || "").localeCompare(a.id || ""))}
+                columns={[
+                  { key: "id", label: "Periode" },
+                  { key: "tanggalTutup", label: "Ditutup Tanggal" },
+                  { key: "snapshotSaldoKas", label: "Saldo Kas (saat ditutup)", render: v => fmtRp(v || 0) },
+                  { key: "snapshotSHU", label: "SHU (saat ditutup)", render: v => fmtRp(v || 0) },
+                  { key: "catatan", label: "Catatan", render: v => v || "-" },
+                ]}
+                onDelete={bukaKunciBulan}
+              />
+            )}
+            <div style={{ fontSize: 11, color: T.gray400, marginTop: 10 }}>Tombol hapus di tabel ini berfungsi sebagai "Buka Kunci" periode.</div>
+          </Card>
         </>
       )}
     </div>

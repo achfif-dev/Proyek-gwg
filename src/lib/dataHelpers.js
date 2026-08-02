@@ -8,7 +8,14 @@ export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pen
   // ✅ NERACA KEUANGAN lanjutan: Hutang/Piutang (buat Laporan Neraca
   // Aset=Kewajiban+Ekuitas) & log pencairan Bagi Hasil (biar tombol
   // "Cairkan ke Kas" tidak mencatat dobel ke buku kas).
-  "hutangPiutang", "distribusiLog"];
+  "hutangPiutang", "distribusiLog",
+  // ✅ Tutup Buku: id record = "YYYY-MM", menandai bulan yang datanya sudah
+  // dikunci (Kas/Stock Opname/Hutang-Piutang tidak bisa diubah lagi tanpa
+  // dibuka kuncinya dulu).
+  "tutupBuku",
+  // ✅ Stok Gudang Pusat: ledger masuk/keluar stok gudang, terpisah dari
+  // stok konsinyasi yang beredar di toko (field stok_* pada tabel toko).
+  "gudangTransaksi"];
 
 // Jeda maksimum (hari) antar tanggal kontrol berurutan di satu wilayah supaya
 // masih dianggap 1 putaran/siklus yang sama (dipakai di Rekap → "Siklus

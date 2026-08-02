@@ -126,6 +126,104 @@ export function hitungSaldoKas(kasArr, saldoAwal, uptoDate) {
   return { rows: withRunning, saldoAkhir: saldo, totalMasuk, totalKeluar };
 }
 
+// Estimasi HPP (Harga Pokok Penjualan) terjual pada periode terpilih, dari
+// field opsional `hargaModal` di Produk (default 0 kalau belum diisi —
+// artinya belum bisa dihitung akurat, ditandai `terisi:false` per produk).
+export function hitungHppPeriode(revPeriode, produkArr) {
+  let totalHpp = 0, totalPendapatan = 0, adaYangBelumIsi = false;
+  const detail = (produkArr || []).map(p => {
+    const terjual = (revPeriode?.rows || []).reduce((s, k) => s + (k[`terjual_${p.id}`] || 0), 0)
+      + (revPeriode?.luarRows || []).reduce((s, k) => s + (k[`terjual_${p.id}`] || 0), 0);
+    const hargaModal = Number(p.hargaModal) || 0;
+    const terisi = p.hargaModal !== undefined && p.hargaModal !== null && p.hargaModal !== "";
+    if (terjual > 0 && !terisi) adaYangBelumIsi = true;
+    const hpp = terjual * hargaModal;
+    const rev = terjual * (Number(p.harga) || 0);
+    totalHpp += hpp; totalPendapatan += rev;
+    return { produkId: p.id, nama: p.nama, terjual, hargaModal, hpp, rev, terisi };
+  });
+  return { totalHpp, totalPendapatan, labaKotorRiil: totalPendapatan - totalHpp, adaYangBelumIsi, detail };
+}
+
+// ── Tutup Buku (kunci periode) ──────────────────────────────────────────
+// Format id/kunci periode tertutup selalu "YYYY-MM" (granularitas bulanan,
+// standar akuntansi). Dipakai untuk mengunci Kas, Stock Opname, & Hutang/
+// Piutang supaya data bulan yang sudah "ditutup" tidak berubah tanpa sengaja.
+export function bulanKeyOf(dateStr) {
+  return (dateStr || "").slice(0, 7); // "YYYY-MM-DD" → "YYYY-MM"
+}
+export function isPeriodeTerkunci(tutupBukuArr, dateStr) {
+  const key = bulanKeyOf(dateStr);
+  return (tutupBukuArr || []).some(t => t.id === key);
+}
+
+// Migrasi 1x-pakai dari 4 field Biaya lama (biayaOperasional/biayaBonus/
+// biayaLogistik/biayaLainnya) ke format list Beban Usaha yang baru & lebih
+// fleksibel. Dipanggil sebagai FALLBACK live (tidak otomatis tersimpan)
+// selama config.bebanUsaha belum pernah di-set — begitu Admin membuka &
+// menyimpan Konfigurasi sekali, hasil migrasi ini permanen tersimpan.
+export function migrasiBebanUsahaLama(cfg) {
+  const items = [];
+  if (Number(cfg?.biayaOperasional)) items.push({ id: "BU_MIG_1", nama: "Biaya Operasional", nominal: Number(cfg.biayaOperasional) });
+  if (Number(cfg?.biayaBonus)) items.push({ id: "BU_MIG_2", nama: "Biaya Bonus Produk", nominal: Number(cfg.biayaBonus) });
+  if (Number(cfg?.biayaLogistik)) items.push({ id: "BU_MIG_3", nama: "Biaya Logistik/Distribusi", nominal: Number(cfg.biayaLogistik) });
+  if (Number(cfg?.biayaLainnya)) items.push({ id: "BU_MIG_4", nama: "Biaya Lainnya", nominal: Number(cfg.biayaLainnya) });
+  return items;
+}
+
+// Kewajiban Dana Cadangan (opsional, per white-label bisa beda kebijakan):
+// sekian Rupiah per pcs terjual disisihkan sebagai "kewajiban" perusahaan.
+// Versi PERIODE (mengurangi SHU yang bisa dibagi periode berjalan):
+export function hitungDanaCadanganPeriode(terjualTotalPeriode, danaCadanganCfg) {
+  if (!danaCadanganCfg?.aktif) return 0;
+  return (Number(terjualTotalPeriode) || 0) * (Number(danaCadanganCfg.rpPerPcs) || 0);
+}
+// Versi KUMULATIF ALL-TIME (buat baris Kewajiban di Laporan Neraca) — jumlah
+// dari SELURUH transaksi terjual sepanjang sejarah aplikasi, bukan cuma
+// periode yang sedang difilter.
+export function hitungDanaCadanganKumulatif(kontrolArr, penjualanLuarArr, danaCadanganCfg) {
+  if (!danaCadanganCfg?.aktif) return 0;
+  const totalPcs = (kontrolArr || []).reduce((s, k) => s + (k.totalTerjual || 0), 0)
+    + (penjualanLuarArr || []).reduce((s, k) => s + (k.totalTerjual || 0), 0);
+  return totalPcs * (Number(danaCadanganCfg.rpPerPcs) || 0);
+}
+
+// ── Stok Gudang Pusat ────────────────────────────────────────────────────
+export const KATEGORI_GUDANG_MASUK = ["Pembelian/Produksi Baru", "Retur dari Toko", "Penyesuaian Tambah", "Lainnya"];
+export const KATEGORI_GUDANG_KELUAR = ["Distribusi ke Toko/Sales", "Rusak/Hilang/Kadaluarsa", "Penyesuaian Kurang", "Lainnya"];
+
+// Stok gudang saat ini per produk = kumulatif semua transaksi masuk − keluar.
+export function hitungStokGudang(gudangArr, produkArr) {
+  const map = {};
+  (produkArr || []).forEach(p => { map[p.id] = 0; });
+  (gudangArr || []).forEach(t => {
+    if (map[t.produkId] === undefined) map[t.produkId] = 0;
+    map[t.produkId] += t.tipe === "masuk" ? (Number(t.qty) || 0) : -(Number(t.qty) || 0);
+  });
+  return map;
+}
+
+// Nilai Persediaan (dipakai di Laporan Neraca, Aset Lancar) = (Stok Gudang +
+// Stok Toko/Beredar) × harga per unit. Diprioritaskan pakai Harga Modal/HPP
+// (nilai wajar akuntansi persediaan); kalau produk belum diisi HPP, fallback
+// ke Harga Jual supaya tetap ada angka (ditandai kurang akurat).
+export function nilaiPersediaanGabungan(stokGudangMap, stokTokoMap, produkArr) {
+  let totalNilai = 0, adaFallbackHarga = false;
+  const detail = (produkArr || []).map(p => {
+    const qtyGudang = Number(stokGudangMap[p.id]) || 0;
+    const qtyToko = Number(stokTokoMap[p.id]) || 0;
+    const qtyTotal = qtyGudang + qtyToko;
+    const hargaModal = Number(p.hargaModal) || 0;
+    const pakaiFallback = !hargaModal;
+    if (pakaiFallback && qtyTotal > 0) adaFallbackHarga = true;
+    const hargaDipakai = hargaModal || Number(p.harga) || 0;
+    const nilai = qtyTotal * hargaDipakai;
+    totalNilai += nilai;
+    return { produkId: p.id, nama: p.nama, qtyGudang, qtyToko, qtyTotal, hargaDipakai, pakaiFallback, nilai };
+  });
+  return { totalNilai, adaFallbackHarga, detail };
+}
+
 export const KATEGORI_KAS_MASUK = ["Setoran Penjualan Konsinyasi", "Modal Investor", "Pinjaman Masuk", "Piutang Tertagih", "Pendapatan Lain-lain", "Lainnya"];
 export const KATEGORI_KAS_KELUAR = ["Biaya Operasional", "Biaya Logistik/Distribusi", "Bonus/Insentif Sales", "Pencairan Bagi Hasil", "Pembelian Aset", "Pembayaran Pajak", "Pembayaran Hutang Usaha", "Pelunasan Pinjaman", "Lainnya"];
 export const KATEGORI_ASET = ["Kendaraan", "Peralatan Toko/Display", "Sistem/Software", "Perlengkapan Kantor", "Lainnya"];
