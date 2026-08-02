@@ -441,9 +441,9 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
 
         {/* Distribusi Bagi Hasil */}
         <Card>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, borderBottom:`2px solid ${T.gold}`, paddingBottom:10 }}>
+          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, borderBottom:`2px solid ${T.gold}`, paddingBottom:10, flexWrap:"wrap", rowGap:8 }}>
             <div style={{ fontSize:14, fontWeight:800, color:T.gray800, display:"flex", alignItems:"center", gap:6 }}><Icon.bagihasil size={16} strokeWidth={2} /> Distribusi Bagi Hasil</div>
-            <div style={{ display:"flex", gap:8 }}>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
               {akuntansi.pihakList.length > 0 && (
                 <Btn size="sm" icon={Icon.landmark} variant="secondary" onClick={cairkanSemua}>Cairkan Semua ke Kas</Btn>
               )}
@@ -735,9 +735,9 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
             ) : (cfgDraft.bebanUsaha||[]).map(b=>(
               <div key={b.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
                 <input value={b.nama} onChange={e=>updateBebanUsaha(b.id,"nama",e.target.value)} placeholder="Nama beban, cth: Gaji Karyawan"
-                  style={{ flex:1.4, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  style={{ flex:"1.4 1 0%", minWidth:0, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
                 <input type="number" value={b.nominal} min={0} onChange={e=>updateBebanUsaha(b.id,"nominal",e.target.value)} placeholder="Rp"
-                  style={{ flex:1, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  style={{ flex:"1 1 0%", minWidth:0, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
                 <button onClick={()=>hapusBebanUsaha(b.id)} title="Hapus item"
                   style={{ border:"none", background:T.redLt, color:T.red, borderRadius:6, width:28, height:28, display:"flex",
                     alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
