@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { firebaseDB } from "../firebase/init";
+import { FIREBASE_CONFIGURED } from "../firebase/config";
 import { idbGet, idbSet, queueWrite, queueRemove, queueGetAll, queueCount, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
 import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey } from "../lib/dataHelpers";
@@ -121,7 +122,19 @@ export function useDB(user) {
   // di komponen utama berjalan sebelum kita benar-benar tahu isi database di
   // cloud — supaya tidak terjadi 2 perangkat berbeda mengira tabel "kosong" di
   // saat yang sama lalu masing-masing menambahkan dirinya sebagai Admin baru.
-  const [cloudLoaded, setCloudLoaded] = useState(!firebaseDB); // jika Firebase tidak aktif, anggap langsung "loaded" (mode lokal)
+  //
+  // ✅ FIX: sebelumnya cek `!firebaseDB` di sini — tapi `firebaseDB` itu
+  // variabel module biasa yang baru terisi SETELAH initFirebase() (async)
+  // selesai di useAuth. Di render PERTAMA nilainya masih pasti `null`
+  // (belum sempat diisi), jadi `!firebaseDB` selalu `true` walau Firebase
+  // sebenarnya AKTIF & masih dalam proses sinkron — akibatnya cloudLoaded
+  // salah kaprah dianggap "sudah loaded" sejak awal, padahal belum. Ini
+  // yang bikin App.jsx mengira role user sudah pasti ("Viewer" sementara,
+  // karena user/db.pengguna belum sempat termuat) lalu buru-buru menendang
+  // tab manajer-only (Bagi Hasil, dll) ke Dashboard sebelum data asli
+  // sempat masuk. `FIREBASE_CONFIGURED` dipakai sebagai gantinya karena
+  // nilainya sudah pasti (sinkron, dari config) sejak render pertama.
+  const [cloudLoaded, setCloudLoaded] = useState(!FIREBASE_CONFIGURED); // jika Firebase tidak aktif, anggap langsung "loaded" (mode lokal)
   // Menyimpan snapshot mentah PER TABEL dari Firebase (bentuk map/objek apa
   // adanya), supaya saat menulis cukup hitung diff terhadap snapshot ini —
   // tidak perlu menulis ulang tabel yang tidak berubah.
