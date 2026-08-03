@@ -749,12 +749,16 @@ export default function GWGSuperApp() {
   // Perbaikannya: tunda pengecekan ini sampai `cloudLoaded` benar-benar
   // true (snapshot pertama Firebase sudah diterima, role sudah pasti) —
   // supaya tidak menghakimi akses berdasarkan role sementara yang salah.
+  // Ditambah jaga-jaga kedua: `loading` (dari useAuth) juga harus sudah
+  // selesai — sebelum status login diketahui pasti, `user` masih null
+  // sehingga currentUserRecord/isManajer otomatis jatuh ke default
+  // "Viewer" yang BUKAN role sungguhan.
   useEffect(() => {
-    if (!cloudLoaded) return; // role belum pasti (data pengguna belum sinkron) — jangan simpulkan dulu
+    if (loading || !cloudLoaded) return; // auth & role belum pasti — jangan simpulkan dulu
     if (!canAccessTab(activeTab, { isAdmin, isManajer })) {
       setActiveTab("dashboard");
     }
-  }, [activeTab, isAdmin, isManajer, cloudLoaded]);
+  }, [activeTab, isAdmin, isManajer, cloudLoaded, loading]);
 
   // Auto-upgrade toko "Baru" → "Aktif" setelah 30 hari sejak tanggalMasuk
   // Dijalankan sekali saat data cloud sudah selesai dimuat.
