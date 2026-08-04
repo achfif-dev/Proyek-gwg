@@ -15,7 +15,14 @@ export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pen
   "tutupBuku",
   // ✅ Stok Gudang Pusat: ledger masuk/keluar stok gudang, terpisah dari
   // stok konsinyasi yang beredar di toko (field stok_* pada tabel toko).
-  "gudangTransaksi"];
+  "gudangTransaksi",
+  // ✅ FASE 1 DOUBLE-ENTRY ACCOUNTING (lihat RANCANGAN-double-entry.md):
+  // Jurnal Umum — setiap transaksi sumber (Kontrol, Kas, Aset, Hutang/
+  // Piutang, dst) memposting minimal 2 baris (debit=kredit) ke sini.
+  // Dipartisi PER TAHUN persis seperti "kontrol" (lihat kontrolYearOf() —
+  // dipakai juga untuk jurnalUmum karena sama-sama punya field `.tanggal`),
+  // supaya bisa ikut mekanisme arsip yang sama nanti kalau volumenya besar.
+  "jurnalUmum"];
 
 // Jeda maksimum (hari) antar tanggal kontrol berurutan di satu wilayah supaya
 // masih dianggap 1 putaran/siklus yang sama (dipakai di Rekap → "Siklus
@@ -138,6 +145,32 @@ export function mapToArr(map) {
 // (format "YYYY-MM-DD"). Dipakai untuk menentukan path Firebase
 // kontrol/{tahun}/{id}. Fallback ke tahun berjalan kalau tanggal kosong/rusak
 // (seharusnya tidak pernah terjadi karena form kontrol mewajibkan tanggal).
+// Hitung agregat (pcs terjual / revenue / bonus) dari satu tahun data
+// kontrol MENTAH (map id→record, format Firebase langsung — field
+// `terjual_{produkId}`, `bonusInput_{produkId}`, dst — BUKAN hasil enrich
+// dari useAnalytics). Dipakai di 2 tempat yang butuh hasil identik:
+//  1) archiveKontrolYear (useDB.js) — snapshot SEBELUM data dihapus dari RTDB.
+//  2) recalcArchivedYearAgregat (useDB.js) — hitung ulang dari file arsip
+//     Drive untuk tahun-tahun lama yang diarsipkan sebelum fitur ini ada.
+// totalTerjualTahun (pcs) TIDAK bergantung harga produk, jadi akurat selalu.
+// totalRevTahun bergantung `produkArr.harga` SAAT fungsi ini dipanggil —
+// untuk arsip lama yang dihitung ulang belakangan, ini cuma estimasi
+// (pakai harga sekarang, bukan harga historis saat tahun itu berjalan).
+export function hitungAgregatTahunKontrol(yearDataMap, produkArr) {
+  const records = mapToArr(yearDataMap || {});
+  let totalTerjualTahun = 0, totalRevTahun = 0, totalBonusTahun = 0;
+  records.forEach(k => {
+    (produkArr || []).forEach(p => {
+      const terjual = Number(k[`terjual_${p.id}`]) || 0;
+      const bonusPcs = k[`bonusInput_${p.id}`] !== undefined ? Number(k[`bonusInput_${p.id}`]) : (Number(p.bonus) || 0);
+      totalTerjualTahun += terjual;
+      totalRevTahun += terjual * (Number(p.harga) || 0);
+      totalBonusTahun += bonusPcs;
+    });
+  });
+  return { totalTerjualTahun, totalRevTahun, totalBonusTahun, recordCount: records.length };
+}
+
 export function kontrolYearOf(record) {
   const y = (record && record.tanggal || "").slice(0, 4);
   return /^\d{4}$/.test(y) ? y : String(new Date().getFullYear());

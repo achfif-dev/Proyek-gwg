@@ -11,10 +11,11 @@ import {
   KATEGORI_KAS_MASUK, KATEGORI_KAS_KELUAR, KATEGORI_ASET, KATEGORI_HUTANG, KATEGORI_PIUTANG,
   KATEGORI_GUDANG_MASUK, KATEGORI_GUDANG_KELUAR,
 } from "../../lib/neracaHelpers";
+import { bangunBarisJurnalKas, bangunBarisJurnalAsetPerolehan, bangunBarisJurnalAmortisasi, bangunBarisJurnalHutangPiutangAwal, bangunBarisJurnalPelunasanHutangPiutang, bangunBarisJurnalApropriasiDanaCadangan, bulanSebelumnya, hitungSnapshotSaldoAkun, hitungSaldoAkunTerkini, ringkasanSaldoAkunPerTipe, DEFAULT_DAFTAR_AKUN } from "../../lib/akuntansiHelpers";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
-export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord, config, saveConfig, akuntansi, revPeriode, periodeMode, PERIODE_LABELS, bounds, analytics }) {
+export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord, config, saveConfig, akuntansi, revPeriode, periodeMode, PERIODE_LABELS, bounds, analytics, totalArsipPcsTerjual, recalcArchivedYearAgregat, postJurnal, voidJurnal, createdBy }) {
   // ✅ FIX: sebelumnya pakai useState biasa, jadi tiap refresh (tombol
   // header/APK maupun reload browser) sub-bagian Neraca (Ringkasan/Kas/Stok/
   // Amortisasi) selalu balik ke "ringkasan" walau user sedang di bagian lain
@@ -56,17 +57,54 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   const [opnameKet, setOpnameKet] = useState(() => config.kasOpname?.keterangan ?? "");
   const selisihKas = opnameFisik === "" ? null : (Number(opnameFisik) || 0) - kasLedgerTerkini.saldoAkhir;
 
+  // Cari entry jurnal AKTIF (belum void) yang sumbernya 1 record kasTransaksi
+  // tertentu — dipakai submitKas (edit) & hapusKas (hapus) untuk membatalkan
+  // jurnal lama sebelum memposting yang baru / setelah record dihapus.
+  function jurnalAktifUntukKas(kasId) {
+    return (db.jurnalUmum || []).filter(j => j.sumberTipe === "kasTransaksi" && j.sumberId === kasId && !j.void);
+  }
+
+  // Posting/repost jurnal untuk 1 record Kas. Kalau gagal (mis. kategori
+  // belum dipetakan di bangunBarisJurnalKas, atau daftarAkun belum diseed),
+  // TIDAK membatalkan penyimpanan kasTransaksi-nya sendiri — cuma
+  // menampilkan peringatan, supaya pencatatan Kas (fitur yang sudah lama
+  // dipakai) tidak pernah terhambat oleh fitur akuntansi baru yang masih
+  // Fase 2. Admin bisa diminta memposting ulang manual nanti kalau perlu.
+  function postingJurnalKasAman(kasRecord) {
+    if (!postJurnal) return; // prop belum diteruskan (versi lama App.jsx) — lewati diam-diam
+    try {
+      const baris = bangunBarisJurnalKas(kasRecord);
+      postJurnal({ tanggal: kasRecord.tanggal, sumberTipe: "kasTransaksi", sumberId: kasRecord.id,
+        keterangan: kasRecord.keterangan || kasRecord.kategori, baris, createdBy });
+    } catch (e) {
+      console.warn("Gagal memposting jurnal Kas (data Kas tetap tersimpan):", e);
+      alert(`Catatan Kas tersimpan, TAPI jurnal akuntansinya gagal diposting: ${e.message}\n\nHubungi admin teknis untuk posting manual kalau perlu.`);
+    }
+  }
+
   function submitKas() {
     if (!kasForm.tanggal || !kasForm.kategori || !Number(kasForm.nominal)) return alert("Tanggal, kategori, & nominal wajib diisi");
     if (cekKunci(kasForm.tanggal)) return;
     const rec = { ...kasForm, nominal: Number(kasForm.nominal) };
-    if (kasForm.id) updateRecord("kasTransaksi", kasForm.id, rec);
-    else addRecord("kasTransaksi", { ...rec, id: genUniqueId("KAS") });
+    if (kasForm.id) {
+      // Edit: batalkan (void) jurnal lama dulu, baru posting jurnal baru
+      // dengan angka/kategori yang sudah diubah — supaya saldo akun tetap
+      // benar dan audit trail tetap utuh (jurnal lama tidak dihapus, cuma
+      // ditandai void + dibalik).
+      if (voidJurnal) jurnalAktifUntukKas(kasForm.id).forEach(j => voidJurnal(j.id, { alasan: "Kas diedit", createdBy }));
+      updateRecord("kasTransaksi", kasForm.id, rec);
+      postingJurnalKasAman({ ...rec, id: kasForm.id });
+    } else {
+      const id = genUniqueId("KAS");
+      addRecord("kasTransaksi", { ...rec, id });
+      postingJurnalKasAman({ ...rec, id });
+    }
     setKasForm(null);
   }
   function hapusKas(id) {
     const row = kasArr.find(k => k.id === id);
     if (row && cekKunci(row.tanggal)) return;
+    if (voidJurnal) jurnalAktifUntukKas(id).forEach(j => voidJurnal(j.id, { alasan: "Kas dihapus", createdBy }));
     deleteRecord("kasTransaksi", id);
   }
   function simpanOpnameKas() {
@@ -142,13 +180,31 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     if (!hpForm.pihak || !Number(hpForm.nominalAwal) || !hpForm.tanggal) return alert("Nama Pihak, Nominal, & Tanggal wajib diisi");
     if (cekKunci(hpForm.tanggal)) return;
     const rec = { ...hpForm, nominalAwal: Number(hpForm.nominalAwal), terbayar: Number(hpForm.terbayar) || 0 };
+    const id = hpForm.id || genUniqueId(hpForm.tipe === "hutang" ? "HTG" : "PIU");
     if (hpForm.id) updateRecord("hutangPiutang", hpForm.id, rec);
-    else addRecord("hutangPiutang", { ...rec, id: genUniqueId(hpForm.tipe === "hutang" ? "HTG" : "PIU") });
+    else addRecord("hutangPiutang", { ...rec, id });
+    // Posting/repost jurnal pengakuan AWAL — void dulu kalau edit (mis.
+    // nominalAwal/kategori diubah), lalu posting ulang dari data terbaru.
+    // Untuk kategori "Piutang Toko/Konsinyasi", bangunBarisJurnalHutangPiutangAwal
+    // sengaja mengembalikan null (sudah diposting via Kontrol, Fase 3) —
+    // jadi tidak ada apa pun yang diposting di sini untuk kategori itu.
+    voidJurnalSumberAman("hutangPiutang", id, "Hutang/Piutang diedit — jurnal pengakuan awal diposting ulang");
+    if (postJurnal) {
+      try {
+        const baris = bangunBarisJurnalHutangPiutangAwal({ ...rec, id });
+        if (baris) postJurnal({ tanggal: rec.tanggal, sumberTipe: "hutangPiutang", sumberId: id,
+          keterangan: `Pengakuan ${rec.tipe === "hutang" ? "Hutang" : "Piutang"} — ${rec.kategori} — ${rec.pihak}`, baris, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal pengakuan Hutang/Piutang (data tetap tersimpan):", e);
+        alert(`Hutang/Piutang tersimpan, TAPI jurnal pengakuannya gagal diposting: ${e.message}`);
+      }
+    }
     setHpForm(null);
   }
   function hapusHp(id) {
     const row = hutangPiutangArr.find(h => h.id === id);
     if (row && cekKunci(row.tanggal)) return;
+    voidJurnalSumberAman("hutangPiutang", id, "Hutang/Piutang dihapus");
     deleteRecord("hutangPiutang", id);
   }
   function submitBayar() {
@@ -159,12 +215,29 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     const terbayarBaru = (Number(row.terbayar) || 0) + nominal;
     updateRecord("hutangPiutang", row.id, { terbayar: Math.min(terbayarBaru, row.nominalAwal) });
     // ✅ Auto-link ke Kas: hutang dibayar = Kas Keluar, piutang tertagih = Kas Masuk
-    addRecord("kasTransaksi", {
-      id: genUniqueId("KAS"), tanggal: bayarForm.tanggal || todayStr(),
+    const kasId = genUniqueId("KAS");
+    const kasRecAutoLink = {
+      id: kasId, tanggal: bayarForm.tanggal || todayStr(),
       tipe: row.tipe === "hutang" ? "keluar" : "masuk",
       kategori: row.tipe === "hutang" ? "Pembayaran Hutang Usaha" : "Piutang Tertagih",
       nominal, keterangan: `${row.tipe === "hutang" ? "Bayar hutang ke" : "Tagih piutang dari"} ${row.pihak}`,
-    });
+    };
+    addRecord("kasTransaksi", kasRecAutoLink);
+    // ✅ FASE 5: jurnal pelunasan sekarang pakai akun SPESIFIK sesuai kategori
+    // hutangPiutang-nya (mis. Pinjaman Bank → 2102), BUKAN lagi lewat
+    // pemetaan generik kategori Kas seperti Fase 2 (postingJurnalKasAman /
+    // bangunBarisJurnalKas) — supaya konsisten dengan akun yang dipakai
+    // saat pengakuan awal di submitHp() di atas.
+    if (postJurnal) {
+      try {
+        const baris = bangunBarisJurnalPelunasanHutangPiutang(row, nominal);
+        if (baris) postJurnal({ tanggal: kasRecAutoLink.tanggal, sumberTipe: "kasTransaksi", sumberId: kasId,
+          keterangan: kasRecAutoLink.keterangan, baris, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal pelunasan Hutang/Piutang (data tetap tersimpan):", e);
+        alert(`Pembayaran tersimpan, TAPI jurnal akuntansinya gagal diposting: ${e.message}`);
+      }
+    }
     setBayarForm(null);
   }
 
@@ -181,7 +254,24 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   // ✅ Kewajiban Dana Cadangan (opsional, Rp/pcs terjual) — akumulasi SEMUA
   // waktu (bukan cuma periode terpilih), karena ini kewajiban yang terus
   // menumpuk sejak diaktifkan sampai benar-benar dipakai/dicairkan.
-  const kewajibanCadangan = useMemo(() => hitungDanaCadanganKumulatif(analytics?.kontrol||[], analytics?.penjualanLuar||[], config.danaCadangan), [analytics, config.danaCadangan]);
+  const kewajibanCadangan = useMemo(() => hitungDanaCadanganKumulatif(analytics?.kontrol||[], analytics?.penjualanLuar||[], config.danaCadangan, totalArsipPcsTerjual?.total), [analytics, config.danaCadangan, totalArsipPcsTerjual]);
+  // Kalau ada tahun terarsip yang BELUM punya agregat tersimpan (arsip lama
+  // dari sebelum fitur ini ada), angka kewajibanCadangan di atas MASIH kurang
+  // akurat (belum menghitung pcs tahun tsb) — beri tahu admin secara eksplisit
+  // + tombol untuk mengisinya, alih-alih diam-diam salah.
+  const [hitungUlangLoading, setHitungUlangLoading] = useState(false);
+  async function hitungUlangSemuaArsip() {
+    if (!recalcArchivedYearAgregat || !totalArsipPcsTerjual?.tahunPerluDihitungUlang?.length) return;
+    setHitungUlangLoading(true);
+    try {
+      for (const year of totalArsipPcsTerjual.tahunPerluDihitungUlang) {
+        const r = await recalcArchivedYearAgregat(year);
+        if (!r.ok) alert(`Gagal menghitung ulang arsip tahun ${year}: ${r.message}`);
+      }
+    } finally {
+      setHitungUlangLoading(false);
+    }
+  }
   const totalKewajiban = ringkasanHutang.totalOutstanding + kewajibanCadangan;
   const labaDitahanPlug = totalAset - totalKewajiban - modalDisetor; // residual — lihat catatan di UI
   const totalEkuitas = modalDisetor + labaDitahanPlug;
@@ -196,11 +286,98 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
       id: bulanIniKey, periodeLabel: PERIODE_LABELS[periodeMode], tanggalTutup: todayStr(), catatan: catatanTutupBuku,
       snapshotSaldoKas: kasLedgerPeriode.saldoAkhir, snapshotTotalAset: totalAset, snapshotTotalKewajiban: totalKewajiban, snapshotSHU: akuntansi.labaBersihFinal,
     });
+    // ✅ FASE 4: posting jurnal Amortisasi/Penyusutan periode ini — dilakukan
+    // di titik Tutup Buku (bukan per-transaksi) karena amortisasi memang
+    // secara alami proses AKHIR PERIODE, bukan kejadian per hari. Pakai
+    // `amortisasiPeriode.total` yang SUDAH dihitung dari hitungAmortisasiPeriode()
+    // (sumber angka yang sama dipakai tampilan lama) — supaya tidak mungkin
+    // ada 2 angka amortisasi berbeda untuk periode yang sama. sumberId pakai
+    // bulanIniKey supaya idempoten: buka-kunci lalu tutup ulang bulan yang
+    // sama tidak akan dobel post (di-void dulu lewat bukaKunciBulan).
+    // `baris*` juga disimpan di variabel lokal (bukan cuma dikirim ke
+    // postJurnal) supaya bisa ikut dihitung di snapshot saldo akun (Fase 7)
+    // di bawah — db.jurnalUmum belum ter-update saat itu juga karena
+    // addRecord/postJurnal mengubah state React secara ASYNC.
+    let barisAmortisasi = null, barisDanaCadangan = null;
+    if (postJurnal) {
+      try {
+        barisAmortisasi = bangunBarisJurnalAmortisasi(amortisasiPeriode.total);
+        if (barisAmortisasi) postJurnal({ tanggal: bounds?.end || todayStr(), sumberTipe: "tutupBuku-amortisasi", sumberId: bulanIniKey,
+          keterangan: `Amortisasi Aset periode ${bulanIniKey}`, baris: barisAmortisasi, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal Amortisasi (Tutup Buku tetap tersimpan):", e);
+        alert(`Periode berhasil ditutup, TAPI jurnal amortisasinya gagal diposting: ${e.message}`);
+      }
+    }
+    // ✅ FASE 6: posting jurnal APROPRIASI Dana Cadangan (Dr Laba Ditahan /
+    // Kr Kewajiban Dana Cadangan) — hanya SELISIH (increment) dari yang
+    // sudah pernah diposting sebelumnya, karena kewajibanCadangan sendiri
+    // adalah angka ALL-TIME kumulatif (bukan per-periode). Kalau config
+    // Dana Cadangan tidak aktif, kewajibanCadangan otomatis 0 (lihat
+    // hitungDanaCadanganKumulatif) jadi tidak ada yang diposting.
+    if (postJurnal) {
+      try {
+        const sudahDiposting = (db.jurnalUmum || [])
+          .filter(j => j.sumberTipe === "danaCadangan-apropriasi" && !j.void)
+          .reduce((s, j) => s + (j.baris || []).filter(b => b.akun === "2110").reduce((s2, b) => s2 + (Number(b.kredit) || 0), 0), 0);
+        const increment = kewajibanCadangan - sudahDiposting;
+        barisDanaCadangan = bangunBarisJurnalApropriasiDanaCadangan(increment);
+        if (barisDanaCadangan) postJurnal({ tanggal: bounds?.end || todayStr(), sumberTipe: "danaCadangan-apropriasi", sumberId: bulanIniKey,
+          keterangan: `Apropriasi Dana Cadangan periode ${bulanIniKey} (kumulatif: ${fmtRp(kewajibanCadangan)})`, baris: barisDanaCadangan, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal Apropriasi Dana Cadangan (Tutup Buku tetap tersimpan):", e);
+        alert(`Periode berhasil ditutup, TAPI jurnal Dana Cadangannya gagal diposting: ${e.message}`);
+      }
+    }
+    // ✅ FASE 7: snapshot saldo SEMUA akun untuk bulan ini ke
+    // `saldoAkunBulanan/{bulanIniKey}` — supaya jurnal detail bulan ini
+    // SUATU SAAT bisa diarsipkan/dihapus dari RTDB tanpa kehilangan saldo
+    // kumulatifnya (pola sama dengan kontrolArchiveIndex, Fase 1). Saldo
+    // awal diambil dari snapshot BULAN SEBELUMNYA (atau 0 semua kalau ini
+    // bulan pertama yang ditutup). Entry bulan ini = seluruh jurnalUmum
+    // yang tanggalnya jatuh di bulan ini (SUDAH termasuk yang di-posting
+    // hari-hari sebelumnya lewat Kas/Kontrol/Aset/Hutang-Piutang) DITAMBAH
+    // 2 entry Amortisasi & Dana Cadangan yang baru saja diposting di atas
+    // (belum ada di db.jurnalUmum karena state React belum sempat update).
+    try {
+      const entriesBulanIniDb = (db.jurnalUmum || []).filter(j => !j.void && bulanKeyOf(j.tanggal) === bulanIniKey);
+      const entriesTambahan = [
+        barisAmortisasi ? { baris: barisAmortisasi, void: false } : null,
+        barisDanaCadangan ? { baris: barisDanaCadangan, void: false } : null,
+      ].filter(Boolean);
+      const bulanLalu = bulanSebelumnya(bulanIniKey);
+      const saldoAwalMap = db.saldoAkunBulanan?.[bulanLalu] || {};
+      const snapshot = hitungSnapshotSaldoAkun([...entriesBulanIniDb, ...entriesTambahan], saldoAwalMap, db.daftarAkun);
+      save({ ...db, saldoAkunBulanan: { ...db.saldoAkunBulanan, [bulanIniKey]: snapshot } });
+    } catch (e) {
+      console.warn("Gagal menyimpan snapshot saldo akun bulanan (Tutup Buku & jurnal tetap tersimpan):", e);
+      alert(`Periode berhasil ditutup, TAPI snapshot saldo akun bulanan gagal disimpan: ${e.message}`);
+    }
     setCatatanTutupBuku("");
   }
   function bukaKunciBulan(id) {
     if (!confirm(`Buka kunci periode ${id}? Data di bulan ini akan bisa diubah lagi.`)) return;
+    voidJurnalSumberAman("tutupBuku-amortisasi", id, `Buka kunci periode ${id}`);
+    voidJurnalSumberAman("danaCadangan-apropriasi", id, `Buka kunci periode ${id}`);
+    // ✅ FASE 7: hapus snapshot saldo akun bulan ini juga — supaya kalau
+    // nanti ditutup ulang, snapshot dihitung ulang dari data yang benar
+    // (bukan snapshot basi dari sebelum dibuka kuncinya).
+    if (db.saldoAkunBulanan?.[id]) {
+      const updated = { ...db.saldoAkunBulanan };
+      delete updated[id];
+      save({ ...db, saldoAkunBulanan: updated });
+    }
     deleteRecord("tutupBuku", id);
+  }
+
+  // Cari & batalkan (void) semua jurnal AKTIF untuk 1 sumber tertentu — pola
+  // sama persis dengan yang dipakai submitKas/hapusKas di atas.
+  function jurnalAktifSumber(sumberTipe, sumberId) {
+    return (db.jurnalUmum || []).filter(j => j.sumberTipe === sumberTipe && j.sumberId === sumberId && !j.void);
+  }
+  function voidJurnalSumberAman(sumberTipe, sumberId, alasan) {
+    if (!voidJurnal) return;
+    jurnalAktifSumber(sumberTipe, sumberId).forEach(j => voidJurnal(j.id, { alasan, createdBy }));
   }
 
   const [asetForm, setAsetForm] = useState(null);
@@ -209,8 +386,23 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     if (!asetForm.nama || !Number(asetForm.nilaiPerolehan) || !Number(asetForm.umurBulan) || !asetForm.tanggalPerolehan)
       return alert("Nama, Nilai Perolehan, Umur Ekonomis, & Tanggal Perolehan wajib diisi");
     const rec = { ...asetForm, nilaiPerolehan: Number(asetForm.nilaiPerolehan), nilaiResidu: Number(asetForm.nilaiResidu) || 0, umurBulan: Number(asetForm.umurBulan) };
+    const id = asetForm.id || genUniqueId("AST");
     if (asetForm.id) updateRecord("asetAmortisasi", asetForm.id, rec);
-    else addRecord("asetAmortisasi", { ...rec, id: genUniqueId("AST") });
+    else addRecord("asetAmortisasi", { ...rec, id });
+    // Posting/repost jurnal perolehan — void dulu kalau edit (supaya tidak
+    // dobel kalau nilai/kategorinya diubah), lalu posting ulang dari data
+    // terbaru. Sama sekali TIDAK menghambat penyimpanan Aset kalau gagal.
+    voidJurnalSumberAman("asetAmortisasi", id, "Aset diedit — jurnal perolehan diposting ulang");
+    if (postJurnal) {
+      try {
+        const baris = bangunBarisJurnalAsetPerolehan({ ...rec, id });
+        if (baris) postJurnal({ tanggal: rec.tanggalPerolehan, sumberTipe: "asetAmortisasi", sumberId: id,
+          keterangan: `Perolehan Aset — ${rec.nama}`, baris, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal perolehan Aset (data Aset tetap tersimpan):", e);
+        alert(`Aset tersimpan, TAPI jurnal perolehannya gagal diposting: ${e.message}`);
+      }
+    }
     setAsetForm(null);
   }
 
@@ -560,7 +752,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                 } },
               ]}
               onEdit={row => setAsetForm(row)}
-              onDelete={id => deleteRecord("asetAmortisasi", id)}
+              onDelete={id => { voidJurnalSumberAman("asetAmortisasi", id, "Aset dihapus"); deleteRecord("asetAmortisasi", id); }}
             />
           </Card>
 
@@ -925,6 +1117,22 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                   <span>Kewajiban Dana Cadangan ({config.danaCadangan?.keterangan || "opsional"})</span><span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(kewajibanCadangan)}</span>
                 </div>
               )}
+              {config.danaCadangan?.aktif && totalArsipPcsTerjual?.adaYangPerluDihitungUlang && (
+                <div style={{ display: "flex", gap: 8, alignItems: "flex-start", padding: "10px 12px", background: T.orangeLt,
+                  border: `1.5px solid ${T.orange}55`, borderRadius: 8, margin: "4px 0 8px", fontSize: 11.5, color: T.gray700, lineHeight: 1.5 }}>
+                  <Icon.warning size={15} strokeWidth={2} color={T.orange} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <div>
+                    <b style={{ color: T.orange }}>Angka Dana Cadangan Kumulatif di atas belum lengkap.</b> Tahun terarsip{" "}
+                    {totalArsipPcsTerjual.tahunPerluDihitungUlang.join(", ")} belum punya data agregat pcs terjual tersimpan
+                    (diarsipkan sebelum fitur ini ada).
+                    <div style={{ marginTop: 6 }}>
+                      <Btn size="sm" onClick={hitungUlangSemuaArsip} disabled={hitungUlangLoading}>
+                        {hitungUlangLoading ? "Menghitung..." : "Hitung Ulang Sekarang"}
+                      </Btn>
+                    </div>
+                  </div>
+                </div>
+              )}
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", fontSize: 12, fontWeight: 700, color: T.red, borderTop: `1px solid ${T.gray100}`, marginTop: 4 }}>
                 <span>Subtotal Kewajiban</span><span>{fmtRp(totalKewajiban)}</span>
               </div>
@@ -952,6 +1160,13 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
               Modal Disetor belum diisi (masih Rp0) — isi di tombol Konfigurasi pada sub-tab "Bagi Hasil & Laba Rugi" supaya Laba Ditahan & ROE lebih akurat.
             </div>
           )}
+
+          {/* ✅ FASE 8 (OPSI B): Neraca versi Jurnal — TAMPIL BERDAMPINGAN
+              dengan Laporan Neraca lama di atas, TIDAK menggantikannya.
+              Dihitung dari saldoAkunBulanan + jurnalUmum (double-entry),
+              independen sepenuhnya dari perhitungan lama di atas — supaya
+              bisa dibandingkan dulu sebelum diputuskan migrasi penuh. */}
+          <NeracaVersiJurnal db={db} />
         </>
       )}
 
@@ -1009,5 +1224,78 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
         </>
       )}
     </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FASE 8 (OPSI B) — NERACA VERSI JURNAL (perbandingan, BUKAN pengganti)
+// ═══════════════════════════════════════════════════════════════════════
+// Dihitung SEPENUHNYA independen dari NeracaKeuangan di atas — sumbernya
+// cuma saldoAkunBulanan + jurnalUmum (double-entry, Fase 1-7). Tujuannya
+// supaya admin bisa bandingkan dulu dengan Laporan Neraca lama sebelum
+// diputuskan migrasi penuh (mengganti, bukan cuma menambah section ini).
+function NeracaVersiJurnal({ db }) {
+  const daftarAkunEfektif = db.daftarAkun && Object.keys(db.daftarAkun).length > 0 ? db.daftarAkun : DEFAULT_DAFTAR_AKUN;
+  const { saldoAkhir, bulanTerakhirTertutup } = useMemo(
+    () => hitungSaldoAkunTerkini(db.jurnalUmum, db.saldoAkunBulanan, daftarAkunEfektif),
+    [db.jurnalUmum, db.saldoAkunBulanan, daftarAkunEfektif]
+  );
+  const ringkasan = useMemo(() => ringkasanSaldoAkunPerTipe(saldoAkhir, daftarAkunEfektif), [saldoAkhir, daftarAkunEfektif]);
+  const [expanded, setExpanded] = useState(false);
+  const LABEL_TIPE = { aset: "Aset", kewajiban: "Kewajiban", ekuitas: "Ekuitas", pendapatan: "Pendapatan (belum ditutup)", beban: "Beban (belum ditutup)" };
+  const WARNA_TIPE = { aset: T.blue, kewajiban: T.red || "#DC2626", ekuitas: T.green, pendapatan: T.gold, beban: T.orange };
+
+  return (
+    <Card style={{ marginTop: 16, border: `1.5px dashed ${T.gray300}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", cursor: "pointer" }} onClick={() => setExpanded(e => !e)}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: T.gray700 }}>
+          🧪 Neraca (versi Jurnal) — Perbandingan
+        </div>
+        <Btn size="sm" onClick={(e) => { e.stopPropagation(); setExpanded(x => !x); }}>{expanded ? "Sembunyikan" : "Tampilkan"}</Btn>
+      </div>
+      <div style={{ fontSize: 11.5, color: T.gray500, marginTop: 6, lineHeight: 1.5 }}>
+        Dihitung dari <b>saldo akun double-entry</b> (Fase 1-7), independen sepenuhnya dari perhitungan
+        Laporan Neraca di atas — untuk DIBANDINGKAN dulu, bukan pengganti. Saldo per{" "}
+        <b>{bulanTerakhirTertutup ? `setelah tutup buku ${bulanTerakhirTertutup}` : "hari ini (belum pernah ada Tutup Buku)"}</b>.
+      </div>
+      {expanded && (
+        <div style={{ marginTop: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 12px", background: ringkasan.balance ? T.greenLt : T.orangeLt,
+            border: `1.5px solid ${ringkasan.balance ? T.green : T.orange}55`, borderRadius: 8, marginBottom: 14 }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: ringkasan.balance ? T.green : T.orange }}>
+              {ringkasan.balance ? "✓ Balance — Aset = Kewajiban + Ekuitas + Laba Berjalan" : "⚠️ TIDAK BALANCE — ada kesalahan jurnal"}
+            </span>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: ringkasan.balance ? T.green : T.orange }}>
+              Selisih: {fmtRp(ringkasan.selisih)}
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, marginBottom: 14 }} className="gw-grid3">
+            <StatCard label="Total Aset" value={fmtRp(ringkasan.totalAset)} icon={Icon.wallet} color={T.blue} />
+            <StatCard label="Kewajiban + Ekuitas" value={fmtRp(ringkasan.totalKewajibanEkuitas)} icon={Icon.spreadsheet} color={T.green} />
+            <StatCard label="Laba Berjalan (blm ditutup)" value={fmtRp(ringkasan.labaBerjalan)} icon={Icon.rekap} color={T.gold} />
+          </div>
+          {Object.keys(LABEL_TIPE).map(tipe => (
+            <div key={tipe} style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: WARNA_TIPE[tipe], textTransform: "uppercase", marginBottom: 6 }}>
+                {LABEL_TIPE[tipe]} — {fmtRp(ringkasan.perTipe[tipe])}
+              </div>
+              {ringkasan.rincian[tipe].filter(r => r.saldo !== 0).length === 0 ? (
+                <div style={{ fontSize: 12, color: T.gray400, fontStyle: "italic" }}>Belum ada saldo</div>
+              ) : (
+                ringkasan.rincian[tipe].filter(r => r.saldo !== 0).map(r => (
+                  <div key={r.kode} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12.5, color: T.gray600 }}>
+                    <span>{r.kode} — {r.nama}</span><span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(r.saldo)}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          ))}
+          <div style={{ fontSize: 10.5, color: T.gray400, marginTop: 4 }}>
+            ⚠️ Pendapatan & Beban di atas belum pernah "ditutup" (closing entry) ke Laba Ditahan — jadi
+            saldonya adalah akumulasi SEJAK AWAL PEMAKAIAN, bukan cuma periode berjalan.
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

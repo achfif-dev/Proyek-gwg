@@ -11,7 +11,7 @@ import { NeracaKeuangan } from "./NeracaKeuangan.jsx";
 import { LaporanPajak } from "./LaporanPajak.jsx";
 import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode } from "../../lib/neracaHelpers";
 
-export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord }) {
+export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
   const [activeSubTab, setActiveSubTab] = usePersistedState("bagihasil.subtab", "ringkasan");
 
@@ -80,6 +80,17 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
   // Batas tanggal periode terpilih (dipakai bareng oleh Amortisasi & Neraca Keuangan)
   const bounds = useMemo(() => periodeBounds(periodeMode, filterBulan, filterTahun, filterStart, filterEnd),
     [periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
+
+  // Tahun-tahun terarsip (sudah dipindah ke Google Drive & dihapus dari
+  // RTDB) yang OVERLAP dengan periode laporan yang sedang dipilih admin.
+  // Untuk mode "tahunan" ini otomatis aman (dropdown Tahun cuma dibangun
+  // dari tahun yang termuat), tapi mode "bulanan" & "kustom" pakai input
+  // tanggal bebas — admin bisa memilih tanggal yang jatuh di tahun terarsip,
+  // dan laporan akan tampil Rp0 tanpa penjelasan kalau tidak diberi tahu.
+  const periodeArsipOverlap = useMemo(() => {
+    if (!archivedKontrolYears?.length || !bounds?.start || !bounds?.end) return [];
+    return archivedKontrolYears.filter(y => `${y}-01-01` <= bounds.end && `${y}-12-31` >= bounds.start);
+  }, [archivedKontrolYears, bounds]);
   // Kunci unik per-periode (dipakai supaya "Cairkan ke Kas" tidak mencatat dobel
   // untuk periode & pihak yang sama)
   const periodeKey = `${bounds.start}_${bounds.end}`;
@@ -348,6 +359,19 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
           </div>
         </div>
       </Card>
+
+      {periodeArsipOverlap.length > 0 && (
+        <div style={{ display:"flex", gap:10, alignItems:"flex-start", padding:"12px 14px", background:T.orangeLt,
+          border:`1.5px solid ${T.orange}55`, borderRadius:10, marginBottom:16 }}>
+          <Icon.warning size={18} strokeWidth={2} color={T.orange} style={{ flexShrink:0, marginTop:1 }} />
+          <div style={{ fontSize:12.5, color:T.gray700, lineHeight:1.5 }}>
+            <b style={{ color:T.orange }}>Periode ini menyentuh tahun yang sudah diarsipkan ({periodeArsipOverlap.join(", ")}).</b> Angka
+            Pendapatan, Laba, Neraca, dan Pajak yang tampil di bawah ini <b>tidak termasuk data tahun tersebut</b> — datanya sudah
+            dipindahkan ke Google Drive, bukan berarti tidak ada penjualan. Buka menu <b>Backup & Restore</b> untuk melihat/mengekspor
+            arsip tahun itu.
+          </div>
+        </div>
+      )}
 
       {activeSubTab === "ringkasan" && (<>
       {/* Ringkasan Kinerja Periode */}
@@ -665,6 +689,7 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
           db={db} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord}
           config={config} saveConfig={saveConfig} akuntansi={akuntansi} revPeriode={revPeriode}
           periodeMode={periodeMode} PERIODE_LABELS={PERIODE_LABELS} bounds={bounds} analytics={analytics}
+          totalArsipPcsTerjual={totalArsipPcsTerjual} recalcArchivedYearAgregat={recalcArchivedYearAgregat}
         />
       )}
 

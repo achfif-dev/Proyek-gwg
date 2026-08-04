@@ -337,7 +337,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
@@ -717,6 +717,18 @@ export default function GWGSuperApp() {
   const isManajer = userRole === "Manajer" || isAdmin;
   const isViewer = userRole === "Viewer"; // Viewer: hanya bisa melihat, tidak bisa mengubah data apa pun
   const isUserSuperAdmin = isSuperAdminEmail(user?.email);
+
+  // ✅ FASE 1 DOUBLE-ENTRY ACCOUNTING: seed Chart of Accounts default HANYA
+  // sekali, kalau `daftarAkun` memang masih kosong (instalasi baru/belum
+  // pernah diinisialisasi) — digerbangi isAdmin di sisi pemanggil ini
+  // (useDB sendiri tidak tahu role user login), dengan Firebase Rules
+  // sebagai penjaga terakhir. Lihat seedDaftarAkunJikaKosong() di useDB.js.
+  useEffect(() => {
+    if (isAdmin && cloudLoaded && db.daftarAkun && Object.keys(db.daftarAkun).length === 0) {
+      seedDaftarAkunJikaKosong();
+    }
+  }, [isAdmin, cloudLoaded, db.daftarAkun, seedDaftarAkunJikaKosong]);
+
 
   // GUARD VIEWER: bungkus semua fungsi penulis data supaya Viewer benar-benar
   // tidak bisa mengubah database apa pun — dicek terpusat di sini, bukan
@@ -1103,18 +1115,23 @@ export default function GWGSuperApp() {
         {canAccessTab("kontrol",  { isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="kontrol" ? "block" : "none" }}>
             <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
-              isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} dataStillSyncing={dataStillSyncing} />
+              isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} dataStillSyncing={dataStillSyncing}
+              postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={user?.email || null} />
           </div>
         )}
         {canAccessTab("rekap",    { isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="rekap" ? "block" : "none" }}>
             <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
-              addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} dataStillSyncing={dataStillSyncing} />
+              addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} dataStillSyncing={dataStillSyncing}
+              archivedKontrolYears={archivedKontrolYears} />
           </div>
         )}
         {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (
           <div style={{ display: activeTab==="bagihasil" ? "block" : "none" }}>
-            <TabBagiHasil db={db} analytics={analytics} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+            <TabBagiHasil db={db} analytics={analytics} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord}
+              archivedKontrolYears={archivedKontrolYears} archivedKontrolAgregat={archivedKontrolAgregat}
+              recalcArchivedYearAgregat={recalcArchivedYearAgregat} totalArsipPcsTerjual={totalArsipPcsTerjual}
+              postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={user?.email || null} />
           </div>
         )}
         {canAccessTab("pengguna", { isAdmin, isManajer }) && (
