@@ -10,8 +10,9 @@ import { Icon } from "../../theme/icons.jsx";
 import { NeracaKeuangan } from "./NeracaKeuangan.jsx";
 import { LaporanPajak } from "./LaporanPajak.jsx";
 import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode } from "../../lib/neracaHelpers";
+import { bangunBarisJurnalKas } from "../../lib/akuntansiHelpers";
 
-export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual }) {
+export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, createdBy }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
   const [activeSubTab, setActiveSubTab] = usePersistedState("bagihasil.subtab", "ringkasan");
 
@@ -100,14 +101,43 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
   }
   function cairkanKeKas(p) {
     const kasId = genUniqueId("KAS");
-    addRecord("kasTransaksi", { id: kasId, tanggal: new Date().toISOString().slice(0,10), tipe:"keluar",
-      kategori:"Pencairan Bagi Hasil", nominal: p.nominal, keterangan: `Bagi hasil ${p.nama} — ${PERIODE_LABELS[periodeMode]}` });
+    const kasRec = { id: kasId, tanggal: new Date().toISOString().slice(0,10), tipe:"keluar",
+      kategori:"Pencairan Bagi Hasil", nominal: p.nominal, keterangan: `Bagi hasil ${p.nama} — ${PERIODE_LABELS[periodeMode]}` };
+    addRecord("kasTransaksi", kasRec);
+    // ✅ FIX BUG (audit lanjutan): sebelumnya fungsi ini menulis kasTransaksi
+    // LANGSUNG tanpa lewat postJurnal() sama sekali — beda dari submitKas()
+    // di NeracaKeuangan.jsx yang selalu memposting jurnal. Akibatnya
+    // pencairan Bagi Hasil TIDAK PERNAH tercatat di jurnalUmum, bikin saldo
+    // "Neraca versi Jurnal" (Fase 8) diam-diam lebih besar dari yang
+    // seharusnya (Kas versi lama berkurang, tapi versi jurnal tidak).
+    // ⚠️ CATATAN: akun 2120 (Kewajiban Bagi Hasil) di sini DIDEBIT tanpa
+    // pernah ada jurnal yang MENGKREDITnya lebih dulu (belum ada "Fase"
+    // yang mengakui kewajiban ini saat SHU dihitung, baru saat DICAIRKAN)
+    // — jadi saldo 2120 bisa negatif untuk sementara. Ini keterbatasan yang
+    // diwariskan, sama pola dengan disclaimer lain di CHANGES-fase*.md,
+    // bukan diperbaiki penuh di sini karena butuh desain baru (pengakuan
+    // kewajiban Bagi Hasil saat SHU final, bukan saat dicairkan).
+    if (postJurnal) {
+      try {
+        const baris = bangunBarisJurnalKas(kasRec);
+        if (baris) postJurnal({ tanggal: kasRec.tanggal, sumberTipe: "kasTransaksi", sumberId: kasId,
+          keterangan: kasRec.keterangan, baris, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal Pencairan Bagi Hasil (data Kas tetap tersimpan):", e);
+      }
+    }
     addRecord("distribusiLog", { id: genUniqueId("DIST"), periodeKey, periodeLabel: PERIODE_LABELS[periodeMode],
       pihakId: p.id, pihakNama: p.nama, nominal: p.nominal, tanggal: new Date().toISOString().slice(0,10), kasTransaksiId: kasId });
   }
   function batalkanPencairan(log) {
     if (!confirm(`Batalkan pencairan "${log.pihakNama}" & hapus entri Kas terkait?`)) return;
-    if (log.kasTransaksiId) deleteRecord("kasTransaksi", log.kasTransaksiId);
+    if (log.kasTransaksiId) {
+      if (voidJurnal) {
+        (db.jurnalUmum || []).filter(j => j.sumberTipe === "kasTransaksi" && j.sumberId === log.kasTransaksiId && !j.void)
+          .forEach(j => voidJurnal(j.id, { alasan: "Pencairan Bagi Hasil dibatalkan", createdBy }));
+      }
+      deleteRecord("kasTransaksi", log.kasTransaksiId);
+    }
     deleteRecord("distribusiLog", log.id);
   }
   function cairkanSemua() {
@@ -690,6 +720,7 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
           config={config} saveConfig={saveConfig} akuntansi={akuntansi} revPeriode={revPeriode}
           periodeMode={periodeMode} PERIODE_LABELS={PERIODE_LABELS} bounds={bounds} analytics={analytics}
           totalArsipPcsTerjual={totalArsipPcsTerjual} recalcArchivedYearAgregat={recalcArchivedYearAgregat}
+          postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={createdBy}
         />
       )}
 

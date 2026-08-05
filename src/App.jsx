@@ -15,7 +15,7 @@ import { useAppResumeReload } from "./hooks/useAppResumeReload";
 import { usePresence } from "./hooks/usePresence";
 import { useDB } from "./hooks/useDB";
 import { useAnalytics } from "./hooks/useAnalytics";
-import { encodeEmailKey, decodeEmailKey } from "./lib/dataHelpers";
+import { encodeEmailKey, decodeEmailKey, kontrolYearOf } from "./lib/dataHelpers";
 import { downloadJSON } from "./lib/fileSave";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "./lib/googleDrive";
 import { exportExcel, autoColumns } from "./lib/exportUtils";
@@ -244,6 +244,8 @@ export default function GWGSuperApp() {
   const [migrateConfirmText, setMigrateConfirmText] = useState("");
   const [archivingYear, setArchivingYear] = useState(null); // tahun yang sedang diproses arsip
   const [archiveMsg, setArchiveMsg] = useState(null); // { ok, message } hasil aksi arsip terakhir
+  const [archivingJurnalYear, setArchivingJurnalYear] = useState(null); // tahun jurnal yang sedang diproses arsip
+  const [archiveJurnalMsg, setArchiveJurnalMsg] = useState(null); // { ok, message } hasil aksi arsip jurnal terakhir
   const [viewArchiveYear, setViewArchiveYear] = useState(null); // tahun yang sedang dibuka untuk dilihat (modal)
   const [viewArchiveData, setViewArchiveData] = useState(null); // { records, archivedAt, recordCount } | "loading" | null
   const [exportingArchiveYear, setExportingArchiveYear] = useState(null);
@@ -337,7 +339,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
@@ -1333,6 +1335,49 @@ export default function GWGSuperApp() {
                   ))}
                 </div>
               </>
+            )}
+
+            <div style={{ fontSize:13, fontWeight:600, color:T.gray800, marginBottom:8, marginTop:8, display:"flex", alignItems:"center", gap:6 }}><Icon.archive size={15} strokeWidth={2}/> Arsipkan Jurnal Umum (Akuntansi) ke Google Drive</div>
+            <div style={{ fontSize:12, color:T.gray400, marginBottom:10, lineHeight:1.6 }}>
+              Sama seperti arsip data Kontrol — memindahkan seluruh entry <b>jurnalUmum</b> satu tahun (termasuk yang
+              sudah dibatalkan/void, untuk audit trail lengkap) ke Google Drive lalu menghapusnya dari database aktif.
+              Sebaiknya HANYA arsipkan tahun yang seluruh bulannya sudah Tutup Buku, dan pastikan tidak akan
+              "Buka Kunci" bulan manapun di tahun itu lagi — setelah diarsipkan, data harus direstore dulu dari Drive
+              kalau suatu saat perlu dibuka kembali.
+            </div>
+            <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:12 }}>
+              {(() => {
+                const currentYear = String(new Date().getFullYear());
+                const jurnalYears = [...new Set((db.jurnalUmum||[]).map(j => kontrolYearOf(j)))]
+                  .filter(y => y !== currentYear && !archivedJurnalYears.includes(y)).sort();
+                if (jurnalYears.length === 0) return <div style={{ fontSize:12, color:T.gray400 }}>Tidak ada tahun jurnal (selain tahun berjalan) yang bisa diarsipkan saat ini.</div>;
+                return jurnalYears.map(y => (
+                  <Btn key={`arch-jurnal-${y}`} variant="secondary" size="sm" disabled={archivingJurnalYear === y}
+                    icon={archivingJurnalYear === y ? Icon.refresh : Icon.archive}
+                    onClick={async () => {
+                      if (!confirm(`Arsipkan seluruh jurnal umum tahun ${y}?\n\nData akan dipindah ke Google Drive Anda dan dihapus dari database aktif. Pastikan tahun ini tidak akan dibuka/dikoreksi lagi (Buka Kunci) sebelum melanjutkan.`)) return;
+                      setArchivingJurnalYear(y);
+                      setArchiveJurnalMsg(null);
+                      const result = await archiveJurnalTahun(y);
+                      setArchiveJurnalMsg(result);
+                      setArchivingJurnalYear(null);
+                    }}>
+                    {archivingJurnalYear === y ? `Mengarsipkan ${y}...` : `Arsipkan Jurnal ${y}`}
+                  </Btn>
+                ));
+              })()}
+            </div>
+            {archiveJurnalMsg && (
+              <div style={{ display:"flex", alignItems:"center", gap:6, padding:"10px 14px", borderRadius:8, marginBottom:16, fontSize:12,
+                background: archiveJurnalMsg.ok ? T.greenLt : "#FEE2E2", color: archiveJurnalMsg.ok ? T.green : "#991B1B" }}>
+                {archiveJurnalMsg.ok ? <Icon.checkCircle size={14} strokeWidth={2} /> : <Icon.warning size={14} strokeWidth={2} />}
+                {archiveJurnalMsg.message}
+              </div>
+            )}
+            {archivedJurnalYears.length > 0 && (
+              <div style={{ fontSize:12, color:T.gray400, marginBottom:16 }}>
+                Tahun jurnal yang sudah diarsipkan: {archivedJurnalYears.join(", ")}
+              </div>
             )}
 
             {viewArchiveYear && (

@@ -368,6 +368,24 @@ sudah diverifikasi ulang & diterapkan ke source ini:
 **WAJIB**: upload `database_rules_v8_fix.json` (menggantikan v7) ke Firebase
 Console SEBELUM kode baru dipakai.
 
+## 17. Perbaikan: Bug Kritis — Posting Jurnal dari Tab Bagi Hasil Silent No-Op — SELESAI ✅
+
+Ditemukan lewat audit lanjutan (lihat `CHANGES-fix-bug-props-bagihasil.md`).
+**Lebih parah dari 3 bug sebelumnya**: `TabBagiHasil.jsx` tidak pernah
+men-destructure prop `postJurnal`/`voidJurnal`/`createdBy` dari App.jsx,
+jadi `NeracaKeuangan` di dalamnya menerima `postJurnal=undefined` —
+melumpuhkan SEMUA posting dari Fase 2 (Kas), Fase 4 (Aset), Fase 5
+(Hutang/Piutang), Fase 6 (Dana Cadangan), Fase 7 (snapshot bulanan) TANPA
+error apa pun yang terlihat. Fase 3 (Kontrol/Penjualan Luar Rute) TIDAK
+terdampak (di-wire langsung dari App.jsx, tidak lewat TabBagiHasil).
+
+Fix: tambahkan prop yang hilang ke signature `TabBagiHasil`. Ditemukan juga
+bug kedua: "Cairkan ke Kas" (Bagi Hasil) tidak pernah posting jurnal sejak
+awal ditulis (kode terpisah, tidak pernah lewat `postJurnal`) — sudah
+diperbaiki juga, dengan catatan akun `2120` bisa negatif sementara sampai
+ada mekanisme pengakuan kewajiban Bagi Hasil (belum direncanakan sebagai
+fase terpisah).
+
 
 
 

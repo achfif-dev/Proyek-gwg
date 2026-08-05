@@ -167,7 +167,15 @@ export function buatEntryPembalik(entryLama, { keterangan, createdBy } = {}) {
   if (!entryLama?.baris?.length) throw new Error("Entry lama tidak valid untuk dibalik.");
   const barisBalik = entryLama.baris.map(b => ({ akun: b.akun, debit: b.kredit, kredit: b.debit }));
   return buatEntryJurnal({
-    tanggal: new Date().toISOString().slice(0,10),
+    // PENTING: pakai tanggal entry LAMA (tanggal transaksi asli), BUKAN
+    // tanggal hari ini void dilakukan. Entry pembalik secara ekonomi adalah
+    // "penghapus" kejadian di bulan aslinya, bukan kejadian baru di bulan
+    // aksi void — kalau tertanggal hari ini, saldo bulan aksi jadi ikut
+    // menghitung pembalikan padahal entry pengganti sudah tertanggal bulan
+    // asli juga (lihat audit "Bug #1" — dobel-hitung / understate saldo).
+    // cekKunci/cekTutupBuku di pemanggil sudah mencegah void untuk bulan
+    // yang sudah ditutup buku, jadi backdate ini aman.
+    tanggal: entryLama.tanggal,
     sumberTipe: entryLama.sumberTipe,
     sumberId: entryLama.sumberId,
     keterangan: keterangan || `Pembalik dari jurnal ${entryLama.id} (${entryLama.keterangan||""})`,

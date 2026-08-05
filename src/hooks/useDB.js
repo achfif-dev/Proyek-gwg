@@ -893,18 +893,32 @@ export function useDB(user) {
   // hari itu saja (tidak menumpuk tanpa batas), dan backup lebih tua dari
   // MAX_BACKUPS hari otomatis dibersihkan.
   // ───────────────────────────────────────────────────────────────────────
-  // Diturunkan dari 30 → 10 hari. Backup adalah SALINAN PENUH seluruh
+  // Diturunkan dari 30 → 10 → 5 hari. Backup adalah SALINAN PENUH seluruh
   // database (termasuk tabel "kontrol" yang akan terus membesar selama
-  // bertahun-tahun), jadi menyimpan 30 salinan penuh sekaligus adalah
+  // bertahun-tahun), jadi menyimpan banyak salinan penuh sekaligus adalah
   // pengguna kuota storage gratis Firebase (1GB) paling boros — bisa habis
-  // jauh sebelum data penjualan asli sendiri mendekati batas itu. 10 hari
+  // jauh sebelum data penjualan asli sendiri mendekati batas itu. 5 hari
   // masih cukup untuk jaga-jaga kalau ada kesalahan input/impor yang baru
-  // ketahuan beberapa hari kemudian.
-  const MAX_BACKUPS = 10;
+  // ketahuan beberapa hari kemudian, dan mengurangi separuh pengganda
+  // ukuran backup (lihat juga: jurnalUmum sekarang dikecualikan dari
+  // snapshot backup sama sekali — lihat catatan di backupNow()).
+  const MAX_BACKUPS = 5;
 
   const backupNow = useCallback(async (dbToBackup, { reason = "manual" } = {}) => {
     const nowIso = new Date().toISOString();
-    const snapshot = { ts: nowIso, reason, data: dbToBackup };
+    // ⚠️ OPTIMASI UKURAN RTDB: "jurnalUmum" sengaja DIKECUALIKAN dari
+    // snapshot backup. Tabel ini tumbuh terus (belum ada arsip — lihat
+    // archiveJurnalTahun()) dan tanpa pengecualian ini, setiap byte
+    // pertumbuhannya dikalikan ~(MAX_BACKUPS+1)x karena disalin penuh ke
+    // tiap backup harian. `daftarAkun`/`saldoAkunBulanan` tetap disertakan
+    // karena kecil (config/snapshot ringkas, bukan log transaksi).
+    // Restore dari backup TIDAK LAGI mengubah jurnalUmum — lihat guard di
+    // restoreBackup(). Untuk memulihkan jurnal, gunakan arsip Drive per
+    // tahun (archiveJurnalTahun/restoreJurnalTahunDariArsip) kalau sudah
+    // pernah diarsipkan, atau terima bahwa jurnal tahun berjalan tidak
+    // ter-cover oleh mekanisme backup harian ini.
+    const { jurnalUmum: _jurnalUmumDikecualikan, ...dbRingkas } = dbToBackup || {};
+    const snapshot = { ts: nowIso, reason, data: dbRingkas, jurnalUmumDikecualikan: true };
     const dateKey = nowIso.slice(0, 10); // YYYY-MM-DD
 
     // 1) Salinan lokal — selalu jalan, bahkan tanpa login/Firebase.
@@ -993,7 +1007,16 @@ export function useDB(user) {
   // supaya kalau tabel besar (toko/kontrol) gagal tertulis karena koneksi
   // terputus, ADMIN DIBERI TAHU — bukan mengira restore sudah berhasil.
   const restoreBackup = useCallback(async (snapshotData) => {
+    // Backup buatan versi baru (lihat backupNow()) sengaja tidak menyertakan
+    // "jurnalUmum" — kalau kita naif memakai DB_EMPTY.jurnalUmum ([]) di
+    // sini, restore akan MENGHAPUS seluruh jurnal aktif tanpa peringatan.
+    // Kalau key-nya memang tidak ada di snapshot, pertahankan jurnalUmum
+    // yang sedang berjalan di state saat ini (tidak disentuh oleh restore).
+    // Backup LAMA (dari sebelum patch ini) tetap menyertakan jurnalUmum
+    // apa adanya dan tetap direstore seperti biasa.
+    const jurnalUmumBelumAdaDiSnapshot = !Object.prototype.hasOwnProperty.call(snapshotData || {}, "jurnalUmum");
     const restored = { ...DB_EMPTY, ...snapshotData };
+    if (jurnalUmumBelumAdaDiSnapshot) restored.jurnalUmum = db.jurnalUmum;
     setDB(restored);
     saveLocalDB(restored);
     flushLocalDBNow(); // sama seperti resetDB — hindari race dengan write lama yang masih ditunda debounce
@@ -1022,20 +1045,25 @@ export function useDB(user) {
       ]);
 
       // "jurnalUmum" — partisi per tahun, sama pola persis dengan "kontrol"
-      // di bawah (field `.tanggal` lewat kontrolYearOf()).
-      try {
-        await set(ref(rtdb, `gwg_data/shared/jurnalUmum`), null);
-        const jurnalByYear = {};
-        (restored.jurnalUmum || []).forEach(rec => {
-          const y = kontrolYearOf(rec);
-          (jurnalByYear[y] = jurnalByYear[y] || {})[rec.id] = rec;
-        });
-        for (const [year, recs] of Object.entries(jurnalByYear)) {
-          await set(ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`), recs);
+      // di bawah (field `.tanggal` lewat kontrolYearOf()). Kalau backup ini
+      // tidak menyertakan jurnalUmum (backup baru pasca-optimasi ukuran
+      // RTDB), JANGAN sentuh path RTDB-nya sama sekali — jurnal aktif yang
+      // sekarang tetap seperti apa adanya.
+      if (!jurnalUmumBelumAdaDiSnapshot) {
+        try {
+          await set(ref(rtdb, `gwg_data/shared/jurnalUmum`), null);
+          const jurnalByYear = {};
+          (restored.jurnalUmum || []).forEach(rec => {
+            const y = kontrolYearOf(rec);
+            (jurnalByYear[y] = jurnalByYear[y] || {})[rec.id] = rec;
+          });
+          for (const [year, recs] of Object.entries(jurnalByYear)) {
+            await set(ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`), recs);
+          }
+        } catch (e) {
+          console.warn('Gagal restore tabel "jurnalUmum":', e);
+          failed.push("jurnalUmum");
         }
-      } catch (e) {
-        console.warn('Gagal restore tabel "jurnalUmum":', e);
-        failed.push("jurnalUmum");
       }
 
       // "kontrol" — bersihkan dulu node lama (termasuk sisa blob flat dari
@@ -1082,7 +1110,7 @@ export function useDB(user) {
       return { ok: false, failed, message: `Sebagian data GAGAL disimpan ke cloud (kemungkinan koneksi terputus): ${failed.join(", ")}. Coba ulangi restore dengan koneksi lebih stabil — jangan tutup halaman saat proses berjalan.` };
     }
     return { ok: true };
-  }, [pushUpdates, loadKontrolYear]);
+  }, [pushUpdates, loadKontrolYear, db.jurnalUmum]);
 
   // ─────────────────────────────────────────────
   //  ARSIP TAHUN LAMA (Google Drive) — hemat kuota Realtime Database
@@ -1132,6 +1160,103 @@ export function useDB(user) {
   }, []);
 
   useEffect(() => { if (user && firebaseDB) refreshArchivedYears(); }, [user, refreshArchivedYears]);
+
+  // ─────────────────────────────────────────────
+  //  ARSIP "jurnalUmum" PER TAHUN (Google Drive) — sama pola dengan arsip
+  //  "kontrol" di atas. Ini mengisi kekosongan yang dicatat di Fase 6/7:
+  //  "jurnalUmum belum ada mekanisme arsip". Index ringan disimpan di
+  //  `jurnalArchiveIndex/{tahun}`.
+  // ─────────────────────────────────────────────
+  const [archivedJurnalYears, setArchivedJurnalYears] = useState([]);
+  const refreshArchivedJurnalYears = useCallback(async () => {
+    if (!firebaseDB) return;
+    try {
+      const { db: rtdb, ref, get } = firebaseDB;
+      const snap = await get(ref(rtdb, `gwg_data/shared/jurnalArchiveIndex`));
+      setArchivedJurnalYears(Object.keys(snap.val() || {}).sort());
+    } catch (e) { console.warn("Gagal memuat daftar arsip jurnal:", e); }
+  }, []);
+  useEffect(() => { if (user && firebaseDB) refreshArchivedJurnalYears(); }, [user, firebaseDB, refreshArchivedJurnalYears]);
+
+  // Arsipkan SELURUH entry jurnalUmum (baik yang aktif MAUPUN yang sudah
+  // void) satu tahun ke Drive, lalu hapus dari RTDB. SENGAJA tidak
+  // memisahkan "hanya hapus yang void" — entry yang masih aktif di bulan
+  // yang sama tetap dibutuhkan kalau admin suatu saat "Buka Kunci" bulan
+  // itu lagi (bukaKunciBulan() di NeracaKeuangan.jsx menghapus snapshot
+  // saldoAkunBulanan dan mengandalkan jurnalUmum mentah untuk dihitung
+  // ulang) — jadi meng-arsipkan per BLOK TAHUN PENUH (bukan prune baris per
+  // baris) adalah satu-satunya cara yang aman: begitu diarsipkan, admin
+  // paham konsekuensinya sama seperti arsip "kontrol" (data dipindah, kalau
+  // mau dibuka lagi harus direstore dulu dari arsip).
+  //
+  // ⚠️ SEBAIKNYA hanya arsipkan tahun yang SEMUA bulannya sudah Tutup Buku
+  // (ada snapshot `saldoAkunBulanan` untuk tiap bulan Jan–Des tahun itu) —
+  // fungsi ini TIDAK memblokir kalau belum, tapi memberi peringatan lewat
+  // field `semuaBulanTertutup` di hasilnya supaya UI bisa menampilkannya
+  // sebelum admin konfirmasi.
+  const archiveJurnalTahun = useCallback(async (year) => {
+    year = String(year);
+    if (!user || !firebaseDB) return { ok: false, message: "Firebase belum siap." };
+    const { db: rtdb, ref, get, set } = firebaseDB;
+    let pointOfNoReturn = false;
+    try {
+      const snap = await get(ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`));
+      const yearData = snap.val();
+      if (!yearData || Object.keys(yearData).length === 0) {
+        return { ok: false, message: `Tidak ada data jurnal tahun ${year} untuk diarsipkan.` };
+      }
+      const recordCount = Object.keys(yearData).length;
+
+      const bulanTahunIni = Array.from({ length: 12 }, (_, i) => `${year}-${String(i + 1).padStart(2, "0")}`);
+      const semuaBulanTertutup = bulanTahunIni.every(bk => !!(db.saldoAkunBulanan || {})[bk]);
+
+      const archivedAt = new Date().toISOString();
+      const fileData = await gdriveUploadJSON(
+        `gwg_arsip_jurnal_${year}.json`,
+        { year, archivedAt, recordCount, data: yearData },
+        `GWG SuperApp - Arsip Jurnal Umum (Akuntansi) tahun ${year}`
+      );
+      if (!fileData?.id) {
+        return { ok: false, message: "Upload arsip jurnal tampak gagal (tidak dapat file ID) — data ASLI di database tidak diubah, aman untuk dicoba lagi." };
+      }
+
+      await set(ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`), null);
+      pointOfNoReturn = true;
+
+      const cleanupWarnings = [];
+      try {
+        await set(ref(rtdb, `gwg_data/shared/jurnalYearsIndex/${year}`), null);
+      } catch (e) {
+        cleanupWarnings.push(`index tahun (jurnalYearsIndex) gagal dibersihkan: ${e.message}`);
+      }
+      try {
+        await set(ref(rtdb, `gwg_data/shared/jurnalArchiveIndex/${year}`), {
+          fileId: fileData.id,
+          driveLink: fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`,
+          archivedAt, recordCount, semuaBulanTertutup,
+        });
+      } catch (e) {
+        cleanupWarnings.push(`daftar arsip (jurnalArchiveIndex) gagal dicatat: ${e.message}`);
+      }
+
+      setDB(prev => {
+        const next = { ...prev, jurnalUmum: (prev.jurnalUmum || []).filter(rec => kontrolYearOf(rec) !== year) };
+        saveLocalDB(next);
+        return next;
+      });
+      await refreshArchivedJurnalYears();
+
+      const baseMsg = `${recordCount} entry jurnal tahun ${year} berhasil diarsipkan ke Google Drive dan dihapus dari database aktif.`;
+      const warnMsg = !semuaBulanTertutup ? ` Perhatian: belum semua bulan tahun ${year} ditutup buku (di-snapshot) — pastikan tidak perlu "Buka Kunci" bulan manapun di tahun ini lagi sebelum mengarsipkan.` : "";
+      return { ok: true, recordCount, semuaBulanTertutup, cleanupWarnings, message: `${baseMsg}${warnMsg}${cleanupWarnings.length ? " Catatan: " + cleanupWarnings.join(" ") : ""}` };
+    } catch (e) {
+      console.warn(`Gagal mengarsipkan jurnal tahun ${year}:`, e);
+      if (pointOfNoReturn) {
+        return { ok: false, partiallyDone: true, message: `Data jurnal tahun ${year} sudah terlanjur terhapus dari database aktif dan sudah tersimpan di Google Drive, tapi ada masalah lanjutan (${e.message}). Cek "jurnalArchiveIndex" — kalau file Drive-nya ada, data AMAN.` };
+      }
+      return { ok: false, message: `Gagal mengarsipkan jurnal: ${e.message}. Data ASLI tidak diubah — aman untuk dicoba lagi.` };
+    }
+  }, [user, db.saldoAkunBulanan, refreshArchivedJurnalYears]);
 
   // Pindahkan satu tahun data kontrol dari RTDB → Google Drive.
   // Urutan PENTING demi keamanan data: upload & VERIFIKASI dulu baru hapus
@@ -1442,7 +1567,7 @@ export function useDB(user) {
     return { ok: true };
   }, [db, save]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
 }
 
 

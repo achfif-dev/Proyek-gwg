@@ -73,13 +73,43 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   function postingJurnalKasAman(kasRecord) {
     if (!postJurnal) return; // prop belum diteruskan (versi lama App.jsx) — lewati diam-diam
     try {
-      const baris = bangunBarisJurnalKas(kasRecord);
+      // ✅ FIX Bug #2 (audit): kalau record Kas ini adalah hasil auto-link
+      // dari pelunasan Hutang/Piutang (submitBayar), PAKAI akun spesifik
+      // kategori hutang/piutangnya (bangunBarisJurnalPelunasanHutangPiutang)
+      // — BUKAN pemetaan generik bangunBarisJurnalKas — supaya tetap
+      // konsisten walau record Kas-nya diedit ulang lewat tab Kas Opname
+      // biasa. Kalau record Hutang/Piutang asalnya sudah dihapus, baru
+      // fallback ke pemetaan generik (dengan peringatan eksplisit).
+      const hp = kasRecord.hutangPiutangId ? hutangPiutangArr.find(h => h.id === kasRecord.hutangPiutangId) : null;
+      let baris;
+      if (kasRecord.hutangPiutangId && !hp) {
+        console.warn("Record Hutang/Piutang asal sudah dihapus — jurnal Kas ini pakai pemetaan generik.");
+        baris = bangunBarisJurnalKas(kasRecord);
+      } else if (hp) {
+        baris = bangunBarisJurnalPelunasanHutangPiutang(hp, kasRecord.nominal);
+      } else {
+        baris = bangunBarisJurnalKas(kasRecord);
+      }
       postJurnal({ tanggal: kasRecord.tanggal, sumberTipe: "kasTransaksi", sumberId: kasRecord.id,
         keterangan: kasRecord.keterangan || kasRecord.kategori, baris, createdBy });
     } catch (e) {
       console.warn("Gagal memposting jurnal Kas (data Kas tetap tersimpan):", e);
       alert(`Catatan Kas tersimpan, TAPI jurnal akuntansinya gagal diposting: ${e.message}\n\nHubungi admin teknis untuk posting manual kalau perlu.`);
     }
+  }
+
+  // ✅ FIX Bug #2 (audit): sesuaikan field `terbayar` pada record
+  // Hutang/Piutang yang terhubung, supaya tetap sinkron kalau nominal kas
+  // hasil auto-link diedit atau kas-nya dihapus. `delta` positif = nominal
+  // pelunasan bertambah (terbayar naik), negatif = berkurang/dihapus.
+  // Diklem ke rentang [0, nominalAwal] supaya tidak pernah keluar batas
+  // wajar walau ada urutan edit yang aneh.
+  function sesuaikanTerbayarHp(hutangPiutangId, delta) {
+    if (!hutangPiutangId || !delta) return;
+    const hp = hutangPiutangArr.find(h => h.id === hutangPiutangId);
+    if (!hp) return; // record asal sudah dihapus — tidak ada yang bisa disesuaikan
+    const terbayarBaru = Math.max(0, Math.min((Number(hp.terbayar) || 0) + delta, hp.nominalAwal));
+    updateRecord("hutangPiutang", hp.id, { terbayar: terbayarBaru });
   }
 
   function submitKas() {
@@ -91,9 +121,18 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
       // dengan angka/kategori yang sudah diubah — supaya saldo akun tetap
       // benar dan audit trail tetap utuh (jurnal lama tidak dihapus, cuma
       // ditandai void + dibalik).
+      const rowLama = kasArr.find(k => k.id === kasForm.id);
       if (voidJurnal) jurnalAktifUntukKas(kasForm.id).forEach(j => voidJurnal(j.id, { alasan: "Kas diedit", createdBy }));
       updateRecord("kasTransaksi", kasForm.id, rec);
       postingJurnalKasAman({ ...rec, id: kasForm.id });
+      // ✅ FIX Bug #2 (audit): kalau record ini auto-link dari Hutang/
+      // Piutang, sesuaikan `terbayar` di record asalnya sebesar SELISIH
+      // nominal lama→baru, supaya saldo outstanding tetap sinkron dengan
+      // Kas walau nominalnya diedit dari tab Kas Opname.
+      if (rec.hutangPiutangId && rowLama) {
+        const delta = rec.nominal - (Number(rowLama.nominal) || 0);
+        if (delta) sesuaikanTerbayarHp(rec.hutangPiutangId, delta);
+      }
     } else {
       const id = genUniqueId("KAS");
       addRecord("kasTransaksi", { ...rec, id });
@@ -105,6 +144,11 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     const row = kasArr.find(k => k.id === id);
     if (row && cekKunci(row.tanggal)) return;
     if (voidJurnal) jurnalAktifUntukKas(id).forEach(j => voidJurnal(j.id, { alasan: "Kas dihapus", createdBy }));
+    // ✅ FIX Bug #2 (audit): kalau record ini auto-link dari Hutang/Piutang,
+    // kurangi `terbayar` di record asalnya sebesar nominal yang dihapus —
+    // supaya saldo outstanding Hutang/Piutang tidak "menganggap" pelunasan
+    // ini masih berlaku padahal Kas-nya sudah hilang.
+    if (row?.hutangPiutangId) sesuaikanTerbayarHp(row.hutangPiutangId, -(Number(row.nominal) || 0));
     deleteRecord("kasTransaksi", id);
   }
   function simpanOpnameKas() {
@@ -221,6 +265,18 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
       tipe: row.tipe === "hutang" ? "keluar" : "masuk",
       kategori: row.tipe === "hutang" ? "Pembayaran Hutang Usaha" : "Piutang Tertagih",
       nominal, keterangan: `${row.tipe === "hutang" ? "Bayar hutang ke" : "Tagih piutang dari"} ${row.pihak}`,
+      // ✅ FIX Bug #2 (audit): simpan link balik ke record Hutang/Piutang
+      // asalnya. Tanpa field ini, kalau admin nanti mengedit/menghapus
+      // record Kas ini lewat tab Kas Opname biasa, submitKas()/hapusKas()
+      // tidak tahu record ini sebenarnya pelunasan hutang/piutang spesifik
+      // — jurnalnya akan di-repost pakai pemetaan akun GENERIK
+      // (bangunBarisJurnalKas, mis. selalu ke 2101/1104) alih-alih akun
+      // spesifik kategorinya (mis. 2102 Pinjaman Bank), dan field
+      // `terbayar` di record Hutang/Piutang tidak ikut disesuaikan —
+      // saldo outstanding jadi tidak sinkron dengan Kas. Lihat
+      // postingJurnalKasAman/submitKas/hapusKas di bawah untuk sisi lain
+      // perbaikan ini.
+      hutangPiutangId: row.id,
     };
     addRecord("kasTransaksi", kasRecAutoLink);
     // ✅ FASE 5: jurnal pelunasan sekarang pakai akun SPESIFIK sesuai kategori
@@ -522,7 +578,18 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                     {v === "masuk" ? "Masuk" : "Keluar"}
                   </span>
                 ) },
-                { key: "kategori", label: "Kategori" },
+                { key: "kategori", label: "Kategori", render: (v, row) => (
+                  <span>
+                    {v}
+                    {row.hutangPiutangId && (
+                      <span title="Auto-link dari pelunasan Hutang/Piutang — kategori & tipe terkunci saat diedit di sini"
+                        style={{ marginLeft: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", borderRadius: 99,
+                          color: "#2563eb", background: "#dbeafe" }}>
+                        🔗 H/P
+                      </span>
+                    )}
+                  </span>
+                ) },
                 { key: "keterangan", label: "Keterangan" },
                 { key: "nominal", label: "Nominal", render: (v, row) => (
                   <span style={{ fontWeight: 700, color: row.tipe === "masuk" ? T.green : T.red }}>
@@ -538,13 +605,25 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
           {kasForm && (
             <Modal title={kasForm.id ? "Edit Transaksi Kas" : "Catat Transaksi Kas"} onClose={() => setKasForm(null)} width={440}>
+              {kasForm.hutangPiutangId && (
+                <div style={{ marginBottom: 12, padding: "10px 14px", background: "#dbeafe", border: "1px solid #93c5fd", borderRadius: 8 }}>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: "#2563eb" }}>🔗 Transaksi ini auto-link dari pelunasan Hutang/Piutang.</span>
+                  <div style={{ fontSize: 11.5, color: T.gray600, marginTop: 3 }}>
+                    Tipe & Kategori dikunci supaya jurnalnya tetap konsisten dengan akun spesifik Hutang/Piutang terkait.
+                    Kalau nominal diubah di sini, saldo terbayar Hutang/Piutang-nya akan ikut disesuaikan otomatis.
+                    Untuk mengubah tipe/kategori, hapus transaksi ini lalu catat ulang dari tab Hutang/Piutang.
+                  </div>
+                </div>
+              )}
               <div style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Tipe</label>
                 <div style={{ display: "flex", gap: 8 }}>
                   {["masuk", "keluar"].map(t => (
-                    <button key={t} onClick={() => setKasForm(f => ({ ...f, tipe: t, kategori: "" }))}
+                    <button key={t} disabled={!!kasForm.hutangPiutangId}
+                      onClick={() => setKasForm(f => ({ ...f, tipe: t, kategori: "" }))}
                       style={{ flex: 1, padding: "8px 12px", border: `1.5px solid ${kasForm.tipe === t ? T.green : T.gray200}`,
-                        borderRadius: 8, background: kasForm.tipe === t ? T.greenLt : T.white, cursor: "pointer",
+                        borderRadius: 8, background: kasForm.tipe === t ? T.greenLt : T.white,
+                        cursor: kasForm.hutangPiutangId ? "not-allowed" : "pointer", opacity: kasForm.hutangPiutangId ? 0.7 : 1,
                         fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: kasForm.tipe === t ? T.green : T.gray600 }}>
                       {t === "masuk" ? "Kas Masuk" : "Kas Keluar"}
                     </button>
@@ -565,8 +644,10 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
               </div>
               <div style={{ marginBottom: 12 }}>
                 <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Kategori</label>
-                <select value={kasForm.kategori} onChange={e => setKasForm(f => ({ ...f, kategori: e.target.value }))}
-                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit" }}>
+                <select value={kasForm.kategori} disabled={!!kasForm.hutangPiutangId}
+                  onChange={e => setKasForm(f => ({ ...f, kategori: e.target.value }))}
+                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit",
+                    background: kasForm.hutangPiutangId ? T.gray50 : T.white, cursor: kasForm.hutangPiutangId ? "not-allowed" : "auto" }}>
                   <option value="">— Pilih —</option>
                   {(kasForm.tipe === "masuk" ? KATEGORI_KAS_MASUK : KATEGORI_KAS_KELUAR).map(k => <option key={k} value={k}>{k}</option>)}
                 </select>
