@@ -10,6 +10,10 @@ export const DB_EMPTY = {
   penjualanLuar: [], // Penjualan Luar Rute: transaksi produk yang tokonya tidak diketahui/diingat sales saat kontrol
   stokAwal: {}, // { "tokoId_produkId_YYYY-MM": number }
   bagiHasilConfig: null, // konfigurasi bagi hasil
+  // ✅ FASE 1 DOUBLE-ENTRY ACCOUNTING (lihat RANCANGAN-double-entry.md):
+  jurnalUmum: [], // dipartisi per tahun di Firebase (lihat kontrolYearOf), tapi tetap array flat di state lokal — sama pola dengan "kontrol"
+  daftarAkun: null, // Chart of Accounts — diseed dari DEFAULT_DAFTAR_AKUN (akuntansiHelpers.js) saat pertama kali kosong
+  saldoAkunBulanan: null, // snapshot saldo per akun per bulan, diisi saat Tutup Buku (Fase 7)
 };
 
 // ─────────────────────────────────────────────

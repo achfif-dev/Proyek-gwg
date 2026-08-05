@@ -9,7 +9,7 @@ import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
 
-export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing }) {
+export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing, archivedKontrolYears }) {
   const isSalesRestricted = !!salesWilayahId;
   // ✅ Cari Toko: cek cepat kalau curiga ada kesalahan input kontrol, lalu
   // langsung koreksi tanpa pindah ke Tab Kontrol — cukup ketik nama/kode toko
@@ -110,6 +110,27 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
   // (Urutan alami rute BKLU1..BKLU14 dsb sekarang pakai naturalCompare()
   // yang sudah tersedia secara global — konsisten dengan urutan di Master
   // Toko, Master Rute, dan dropdown filter rute lainnya.)
+
+  // Tahun-tahun terarsip (dipindah ke Google Drive & dihapus dari RTDB) yang
+  // OVERLAP dengan periode aktif yang sedang dipilih admin. Mode Kuartal &
+  // Tahunan aman (dropdown "Tahun" dibangun dari db.kontrol yang termuat,
+  // jadi tahun terarsip otomatis hilang dari pilihan) — tapi mode Harian,
+  // Bulanan, Siklus Wilayah, dan Perputaran Stok (submode Bulanan) pakai
+  // input tanggal bebas, jadi admin masih bisa memilih tanggal yang jatuh
+  // di tahun yang sudah diarsipkan → rekap tampil kosong tanpa penjelasan.
+  const periodeArsipOverlapRekap = useMemo(() => {
+    if (!archivedKontrolYears?.length) return [];
+    const tahunSet = new Set();
+    if (mode === "harian" && filterTanggal) tahunSet.add(filterTanggal.slice(0,4));
+    if (mode === "bulanan" && filterBulan) tahunSet.add(filterBulan.slice(0,4));
+    if (mode === "siklus" && filterSiklusStart && filterSiklusEnd) {
+      let y = Number(filterSiklusStart.slice(0,4));
+      const yEnd = Number(filterSiklusEnd.slice(0,4));
+      for (; y <= yEnd; y++) tahunSet.add(String(y));
+    }
+    if (mode === "perputaran" && perputaranPeriodeType === "bulanan" && filterBulan) tahunSet.add(filterBulan.slice(0,4));
+    return archivedKontrolYears.filter(y => tahunSet.has(y));
+  }, [archivedKontrolYears, mode, filterTanggal, filterBulan, filterSiklusStart, filterSiklusEnd, perputaranPeriodeType]);
 
   // ─── HELPER: agregasi produk per entri kontrol ───
   function sumProduk(rows) {
@@ -1487,6 +1508,18 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
           </>
         )}
       </div>
+
+      {periodeArsipOverlapRekap.length > 0 && (
+        <div style={{ display:"flex", gap:10, alignItems:"flex-start", padding:"12px 14px", background:T.orangeLt,
+          border:`1.5px solid ${T.orange}55`, borderRadius:10, marginBottom:16 }}>
+          <Icon.warning size={18} strokeWidth={2} color={T.orange} style={{ flexShrink:0, marginTop:1 }} />
+          <div style={{ fontSize:12.5, color:T.gray700, lineHeight:1.5 }}>
+            <b style={{ color:T.orange }}>Periode ini menyentuh tahun yang sudah diarsipkan ({periodeArsipOverlapRekap.join(", ")}).</b> Rekap
+            di bawah ini <b>tidak termasuk data tahun tersebut</b> — datanya sudah dipindahkan ke Google Drive, bukan berarti tidak ada
+            kunjungan/penjualan. Buka menu <b>Backup & Restore</b> untuk melihat/mengekspor arsip tahun itu.
+          </div>
+        </div>
+      )}
 
       {/* Summary Cards */}
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>

@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { firebaseDB } from "../firebase/init";
 import { FIREBASE_CONFIGURED } from "../firebase/config";
 import { idbGet, idbSet, queueWrite, queueRemove, queueGetAll, queueCount, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
-import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey } from "../lib/dataHelpers";
+import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
+import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/akuntansiHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "../lib/googleDrive";
 import { downloadJSON } from "../lib/fileSave";
@@ -155,6 +156,7 @@ export function useDB(user) {
   const KONTROL_LIVE_YEARS = 1; // jumlah tahun terbaru yang otomatis live-sync — diturunkan dari 2 supaya hemat kuota unduhan Firebase menjelang pemakaian oleh sales lapangan (tahun lain tetap bisa dimuat manual dari menu Backup)
   const kontrolByYearRef = useRef({}); // { "2026": { id1:{...}, id2:{...} }, "2025": {...} }
   const kontrolYearUnsubsRef = useRef({}); // { "2026": () => {...} }
+  const jurnalByYearRef = useRef({}); // { "2026": { id1:{...}, ... } } — sama pola dengan kontrolByYearRef, versi disederhanakan (lihat komentar di listener "jurnalUmum")
   const [loadedKontrolYears, setLoadedKontrolYears] = useState([]); // tahun yang sudah live-sync / dimuat
   const [availableKontrolYears, setAvailableKontrolYears] = useState([]); // semua tahun yang ADA di cloud (dari index ringan)
 
@@ -179,7 +181,7 @@ export function useDB(user) {
     const LARGE_TABLES = new Set(["toko"]); // "kontrol" ditangani terpisah (partisi tahun) di bawah
     basePathRef.current = ref(rtdb, `gwg_data/shared`);
 
-    const paths = [...LIST_TABLES, "stokAwal", "bagiHasilConfig"];
+    const paths = [...LIST_TABLES, "stokAwal", "bagiHasilConfig", "daftarAkun", "saldoAkunBulanan"];
     const loadedSet = new Set(); // path mana yang sudah memberi snapshot pertama
     setSyncing(true);
 
@@ -337,6 +339,38 @@ export function useDB(user) {
           return;
         }
 
+        if (key === "jurnalUmum") {
+          // ── "jurnalUmum" dipartisi per-tahun sama seperti "kontrol" di
+          // atas (field `.tanggal`, lewat kontrolYearOf()), TAPI disederhana­
+          // kan: baca via onValue per tahun langsung (bukan listener
+          // child_added/changed/removed inkremental). Volumenya di Fase 1
+          // ini jauh lebih kecil dari kontrol, jadi belum perlu optimasi
+          // sebesar itu — bisa di-upgrade ke pola kontrol persis kalau nanti
+          // volume jurnal membesar signifikan (mis. setelah bertahun-tahun).
+          const thisYear = new Date().getFullYear();
+          const liveYears = Array.from({ length: KONTROL_LIVE_YEARS }, (_, i) => String(thisYear - i));
+          const recomputeJurnalArr = () => {
+            const merged = {};
+            Object.values(jurnalByYearRef.current).forEach(yearMap => Object.assign(merged, yearMap));
+            remoteRef.current.jurnalUmum = merged;
+            setDB(prev => {
+              const next = { ...prev, jurnalUmum: mapToArr(merged) };
+              saveLocalDB(next);
+              return next;
+            });
+          };
+          liveYears.forEach(year => {
+            const yr = ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`);
+            const unsub = onValue(yr, snap => {
+              jurnalByYearRef.current[year] = snap.val() || {};
+              recomputeJurnalArr();
+              markLoadedAndFlush(key);
+            }, (err) => { setSyncError(err.message); markLoadedAndFlush(key); });
+            unsubs.push(() => off(yr));
+          });
+          return;
+        }
+
         if (LARGE_TABLES.has(key)) {
           // ── Sinkronisasi INKREMENTAL untuk tabel besar (kontrol/toko) ──
           const localMap = {};
@@ -426,7 +460,7 @@ export function useDB(user) {
           setDB(prev => {
             const next = { ...prev };
             if (LIST_TABLES.includes(key)) next[key] = mapToArr(val);
-            else next[key] = val ?? (key === "stokAwal" ? {} : null);
+            else next[key] = val ?? ((key === "stokAwal" || key === "daftarAkun" || key === "saldoAkunBulanan") ? {} : null);
             saveLocalDB(next);
             return next;
           });
@@ -643,30 +677,24 @@ export function useDB(user) {
       const updates = {};
       LIST_TABLES.forEach(key => {
         if (newDB[key] === prevDB[key]) return;
-        if (key === "kontrol") {
-          // "kontrol" TIDAK ditulis sebagai satu blob di root — dipecah per
-          // tahun. Kita hanya berwenang atas tahun-tahun yang SEDANG dimuat
-          // (ada di prevDB.kontrol atau newDB.kontrol); tahun lain yang
-          // belum dimuat sama sekali TIDAK disentuh sama sekali, supaya
-          // save() bulk tidak pernah menimpa data tahun yang belum dimuat.
+        if (key === "kontrol" || key === "jurnalUmum") {
+          // "kontrol" dan "jurnalUmum" TIDAK ditulis sebagai satu blob di
+          // root — dipecah per tahun (lihat komentar kontrol di atas; logika
+          // yang sama berlaku untuk jurnalUmum karena sama-sama punya field
+          // `.tanggal` dan dipartisi lewat kontrolYearOf()).
+          const yearsIndexKey = key === "kontrol" ? "kontrolYearsIndex" : "jurnalYearsIndex";
           const byYear = {};
-          (newDB.kontrol || []).forEach(rec => {
+          (newDB[key] || []).forEach(rec => {
             const y = kontrolYearOf(rec);
             (byYear[y] = byYear[y] || {})[rec.id] = rec;
           });
-          const prevYears = new Set((prevDB.kontrol || []).map(kontrolYearOf));
+          const prevYears = new Set((prevDB[key] || []).map(kontrolYearOf));
           const touchedYears = new Set([...Object.keys(byYear), ...prevYears]);
           touchedYears.forEach(y => {
-            updates[`kontrol/${y}`] = byYear[y] || null; // null = tahun itu jadi kosong
+            updates[`${key}/${y}`] = byYear[y] || null; // null = tahun itu jadi kosong
             if (byYear[y]) {
-              updates[`kontrolYearsIndex/${y}`] = true;
-              // ✅ Tandai semua record di tahun yang ditulis ulang ini sebagai
-              // "baru saja ditulis sendiri" — save() bulk (mis. batch stok,
-              // import Excel) menulis ulang seluruh blob tahun tsb, jadi
-              // semua id di dalamnya akan di-echo balik oleh Firebase; tanpa
-              // ini, save() bulk yang menyentuh banyak record akan salah
-              // kena anggap "sinkronisasi besar dari luar".
-              Object.keys(byYear[y]).forEach(id => markLocalWrite("kontrol", id));
+              updates[`${yearsIndexKey}/${y}`] = true;
+              Object.keys(byYear[y]).forEach(id => markLocalWrite(key, id));
             }
           });
           return;
@@ -676,6 +704,8 @@ export function useDB(user) {
       });
       if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
       if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
+      if (newDB.daftarAkun !== prevDB.daftarAkun) updates.daftarAkun = newDB.daftarAkun || {};
+      if (newDB.saldoAkunBulanan !== prevDB.saldoAkunBulanan) updates.saldoAkunBulanan = newDB.saldoAkunBulanan || {};
       if (Object.keys(updates).length) pushUpdates(updates);
       saveLocalDB(newDB);
       return newDB;
@@ -695,9 +725,10 @@ export function useDB(user) {
       const nextArr = [...(prevDB[table]||[]), record];
       const next = { ...prevDB, [table]: nextArr };
       saveLocalDB(next);
-      if (table === "kontrol") {
+      if (table === "kontrol" || table === "jurnalUmum") {
         const y = kontrolYearOf(record);
-        pushUpdates({ [`kontrol/${y}/${record.id}`]: record, [`kontrolYearsIndex/${y}`]: true });
+        const yearsIndexKey = table === "kontrol" ? "kontrolYearsIndex" : "jurnalYearsIndex";
+        pushUpdates({ [`${table}/${y}/${record.id}`]: record, [`${yearsIndexKey}/${y}`]: true });
       } else {
         pushUpdates({ [`${table}/${record.id}`]: record });
       }
@@ -718,18 +749,19 @@ export function useDB(user) {
       const next = { ...prevDB, [table]: nextArr };
       saveLocalDB(next);
       if (mergedRecord) {
-        if (table === "kontrol") {
+        if (table === "kontrol" || table === "jurnalUmum") {
           const oldYear = kontrolYearOf(oldRecord);
           const newYear = kontrolYearOf(mergedRecord);
+          const yearsIndexKey = table === "kontrol" ? "kontrolYearsIndex" : "jurnalYearsIndex";
           if (oldYear !== newYear) {
             // Tanggal record diedit lintas-tahun: pindahkan node-nya.
             pushUpdates({
-              [`kontrol/${oldYear}/${id}`]: null,
-              [`kontrol/${newYear}/${id}`]: mergedRecord,
-              [`kontrolYearsIndex/${newYear}`]: true,
+              [`${table}/${oldYear}/${id}`]: null,
+              [`${table}/${newYear}/${id}`]: mergedRecord,
+              [`${yearsIndexKey}/${newYear}`]: true,
             });
           } else {
-            pushUpdates({ [`kontrol/${newYear}/${id}`]: mergedRecord });
+            pushUpdates({ [`${table}/${newYear}/${id}`]: mergedRecord });
           }
         } else if (table === "toko") {
           // ✅ FIX: Firebase Rules mendefinisikan izin Sales HANYA di level
@@ -766,7 +798,7 @@ export function useDB(user) {
   const deleteRecord = useCallback((table, id) => {
     markLocalWrite(table, id);
     setDB(prevDB => {
-      const targetRecord = table === "kontrol" ? (prevDB[table]||[]).find(r => r.id === id) : null;
+      const targetRecord = (table === "kontrol" || table === "jurnalUmum") ? (prevDB[table]||[]).find(r => r.id === id) : null;
       const nextArr = (prevDB[table]||[]).filter(r => r.id !== id);
       const next = { ...prevDB, [table]: nextArr };
       saveLocalDB(next);
@@ -796,8 +828,8 @@ export function useDB(user) {
           } catch {}
         }
       }
-      if (table === "kontrol" && targetRecord) {
-        pushUpdates({ [`kontrol/${kontrolYearOf(targetRecord)}/${id}`]: null });
+      if ((table === "kontrol" || table === "jurnalUmum") && targetRecord) {
+        pushUpdates({ [`${table}/${kontrolYearOf(targetRecord)}/${id}`]: null });
       } else {
         pushUpdates({ [`${table}/${id}`]: null }); // null = hapus path ini saja di Firebase
       }
@@ -836,6 +868,8 @@ export function useDB(user) {
     LIST_TABLES.forEach(key => { updates[key] = null; });
     updates.stokAwal = null;
     updates.bagiHasilConfig = null;
+    updates.daftarAkun = null;
+    updates.saldoAkunBulanan = null;
     // index tahun kontrol — ikut dibersihkan saat reset. CATATAN: ini butuh
     // rule kontrolYearsIndex/$tahun yang mengizinkan Admin/Manajer MENGHAPUS
     // (bukan cuma set `true`) — kalau rules pernah dikembalikan ke versi
@@ -848,6 +882,7 @@ export function useDB(user) {
     kontrolByYearRef.current = {};
     setLoadedKontrolYears([]);
     setAvailableKontrolYears([]);
+    jurnalByYearRef.current = {};
   }, [pushUpdates, db]);
 
   // ───────────────────────────────────────────────────────────────────────
@@ -982,7 +1017,26 @@ export function useDB(user) {
         writeTable("penjualanLuar", arrToMap(restored.penjualanLuar)),
         writeTable("stokAwal", restored.stokAwal || {}),
         writeTable("bagiHasilConfig", restored.bagiHasilConfig ?? null),
+        writeTable("daftarAkun", restored.daftarAkun || {}),
+        writeTable("saldoAkunBulanan", restored.saldoAkunBulanan || {}),
       ]);
+
+      // "jurnalUmum" — partisi per tahun, sama pola persis dengan "kontrol"
+      // di bawah (field `.tanggal` lewat kontrolYearOf()).
+      try {
+        await set(ref(rtdb, `gwg_data/shared/jurnalUmum`), null);
+        const jurnalByYear = {};
+        (restored.jurnalUmum || []).forEach(rec => {
+          const y = kontrolYearOf(rec);
+          (jurnalByYear[y] = jurnalByYear[y] || {})[rec.id] = rec;
+        });
+        for (const [year, recs] of Object.entries(jurnalByYear)) {
+          await set(ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`), recs);
+        }
+      } catch (e) {
+        console.warn('Gagal restore tabel "jurnalUmum":', e);
+        failed.push("jurnalUmum");
+      }
 
       // "kontrol" — bersihkan dulu node lama (termasuk sisa blob flat dari
       // restore versi lama, kalau ada) SEBELUM menulis partisi baru, supaya
@@ -1047,7 +1101,12 @@ export function useDB(user) {
   // tanpa perlu login/panggil Drive API dulu — token Google (popup) baru
   // diminta saat admin benar-benar klik Lihat/Export/Hapus/Arsipkan.
   const [archivedKontrolYears, setArchivedKontrolYears] = useState([]); // tahun yang sudah diarsipkan (dari index ringan)
-  const archiveIndexRef = useRef({}); // { [year]: { fileId, driveLink } } — untuk lookup fileId tanpa query ulang
+  // Agregat pcs terjual/revenue/bonus PER TAHUN yang sudah diarsipkan — dibaca
+  // dari field agregat di kontrolArchiveIndex/{tahun} (lihat archiveKontrolYear
+  // & recalcArchivedYearAgregat di bawah). Tahun yang diarsipkan SEBELUM fitur
+  // ini ada tidak akan punya field ini sampai admin klik "Hitung Ulang".
+  const [archivedKontrolAgregat, setArchivedKontrolAgregat] = useState({}); // { [year]: { totalTerjualTahun, totalRevTahun, totalBonusTahun, agregatComputedAt } | undefined }
+  const archiveIndexRef = useRef({}); // { [year]: { fileId, driveLink, ...agregat } } — untuk lookup fileId tanpa query ulang
 
   const refreshArchivedYears = useCallback(async () => {
     if (!firebaseDB) return;
@@ -1057,6 +1116,18 @@ export function useDB(user) {
       const all = snap.val() || {};
       archiveIndexRef.current = all;
       setArchivedKontrolYears(Object.keys(all).sort());
+      const agregat = {};
+      Object.entries(all).forEach(([year, entry]) => {
+        if (entry?.totalTerjualTahun !== undefined) {
+          agregat[year] = {
+            totalTerjualTahun: entry.totalTerjualTahun,
+            totalRevTahun: entry.totalRevTahun,
+            totalBonusTahun: entry.totalBonusTahun,
+            agregatComputedAt: entry.agregatComputedAt,
+          };
+        }
+      });
+      setArchivedKontrolAgregat(agregat);
     } catch (e) { console.warn("Gagal memuat daftar arsip:", e); }
   }, []);
 
@@ -1081,6 +1152,15 @@ export function useDB(user) {
         return { ok: false, message: `Tidak ada data kontrol tahun ${year} untuk diarsipkan.` };
       }
       const recordCount = Object.keys(yearData).length;
+
+      // 1b) Hitung agregat (pcs terjual/revenue/bonus) tahun ini SEBELUM
+      //     datanya dihapus dari RTDB — supaya Kewajiban Dana Cadangan
+      //     Kumulatif (lihat neracaHelpers.js → hitungDanaCadanganKumulatif)
+      //     tetap akurat walau tahun ini nanti hilang dari db.kontrol aktif.
+      //     Pakai db.produk yang berlaku SAAT INI (harga sekarang) — untuk
+      //     totalTerjualTahun (pcs) ini tidak masalah karena tidak
+      //     bergantung harga sama sekali.
+      const agregatTahunIni = hitungAgregatTahunKontrol(yearData, db.produk);
 
       // 2) Upload sebagai satu file JSON ke Google Drive. Kalau upload
       //    gagal (exception dilempar dari dalam gdriveUploadJSON), fungsi
@@ -1132,6 +1212,10 @@ export function useDB(user) {
           fileId: fileData.id,
           driveLink: fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`,
           archivedAt, recordCount,
+          totalTerjualTahun: agregatTahunIni.totalTerjualTahun,
+          totalRevTahun: agregatTahunIni.totalRevTahun,
+          totalBonusTahun: agregatTahunIni.totalBonusTahun,
+          agregatComputedAt: archivedAt,
         });
       } catch (e) {
         console.warn(`Gagal mencatat kontrolArchiveIndex/${year}:`, e);
@@ -1163,7 +1247,7 @@ export function useDB(user) {
       }
       return { ok: false, message: `Gagal mengarsipkan: ${e.message}. Data ASLI tidak diubah — aman untuk dicoba lagi.` };
     }
-  }, [user, refreshArchivedYears]);
+  }, [user, refreshArchivedYears, db.produk]);
 
   // Unduh & baca isi satu file arsip dari Drive — HANYA UNTUK DILIHAT/
   // DIEXPORT, tidak ditulis balik ke db.kontrol aktif (supaya tidak
@@ -1182,6 +1266,47 @@ export function useDB(user) {
       return { ok: false, message: `Gagal membuka arsip dari Google Drive: ${e.message}`, records: [] };
     }
   }, []);
+
+  // Hitung ulang agregat (pcs terjual/revenue/bonus) untuk SATU tahun arsip
+  // LAMA yang dibuat sebelum fitur agregat ini ada (kontrolArchiveIndex/{tahun}
+  // belum punya field totalTerjualTahun). Download ulang file JSON arsipnya
+  // dari Drive sekali, hitung, lalu simpan permanen ke index — supaya ke
+  // depannya tidak perlu diunduh ulang lagi. Dipanggil dari tombol "Hitung
+  // Ulang Sekarang" di Laporan Neraca saat ada arsip yang belum lengkap.
+  // ⚠️ totalRevTahun hasil ini pakai HARGA PRODUK SAAT INI (bukan harga
+  // historis saat tahun itu berjalan) — jadi hanya estimasi. totalTerjualTahun
+  // (pcs, satu-satunya yang dipakai Dana Cadangan Kumulatif) tetap akurat
+  // karena tidak bergantung harga sama sekali.
+  const recalcArchivedYearAgregat = useCallback(async (year) => {
+    year = String(year);
+    if (!firebaseDB) return { ok: false, message: "Firebase belum siap." };
+    const entry = archiveIndexRef.current[year];
+    if (!entry?.fileId) return { ok: false, message: "Data arsip tahun ini tidak ditemukan di index." };
+    try {
+      const parsed = await gdriveDownloadJSON(entry.fileId);
+      const agregat = hitungAgregatTahunKontrol(parsed.data || {}, db.produk);
+      const agregatComputedAt = new Date().toISOString();
+      const { db: rtdb, ref, set } = firebaseDB;
+      const updatedEntry = { ...entry,
+        totalTerjualTahun: agregat.totalTerjualTahun,
+        totalRevTahun: agregat.totalRevTahun,
+        totalBonusTahun: agregat.totalBonusTahun,
+        agregatComputedAt,
+      };
+      await set(ref(rtdb, `gwg_data/shared/kontrolArchiveIndex/${year}`), updatedEntry);
+      archiveIndexRef.current = { ...archiveIndexRef.current, [year]: updatedEntry };
+      setArchivedKontrolAgregat(prev => ({ ...prev, [year]: {
+        totalTerjualTahun: agregat.totalTerjualTahun,
+        totalRevTahun: agregat.totalRevTahun,
+        totalBonusTahun: agregat.totalBonusTahun,
+        agregatComputedAt,
+      } }));
+      return { ok: true, ...agregat };
+    } catch (e) {
+      console.warn(`Gagal menghitung ulang agregat arsip tahun ${year}:`, e);
+      return { ok: false, message: `Gagal mengunduh/menghitung arsip dari Google Drive: ${e.message}` };
+    }
+  }, [db.produk]);
 
   // Export arsip ke file yang bisa dibuka di HP/komputer manapun (JSON
   // mentah — untuk Excel/CSV, ambil `records`-nya lewat viewArchivedKontrolYear
@@ -1250,7 +1375,74 @@ export function useDB(user) {
     } catch {}
   }, []);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear };
+  // Ringkasan gabungan seluruh tahun terarsip: total pcs terjual (buat
+  // ditambahkan ke Dana Cadangan Kumulatif via neracaHelpers.js), plus flag
+  // kalau ada tahun terarsip yang BELUM punya agregat tersimpan (arsip lama
+  // dari sebelum fitur ini ada) — supaya UI bisa munculkan peringatan +
+  // tombol "Hitung Ulang Sekarang" alih-alih diam-diam kurang akurat.
+  const totalArsipPcsTerjual = useMemo(() => {
+    let total = 0;
+    let adaYangPerluDihitungUlang = false;
+    const tahunPerluDihitungUlang = [];
+    archivedKontrolYears.forEach(year => {
+      const agregat = archivedKontrolAgregat[year];
+      if (agregat?.totalTerjualTahun !== undefined) {
+        total += agregat.totalTerjualTahun;
+      } else {
+        adaYangPerluDihitungUlang = true;
+        tahunPerluDihitungUlang.push(year);
+      }
+    });
+    return { total, adaYangPerluDihitungUlang, tahunPerluDihitungUlang };
+  }, [archivedKontrolYears, archivedKontrolAgregat]);
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  FASE 1 DOUBLE-ENTRY ACCOUNTING — mesin posting (lihat akuntansiHelpers.js
+  //  & RANCANGAN-double-entry.md). Fungsi-fungsi ini murni infrastruktur;
+  //  BELUM ada titik input (Kas/Aset/Hutang/Kontrol) yang memanggilnya
+  //  otomatis — itu Fase 2 dst. Diekspos di sini supaya siap dipakai.
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Posting 1 entry jurnal baru. Melempar Error kalau tidak balance (lihat
+  // validateJurnal di akuntansiHelpers.js) — SENGAJA gagal keras, bukan
+  // menyimpan entry timpang. `createdBy` sebaiknya diisi email/id user aktif
+  // (dari App.jsx) untuk audit trail.
+  const postJurnal = useCallback(({ tanggal, sumberTipe, sumberId, keterangan, baris, createdBy }) => {
+    const entry = buatEntryJurnal({ tanggal, sumberTipe, sumberId, keterangan, baris, createdBy });
+    addRecord("jurnalUmum", entry);
+    return entry;
+  }, [addRecord]);
+
+  // Batalkan 1 entry jurnal: entry LAMA ditandai void:true (TIDAK dihapus —
+  // audit trail harus utuh), lalu entry BARU dibuat berisi baris kebalikan
+  // supaya saldo akun tetap benar. Dipakai saat transaksi sumbernya
+  // diedit/dihapus (Fase 2 dst akan memanggil ini otomatis dari
+  // updateRecord/deleteRecord tabel sumber terkait).
+  const voidJurnal = useCallback((entryId, { alasan, createdBy } = {}) => {
+    const entryLama = (db.jurnalUmum || []).find(j => j.id === entryId);
+    if (!entryLama) return { ok: false, message: "Entry jurnal tidak ditemukan." };
+    if (entryLama.void) return { ok: false, message: "Entry ini sudah pernah dibatalkan sebelumnya." };
+    const entryBalik = buatEntryPembalik(entryLama, { keterangan: alasan, createdBy });
+    updateRecord("jurnalUmum", entryId, { void: true, voidAt: Date.now(), voidKeterangan: alasan || "" });
+    addRecord("jurnalUmum", entryBalik);
+    return { ok: true, entryBalik };
+  }, [db.jurnalUmum, updateRecord, addRecord]);
+
+  // Isi `daftarAkun` dengan Chart of Accounts default — HANYA kalau memang
+  // masih kosong (instalasi baru/migrasi pertama). Sengaja TIDAK dipanggil
+  // otomatis dari dalam hook ini (useDB tidak tahu role user yang login) —
+  // App.jsx yang memanggil, digerbangi `isAdmin` di sisi pemanggil, dengan
+  // Firebase Rules sebagai penjaga terakhir kalau ada yang mencoba memanggil
+  // tanpa izin.
+  const seedDaftarAkunJikaKosong = useCallback(() => {
+    if (db.daftarAkun && Object.keys(db.daftarAkun).length > 0) {
+      return { ok: false, message: "daftarAkun sudah terisi — tidak ditimpa." };
+    }
+    save({ ...db, daftarAkun: DEFAULT_DAFTAR_AKUN });
+    return { ok: true };
+  }, [db, save]);
+
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong };
 }
 
 

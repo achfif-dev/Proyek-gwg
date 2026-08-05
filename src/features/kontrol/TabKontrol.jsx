@@ -5,12 +5,14 @@ import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
 import { SIKLUS_GAP_DAYS, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
+import { isPeriodeTerkunci, bulanKeyOf } from "../../lib/neracaHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
+import { bangunBarisJurnalKontrol, bangunBarisJurnalPenjualanLuar } from "../../lib/akuntansiHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
 
-export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing }) {
+export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing, postJurnal, voidJurnal, createdBy }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
@@ -123,6 +125,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     expired.forEach(k => {
       updateRecord("kontrol", k.id, { status: "disetujui", disetujuiOleh: "Otomatis (24 jam)" });
     });
+    expired.forEach(k => syncJurnalKontrol({ ...k, status: "disetujui", disetujuiOleh: "Otomatis (24 jam)" }));
     const tokoIds = [...new Set(expired.map(k=>k.tokoId))];
     tokoIds.forEach(tid => {
       recalcTokoStok(tid, updatedKontrol);
@@ -175,7 +178,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     else requestHapusKontrol(id);
   }
   function setujuiHapusKontrol(id) {
-    const tokoIdTerdampak = (db.kontrol||[]).find(k=>k.id===id)?.tokoId;
+    const recTerdampak = (db.kontrol||[]).find(k=>k.id===id);
+    if (recTerdampak && cekTutupBuku(recTerdampak.tanggal)) return;
+    const tokoIdTerdampak = recTerdampak?.tokoId;
+    voidJurnalSumber("kontrol", id, "Pengajuan hapus kontrol disetujui");
     deleteRecord("kontrol", id);
     if (tokoIdTerdampak) {
       const remaining = (db.kontrol||[]).filter(k => k.id !== id);
@@ -194,6 +200,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   function setujuiKontrolPengajuan(id) {
     const rec = (db.kontrol||[]).find(k=>k.id===id);
     if (!rec) return;
+    if (cekTutupBuku(rec.tanggal)) return;
     // ✅ FIX BUG: sebelumnya dipanggil lewat setTimeout(...,300) dengan asumsi
     // data lokal `db` sudah ter-update setelah jeda itu — TAPI closure fungsi
     // ini (recalcTokoStok, syncProdukIdsDariStokKontrol) terikat ke snapshot
@@ -210,6 +217,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     const updatedList = (db.kontrol||[]).map(k => k.id===id ? updatedRec : k);
     recalcTokoStok(rec.tokoId, updatedList);
     syncProdukIdsDariStokKontrol(rec.tokoId, updatedRec);
+    syncJurnalKontrol(updatedRec);
   }
   function tolakKontrolPengajuan(id) {
     if (!confirm("Tolak pengajuan Kontrol Bulanan (Stok Awal) ini? Entri akan tetap tersimpan (ditandai Ditolak) tapi tidak memengaruhi stok Master Toko.")) return;
@@ -218,6 +226,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     if (rec) {
       const updatedList = (db.kontrol||[]).map(k => k.id===id ? { ...k, status:"ditolak", disetujuiOleh:"Manual" } : k);
       recalcTokoStok(rec.tokoId, updatedList);
+      voidJurnalSumber("kontrol", id, "Pengajuan kontrol ditolak");
     }
   }
 
@@ -327,12 +336,18 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     if (langsung.length === 0 && perluAjukan.length === 0) { setSelectedIds([]); return; }
 
     if (langsung.length > 0) {
-      if (!confirm(`Hapus ${langsung.length} catatan kontrol terpilih? Tindakan ini permanen.`)) {
+      const langsungTerkunci = langsung.filter(id => isPeriodeTerkunci(db.tutupBuku || [], (db.kontrol||[]).find(k=>k.id===id)?.tanggal));
+      const langsungBisaHapus = langsung.filter(id => !langsungTerkunci.includes(id));
+      if (langsungTerkunci.length > 0) {
+        alert(`${langsungTerkunci.length} catatan dilewati karena bulan periodenya sudah ditutup buku (terkunci). Buka kunci dulu di Laporan Neraca → Tutup Buku kalau memang perlu dihapus.`);
+      }
+      if (langsungBisaHapus.length === 0 && perluAjukan.length === 0) { setSelectedIds([]); return; }
+      if (langsungBisaHapus.length > 0 && !confirm(`Hapus ${langsungBisaHapus.length} catatan kontrol terpilih? Tindakan ini permanen.`)) {
         if (perluAjukan.length === 0) return;
-      } else {
-        const affectedTokoIds = [...new Set(langsung.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
-        langsung.forEach(id => deleteRecord("kontrol", id));
-        const remaining = (db.kontrol||[]).filter(k => !langsung.includes(k.id));
+      } else if (langsungBisaHapus.length > 0) {
+        const affectedTokoIds = [...new Set(langsungBisaHapus.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
+        langsungBisaHapus.forEach(id => { voidJurnalSumber("kontrol", id, "Kontrol dihapus (bulk)"); deleteRecord("kontrol", id); });
+        const remaining = (db.kontrol||[]).filter(k => !langsungBisaHapus.includes(k.id));
         affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining));
       }
     }
@@ -381,6 +396,96 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   const lf = (k,v) => setLuarRuteForm(p=>({...p,[k]:v}));
 
   const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  FASE 3 DOUBLE-ENTRY ACCOUNTING — posting Kontrol & Penjualan Luar Rute
+  //  (lihat akuntansiHelpers.js & RANCANGAN-double-entry.md §6 Fase 3).
+  //  SEMUA fungsi di bawah ini sengaja "aman gagal" (try/catch sendiri,
+  //  terpisah dari penyimpanan record kontrol/penjualanLuar-nya) — supaya
+  //  fitur pencatatan kunjungan/penjualan yang sudah lama dipakai TIDAK
+  //  PERNAH terhambat oleh fitur akuntansi baru yang masih tahap awal.
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Cari entry jurnal AKTIF (belum void) untuk 1 sumber tertentu.
+  function jurnalAktifUntukSumber(sumberTipe, sumberId) {
+    return (db.jurnalUmum || []).filter(j => j.sumberTipe === sumberTipe && j.sumberId === sumberId && !j.void);
+  }
+  // Batalkan semua jurnal aktif untuk 1 sumber (dipakai sebelum re-post saat
+  // edit/approve ulang, dan saat record sumbernya dihapus/ditolak).
+  function voidJurnalSumber(sumberTipe, sumberId, alasan) {
+    if (!voidJurnal) return;
+    jurnalAktifUntukSumber(sumberTipe, sumberId).forEach(j => voidJurnal(j.id, { alasan, createdBy }));
+  }
+
+  // ✅ FIX BUG (audit Fase 8): cekKunci() sudah dipasang di Kas/Stock
+  // Opname/Hutang-Piutang sejak awal, tapi TIDAK PERNAH ada di Kontrol
+  // maupun Penjualan Luar Rute — jadi transaksi bertanggal di bulan yang
+  // sudah ditutup buku (snapshot saldoAkunBulanan, Fase 7) tetap bisa
+  // diposting/diedit/dihapus, dan karena hitungSaldoAkunTerkini() (Fase 8)
+  // cuma menjumlah jurnal SETELAH bulan tertutup terakhir, entry begini
+  // jadi permanen tidak ikut terhitung — saldo di "Neraca versi Jurnal"
+  // diam-diam meleset tanpa peringatan apa pun. Pola sama persis dengan
+  // cekKunci() di NeracaKeuangan.jsx.
+  function cekTutupBuku(dateStr) {
+    if (isPeriodeTerkunci(db.tutupBuku || [], dateStr)) {
+      alert(`Periode ${bulanKeyOf(dateStr)} sudah ditutup buku (terkunci) di Laporan Neraca. Buka kunci dulu di sub-bagian "Tutup Buku" kalau memang perlu diubah.`);
+      return true;
+    }
+    return false;
+  }
+
+  // Sinkronkan jurnal untuk 1 record KONTROL sesuai status-nya SEKARANG:
+  //  - "disetujui" → void jurnal lama (kalau ada, utk kasus edit/approve
+  //    ulang) lalu posting jurnal baru dari data terkini.
+  //  - selain itu ("menunggu"/"ditolak") → pastikan TIDAK ADA jurnal aktif
+  //    (void kalau ternyata masih ada, mis. status berubah dari disetujui).
+  // Dipanggil dengan record FINAL (sudah termasuk field yang baru diubah),
+  // BUKAN state React `db.kontrol` yang closure-nya bisa basi.
+  function syncJurnalKontrol(record) {
+    if (!postJurnal) return; // prop belum ada (kompatibilitas versi lama)
+    if (record.status !== "disetujui") {
+      voidJurnalSumber("kontrol", record.id, "Kontrol tidak/belum disetujui");
+      return;
+    }
+    // Jaring pengaman terakhir (bukan pengecekan interaktif) — dipanggil
+    // juga dari jalur non-interaktif seperti auto-approve 24 jam yang bisa
+    // berjalan di sesi siapa pun yang sedang online. Silent skip + warn,
+    // TANPA alert, supaya tidak memunculkan popup di sesi orang lain.
+    if (isPeriodeTerkunci(db.tutupBuku || [], record.tanggal)) {
+      console.warn(`syncJurnalKontrol: periode ${bulanKeyOf(record.tanggal)} sudah tertutup buku, jurnal Kontrol ${record.id} dilewati.`);
+      return;
+    }
+    voidJurnalSumber("kontrol", record.id, "Kontrol diposting ulang (edit/approve)");
+    try {
+      const baris = bangunBarisJurnalKontrol(record, db.produk || []);
+      if (baris) {
+        postJurnal({ tanggal: record.tanggal, sumberTipe: "kontrol", sumberId: record.id,
+          keterangan: `Penjualan Konsinyasi — toko ${record.tokoId}`, baris, createdBy });
+      }
+    } catch (e) {
+      console.warn("Gagal memposting jurnal Kontrol (data kontrol tetap tersimpan):", e);
+    }
+  }
+
+  // Penjualan Luar Rute tidak punya alur persetujuan (langsung final saat
+  // disimpan) — posting cukup sekali saat ditambahkan, void saat dihapus.
+  function postJurnalPenjualanLuar(record) {
+    if (!postJurnal) return;
+    // Jaring pengaman terakhir — sama seperti di syncJurnalKontrol di atas.
+    if (isPeriodeTerkunci(db.tutupBuku || [], record.tanggal)) {
+      console.warn(`postJurnalPenjualanLuar: periode ${bulanKeyOf(record.tanggal)} sudah tertutup buku, jurnal Penjualan Luar Rute ${record.id} dilewati.`);
+      return;
+    }
+    try {
+      const baris = bangunBarisJurnalPenjualanLuar(record, db.produk || []);
+      if (baris) {
+        postJurnal({ tanggal: record.tanggal, sumberTipe: "penjualanLuar", sumberId: record.id,
+          keterangan: `Penjualan Luar Rute — wilayah ${record.wilayahId}`, baris, createdBy });
+      }
+    } catch (e) {
+      console.warn("Gagal memposting jurnal Penjualan Luar Rute (data tetap tersimpan):", e);
+    }
+  }
 
   // ⚡ OPTIMISASI PERFORMA (setelah laporan "input kontrol masih stuck"):
   // versi sebelumnya memakai `.find()` di dalam `.map()` untuk toko/rute/
@@ -901,6 +1006,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   function submitLuarRute() {
     const lforn = luarRuteForm;
     if (!lforn?.tanggal) return alert("Tanggal wajib diisi");
+    if (cekTutupBuku(lforn.tanggal)) return;
     if (!lforn?.wilayahId) return alert("Wilayah wajib diisi — penjualan luar rute tetap menjadi tanggung jawab sales di wilayah tugasnya");
     if (isSalesRestricted && lforn.wilayahId !== salesWilayahId) {
       return alert("Sebagai Sales, kamu hanya boleh mencatat penjualan luar rute untuk wilayahmu sendiri.");
@@ -913,12 +1019,17 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       payload[`bonusInput_${p.id}`] = Number(lforn[`bonusInput_${p.id}`]||0);
     });
     const newId = genId("PLR", db.penjualanLuar);
-    addRecord("penjualanLuar", { ...payload, id:newId });
+    const newEntryLuar = { ...payload, id:newId };
+    addRecord("penjualanLuar", newEntryLuar);
+    postJurnalPenjualanLuar(newEntryLuar);
     setLuarRuteModal(false);
     setLuarRuteForm(null);
   }
   function deleteLuarRute(id) {
     if (!confirm("Hapus catatan penjualan luar rute ini? Tindakan ini permanen.")) return;
+    const rec = (db.penjualanLuar||[]).find(r=>r.id===id);
+    if (rec && cekTutupBuku(rec.tanggal)) return;
+    voidJurnalSumber("penjualanLuar", id, "Penjualan Luar Rute dihapus");
     deleteRecord("penjualanLuar", id);
   }
 
@@ -982,6 +1093,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 
   function submit() {
     if (!form.tokoId || !form.tanggal) return alert("Toko & Tanggal wajib diisi");
+    if (cekTutupBuku(form.tanggal)) return;
     // ✅ FIX (pengaman kedua): walau dropdown sudah dikunci di UI, tetap cek
     // ulang di sini sebelum simpan — kalau toko yang dipilih ternyata berada
     // di luar wilayah Sales (misal karena bug lain / state basi), tolak simpan
@@ -1069,6 +1181,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       // sudah "disetujui" (Admin/Manajer langsung) — kalau masih "menunggu"
       // (Sales), ceklis Master Toko belum boleh berubah sampai disetujui.
       if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
+      syncJurnalKontrol(newEntry);
     } else {
       const updatedPayload = { ...payload, ...approvalFields };
       updateRecord("kontrol", form.id, updatedPayload);
@@ -1076,6 +1189,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       const updatedList = (db.kontrol||[]).map(k => k.id===form.id ? { ...k, ...updatedPayload } : k);
       recalcTokoStok(form.tokoId, updatedList);
       if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
+      syncJurnalKontrol({ ...updatedList.find(k => k.id === form.id) });
     }
     setModal(null);
     if (isSalesRestricted) {
@@ -1787,7 +1901,10 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         <ConfirmDelete
           label="Data kontrol ini akan dihapus permanen."
           onConfirm={() => {
-            const tokoIdTerdampak = (db.kontrol||[]).find(k=>k.id===deleteTarget)?.tokoId;
+            const recTerdampak = (db.kontrol||[]).find(k=>k.id===deleteTarget);
+            if (recTerdampak && cekTutupBuku(recTerdampak.tanggal)) { setDeleteTarget(null); return; }
+            const tokoIdTerdampak = recTerdampak?.tokoId;
+            voidJurnalSumber("kontrol", deleteTarget, "Kontrol dihapus");
             deleteRecord("kontrol", deleteTarget);
             if (tokoIdTerdampak) {
               const remaining = (db.kontrol||[]).filter(k => k.id !== deleteTarget);
@@ -2876,6 +2993,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
                 // pengajuan yang perlu disetujui Admin/Manajer.
                 const rec = (db.kontrol||[]).find(k=>k.id===id);
                 if (kontrolBisaLangsungHapus(rec)) {
+                  if (rec && cekTutupBuku(rec.tanggal)) return;
+                  voidJurnalSumber("kontrol", id, "Kontrol dihapus");
                   deleteRecord("kontrol", id);
                   const remaining = (db.kontrol||[]).filter(k=>k.id!==id);
                   if (rec?.tokoId) recalcTokoStok(rec.tokoId, remaining);

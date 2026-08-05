@@ -181,10 +181,20 @@ export function hitungDanaCadanganPeriode(terjualTotalPeriode, danaCadanganCfg) 
 // Versi KUMULATIF ALL-TIME (buat baris Kewajiban di Laporan Neraca) — jumlah
 // dari SELURUH transaksi terjual sepanjang sejarah aplikasi, bukan cuma
 // periode yang sedang difilter.
-export function hitungDanaCadanganKumulatif(kontrolArr, penjualanLuarArr, danaCadanganCfg) {
+//
+// ⚠️ `kontrolArr` yang diteruskan ke sini (analytics.kontrol / db.kontrol)
+// HANYA berisi tahun-tahun yang sedang termuat di state aktif — begitu
+// sebuah tahun diarsipkan ke Google Drive (lihat useDB.js → archiveKontrolYear)
+// dan dihapus dari RTDB, tahun itu otomatis hilang dari array ini walau
+// datanya masih ada (di Drive). Supaya total tetap "all-time" yang benar,
+// parameter `arsipPcsTerjual` (total pcs dari tahun-tahun yang sudah
+// diarsipkan, dijumlah dari kontrolArchiveIndex/{tahun}.totalTerjualTahun —
+// lihat useDB.js → archivedKontrolAgregat) WAJIB ditambahkan di sini.
+export function hitungDanaCadanganKumulatif(kontrolArr, penjualanLuarArr, danaCadanganCfg, arsipPcsTerjual) {
   if (!danaCadanganCfg?.aktif) return 0;
   const totalPcs = (kontrolArr || []).reduce((s, k) => s + (k.totalTerjual || 0), 0)
-    + (penjualanLuarArr || []).reduce((s, k) => s + (k.totalTerjual || 0), 0);
+    + (penjualanLuarArr || []).reduce((s, k) => s + (k.totalTerjual || 0), 0)
+    + (Number(arsipPcsTerjual) || 0);
   return totalPcs * (Number(danaCadanganCfg.rpPerPcs) || 0);
 }
 
