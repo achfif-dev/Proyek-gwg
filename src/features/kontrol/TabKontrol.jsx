@@ -24,7 +24,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // ✅ PERSISTEN: filter & pencarian tab ini disimpan ke localStorage supaya
   // tetap sama setelah refresh / app dibuka ulang, bukan balik ke default.
   const [hanyaBelumKontrol, setHanyaBelumKontrol] = usePersistedState("kontrol.hanyaBelumKontrol", false);
-  const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:initialQuery||"",
+  const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", q:initialQuery||"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
@@ -40,6 +40,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
   const [diagnostikOpen, setDiagnostikOpen] = useState(false);
+  // ✅ Ringkasan Tanggal Kontrol: kartu collapsible yang menampilkan
+  // tanggal-tanggal (dalam Bulan/Wilayah/Rute yang sedang difilter) yang
+  // punya entri Kontrol, beserta Rute & Wilayah yang dikontrol di tanggal
+  // tsb — mempermudah menelusuri data Kontrol yang sudah berlalu tanpa
+  // harus tebak-tebak tanggal satu-satu.
+  const [ringkasanTanggalOpen, setRingkasanTanggalOpen] = useState(false);
   const [diagnostikShowList, setDiagnostikShowList] = useState(false);
   const [diagnostikGroupBy, setDiagnostikGroupBy] = usePersistedState("kontrol.diagnostikGroupBy", "wilayah"); // "wilayah" | "rute"
   // ✅ Filter khusus daftar/ekspor di kartu Diagnostik Cakupan Kontrol — terpisah
@@ -618,6 +624,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
     (!filter.wilayahId || k.wilayahId === filter.wilayahId) &&
     (!filter.ruteId    || k.ruteId    === filter.ruteId) &&
     (!filter.bulan     || k.tanggal?.startsWith(filter.bulan)) &&
+    (!filter.tanggal   || k.tanggal === filter.tanggal) &&
     (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q))) &&
     (!filter.catatanStatus || (filter.catatanStatus==="manual" ? !k.catatanStatus || k.catatanStatus==="manual" : k.catatanStatus===filter.catatanStatus)) &&
     (filter.minJumlah==="" || filter.minJumlah==null || k.totalTerjual >= Number(filter.minJumlah)) &&
@@ -646,7 +653,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         (!isSalesRestricted || pl.wilayahId===salesWilayahId) &&
         (!filter.wilayahId || pl.wilayahId === filter.wilayahId) &&
         (!filter.ruteId    || pl.ruteId    === filter.ruteId) &&
-        (!filter.bulan     || pl.tanggal?.startsWith(filter.bulan))
+        (!filter.bulan     || pl.tanggal?.startsWith(filter.bulan)) &&
+        (!filter.tanggal   || pl.tanggal === filter.tanggal)
       )
       .map(pl => {
         let totalRev = 0, totalBonus = 0;
@@ -658,7 +666,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
         const ruteNama = (db.rute||[]).find(r=>r.id===pl.ruteId)?.nama || "";
         return { ...pl, totalRev, totalBonus, wilayahNama, ruteNama };
       });
-  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, filter.q, isSalesRestricted, salesWilayahId]);
+  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, filter.tanggal, filter.q, isSalesRestricted, salesWilayahId]);
 
   // ✅ FIX SINKRONISASI: Penjualan Luar Rute tidak punya konsep "Status
   // Kunjungan" (Toko Tutup/Tidak Terjual/Bermasalah/Isi Manual), rentang
@@ -674,6 +682,35 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
   // semua ringkasan yang bergantung padanya tetap sinkron dengan filter.
   const adaFilterAuditKunjungan = !!filter.catatanStatus || filter.minJumlah !== "" || filter.maxJumlah !== "" || !!filter.kunjunganBerulang;
   const luarRuteDataForSummary = adaFilterAuditKunjungan ? [] : luarRuteData;
+
+  // ✅ RINGKASAN TANGGAL KONTROL — daftar tanggal (dalam Wilayah/Rute/Bulan
+  // yang sedang difilter) yang punya minimal satu entri Kontrol, lengkap
+  // dengan Rute & Wilayah yang dikontrol pada tanggal tsb. Berguna untuk
+  // menyisir tanggal kontrol yang SUDAH BERLALU tanpa harus tebak-tebak —
+  // tinggal klik salah satu tanggal untuk langsung menyaring tabel ke
+  // tanggal itu (mengisi filter "Tgl Kontrol" di atas).
+  // Sengaja TIDAK ikut filter.tanggal/q/catatanStatus/minJumlah/maxJumlah/
+  // kunjunganBerulang supaya kartu ini tetap menampilkan GAMBARAN PENUH
+  // sebulan (semua tanggal yang ada entrinya), bukan cuma tanggal yang
+  // kebetulan lolos filter detail lain.
+  const ringkasanTanggalKontrol = useMemo(() => {
+    const map = {};
+    enriched.forEach(k => {
+      if (!k.tanggal) return;
+      if (filter.wilayahId && k.wilayahId !== filter.wilayahId) return;
+      if (filter.ruteId && k.ruteId !== filter.ruteId) return;
+      if (filter.bulan && !k.tanggal.startsWith(filter.bulan)) return;
+      if (!map[k.tanggal]) map[k.tanggal] = { tanggal: k.tanggal, count: 0, ruteMap: {} };
+      const entry = map[k.tanggal];
+      entry.count++;
+      const ruteKey = k.ruteId || `${k.ruteNama}|${k.wilayahNama}`;
+      if (!entry.ruteMap[ruteKey]) entry.ruteMap[ruteKey] = { ruteNama: k.ruteNama || "-", wilayahNama: k.wilayahNama || "-", count: 0 };
+      entry.ruteMap[ruteKey].count++;
+    });
+    return Object.values(map)
+      .map(e => ({ ...e, ruteList: Object.values(e.ruteMap).sort((a, b) => naturalCompare(a.ruteNama, b.ruteNama)) }))
+      .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+  }, [enriched, filter.wilayahId, filter.ruteId, filter.bulan]);
 
   // ✅ DIAGNOSTIK CAKUPAN KONTROL — dibuat permanen di dalam app (bukan cek
   // manual sekali-sekali lewat file backup) supaya Admin/Manajer bisa
@@ -2611,6 +2648,12 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       <FilterBar filters={[
         { key:"q",         label:"Cari Toko",value:filter.q,         placeholder:"Nama atau kode toko..." },
         { key:"bulan",     label:"Bulan",    value:filter.bulan,     type:"month", placeholder:"2026-06" },
+        // ✅ Filter Tgl Kontrol: menyaring ke SATU tanggal kunjungan yang
+        // persis (berbeda dengan "Bulan" yang menyaring satu bulan penuh) —
+        // mempermudah mencari rute yang dikontrol pada tanggal tertentu di
+        // bulan yang sama. Lihat juga kartu "Ringkasan Tanggal Kontrol" di
+        // bawah untuk melihat tanggal mana saja yang punya entri Kontrol.
+        { key:"tanggal",   label:"Tgl Kontrol", value:filter.tanggal, type:"date" },
         ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
         { key:"catatanStatus", label:"Status Kunjungan", value:filter.catatanStatus,
@@ -2623,7 +2666,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
       ]} onChange={(k,v)=>{
         if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
         else setFilter(p=>({...p,[k]:v}));
-      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", q:"",
+      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", q:"",
         cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
         catatanStatus:"", minJumlah:"", maxJumlah:"", kunjunganBerulang:false})} />
 
@@ -2657,6 +2700,57 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           <Icon.repeat size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Toko Dikunjungi &gt;1× (tutup/lainnya)
         </label>
       </div>
+
+      {/* ✅ Kartu Ringkasan Tanggal Kontrol — menampilkan tanggal apa saja
+          (dalam Wilayah/Rute/Bulan yang sedang difilter) yang punya entri
+          Kontrol, beserta Rute & Wilayah yang dikontrol di tanggal tsb.
+          Klik salah satu tanggal untuk langsung menyaring tabel ke tanggal
+          itu lewat filter "Tgl Kontrol" — mempermudah menelusuri data
+          Kontrol yang sudah berlalu. */}
+      {ringkasanTanggalKontrol.length > 0 && (
+        <div style={{ background:T.white, border:`1px solid ${T.gray200}`, borderRadius:10,
+          marginBottom:14, overflow:"hidden" }}>
+          <div onClick={()=>setRingkasanTanggalOpen(o=>!o)}
+            style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
+              padding:"10px 14px", cursor:"pointer", gap:10, flexWrap:"wrap" }}>
+            <div style={{ fontSize:12.5, fontWeight:700, color:T.gray700 }}>
+              <Icon.calendarDays size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}}/> Ringkasan Tanggal Kontrol
+              {" — "}{fmt(ringkasanTanggalKontrol.length)} tanggal{!filter.bulan && " (semua bulan yang termuat)"}
+            </div>
+            <span style={{ fontSize:11, color:T.gray500 }}>{ringkasanTanggalOpen?"▲ Tutup":"▼ Lihat Tanggal"}</span>
+          </div>
+          {ringkasanTanggalOpen && (
+            <div style={{ padding:"0 14px 14px", maxHeight:320, overflowY:"auto" }}>
+              {!filter.bulan && (
+                <div style={{ fontSize:11.5, color:T.gray500, marginBottom:8 }}>
+                  Tips: pilih filter <b>Bulan</b> di atas dulu supaya daftar tanggal di sini lebih ringkas & fokus ke satu bulan.
+                </div>
+              )}
+              {ringkasanTanggalKontrol.map(({ tanggal, count, ruteList }) => (
+                <div key={tanggal} onClick={()=>{ setFilter(p=>({...p, tanggal})); setRingkasanTanggalOpen(false); }}
+                  style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:10,
+                    padding:"8px 10px", borderRadius:8, cursor:"pointer",
+                    background:filter.tanggal===tanggal ? T.blueLt : "transparent",
+                    border:`1px solid ${filter.tanggal===tanggal ? T.blue+"55" : T.gray100}`,
+                    marginBottom:6 }}>
+                  <div style={{ flex:1 }}>
+                    <div style={{ fontSize:12.5, fontWeight:700, color:T.gray800 }}>{tanggal}</div>
+                    <div style={{ fontSize:11, color:T.gray500, marginTop:2, display:"flex", flexWrap:"wrap", gap:5 }}>
+                      {ruteList.map(r => (
+                        <span key={`${tanggal}-${r.ruteNama}-${r.wilayahNama}`}
+                          style={{ background:T.gray100, borderRadius:99, padding:"2px 8px" }}>
+                          {r.ruteNama} <span style={{ color:T.gray400 }}>({r.wilayahNama})</span>{r.count>1 && <b> ×{r.count}</b>}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <Badge color={T.gray600} bg={T.gray100}>{fmt(count)} entri</Badge>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Summary per Produk — ✅ Diminimalkan jadi GRID 2 KOLOM KESAMPING
           (sama seperti gaya kartu StatCard di Tab Dashboard), bukan satu
@@ -3017,6 +3111,7 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
           .filter(pl =>
             (!isSalesRestricted || pl.wilayahId===salesWilayahId) &&
             (!filter.bulan || pl.tanggal?.startsWith(filter.bulan)) &&
+            (!filter.tanggal || pl.tanggal===filter.tanggal) &&
             (!filter.wilayahId || pl.wilayahId===filter.wilayahId) &&
             // ✅ Kalau ruteId sudah diisi sales, penjualan luar rute ini ikut
             // muncul saat filter Rute tsb dipilih. Kalau ruteId kosong (rute
