@@ -1,4 +1,14 @@
 export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pengguna", "penyesuaian", "penjualanLuar",
+  // ✅ FIX BUG SINKRONISASI: "penarikanToko" (pengajuan Tarik/Non-Aktifkan
+  // Toko dari Sales) sebelumnya TIDAK ada di LIST_TABLES ini, padahal dipakai
+  // luas di TabKontrol.jsx (addRecord/updateRecord/panel approval/auto-approve
+  // 24 jam). Akibatnya tabel ini tidak pernah ikut listener live-sync di
+  // useDB.js (paths dibangun dari LIST_TABLES) — pengajuan dari Sales hanya
+  // tampak di device Sales sendiri (optimistic local update), TIDAK PERNAH
+  // terlihat di device Admin/Manajer lain, dan tidak ikut terhapus saat
+  // Reset Semua Data. Menambahkannya di sini otomatis mengikutkannya ke
+  // listener onValue tabel kecil, ke save() diff-per-tabel, dan ke resetDB().
+  "penarikanToko",
   // ✅ NERACA KEUANGAN (Tab Bagi Hasil): 3 tabel baru untuk Kas Opname (buku
   // kas lengkap), Stock Opname (opname fisik vs sistem), dan Amortisasi
   // (daftar aset & penyusutan). Didaftarkan di sini supaya otomatis ikut
