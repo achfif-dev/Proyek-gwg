@@ -25,7 +25,23 @@ export function useAnalytics(db) {
     const tokoArr = db.toko||[];
     const ruteArr = db.rute||[];
     const wilayahArr = db.wilayah||[];
-    const kontrolArr = db.kontrol||[];
+    // ✅ FIX BUG (persiapan pemakaian oleh Sales): sebelumnya kontrolArr di
+    // sini memakai db.kontrol APA ADANYA, termasuk entri berstatus
+    // "menunggu" (belum ditinjau Admin/Manajer, bisa masih 24 jam
+    // menggantung) dan "ditolak" (sudah eksplisit ditolak). Padahal sejak
+    // fitur alur persetujuan Sales dibuat (lihat CHANGES-persetujuan-
+    // sales.md), recalcTokoStok() SUDAH mengabaikan kedua status ini saat
+    // menghitung stok Master Toko — tapi pengecualian yang sama lupa
+    // diterapkan di sini, sumber data untuk Dashboard (Total Revenue/Laba
+    // Bersih), SEMUA mode Tab Rekap (Harian/Bulanan/Kuartal/Tahunan/Siklus/
+    // Perputaran Stok/Ranking Toko), dan Tab Bagi Hasil (revPeriode — dasar
+    // hitung Pendapatan/HPP/Dana Cadangan/alokasi ke tiap pihak). Akibatnya
+    // penjualan yang BELUM disetujui atau SUDAH ditolak tetap ikut
+    // menggelembungkan semua angka itu. Entri lama (dari sebelum fitur
+    // status ini ada) tidak punya field `status` sama sekali — tetap
+    // dihitung seperti biasa lewat pengecualian eksplisit di bawah, BUKAN
+    // whitelist "status === disetujui" (yang akan salah membuang data lama).
+    const kontrolArr = (db.kontrol||[]).filter(k => k.status !== "menunggu" && k.status !== "ditolak");
     const luarArr = db.penjualanLuar||[];
 
     const harga = {};
