@@ -76,6 +76,9 @@ export function LaporanPajak({ akuntansi, revPeriode, periodeMode, PERIODE_LABEL
           <div style={{ fontSize: 12, color: T.gray700, lineHeight: 1.6 }}>
             <b>Ini simulasi/alat bantu hitung, bukan pengganti konsultan pajak atau pelaporan resmi.</b> Tarif di bawah mengikuti aturan yang berlaku umum saat ini (PP 55/2022 & UU HPP) dan bisa berubah sewaktu-waktu — selalu cek aturan terbaru & lapor kewajiban sebenarnya lewat <b>Coretax DJP</b> di{" "}
             <a href="https://www.pajak.go.id" target="_blank" rel="noreferrer" style={{ color: T.orange, fontWeight: 700 }}>pajak.go.id</a>. Angka di sini juga belum memperhitungkan Pajak Masukan (kredit PPN), koreksi fiskal, PPh 21 karyawan, atau kompensasi rugi.
+            <div style={{ marginTop: 6 }}>
+              ✅ Sejak diintegrasikan dengan akuntansi double-entry: Omzet & Laba Kotor di sini dihitung dari <b>jurnal akuntansi (harga beku sesuai tanggal transaksi)</b>, bukan lagi harga produk saat ini — supaya angkanya tidak berubah retroaktif kalau harga produk diedit belakangan. Hanya penjualan yang statusnya <b>sudah disetujui</b> yang ikut terhitung.
+            </div>
           </div>
         </div>
       </Card>

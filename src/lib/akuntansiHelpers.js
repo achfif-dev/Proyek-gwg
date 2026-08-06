@@ -74,9 +74,17 @@ export const DEFAULT_DAFTAR_AKUN = {
   "2102": { nama: "Pinjaman Bank", tipe: "kewajiban", protected: false, aktif: true },
   "2103": { nama: "Pinjaman Investor", tipe: "kewajiban", protected: false, aktif: true },
   "2104": { nama: "Hutang Lainnya", tipe: "kewajiban", protected: false, aktif: true },
+  // ✅ FASE 9: Hutang Beban Akrual — Beban Usaha (config.bebanUsaha, mis.
+  // Gaji Sales/Produksi/Admin) diakui OTOMATIS tiap bulan saat Tutup Buku
+  // (Dr 5102, Kr 2140) TANPA perlu ada transaksi Kas dulu — baru saat
+  // BENAR-BENAR dibayar via Kas kategori "Biaya Operasional", akun ini yang
+  // dikurangi (Dr 2140/Kr 1101), BUKAN 5102 lagi (supaya tidak dobel-hitung
+  // beban: sekali dari akrual otomatis, sekali dari pembayaran kas).
+  "2140": { nama: "Hutang Beban Akrual (Beban Usaha Belum Dibayar)", tipe: "kewajiban", protected: true, aktif: true },
   "2110": { nama: "Kewajiban Dana Cadangan", tipe: "kewajiban", protected: true, aktif: true },
   "2120": { nama: "Hutang Bagi Hasil (Belum Dicairkan)", tipe: "kewajiban", protected: true, aktif: true },
   "2130": { nama: "Hutang Pajak", tipe: "kewajiban", protected: false, aktif: true },
+  "2140": { nama: "Hutang Beban Usaha (Accrued)", tipe: "kewajiban", protected: true, aktif: true },
 
   // EKUITAS
   "3101": { nama: "Modal Disetor", tipe: "ekuitas", protected: true, aktif: true },
@@ -151,7 +159,7 @@ export function buatEntryJurnal({ tanggal, sumberTipe, sumberId, keterangan, bar
     sumberTipe,
     sumberId: sumberId || null,
     keterangan: keterangan || "",
-    baris: baris.map(b => ({ akun: String(b.akun), debit: Number(b.debit)||0, kredit: Number(b.kredit)||0 })),
+    baris: baris.map(b => ({ akun: String(b.akun), debit: Number(b.debit)||0, kredit: Number(b.kredit)||0, ...(b.dimensi ? { dimensi: b.dimensi } : {}) })),
     createdAt: Date.now(),
     createdBy: createdBy || null,
     void: false,
@@ -216,16 +224,102 @@ export const KATEGORI_KAS_MASUK_AKUN = {
   "Lainnya": "4103",
 };
 export const KATEGORI_KAS_KELUAR_AKUN = {
-  "Biaya Operasional": "5102",
+  // ✅ FASE 9: sejak Beban Usaha (config.bebanUsaha) diakui OTOMATIS tiap
+  // Tutup Buku (akrual: Dr 5102 / Kr 2140 — lihat bangunBarisJurnalAkrualBebanUsaha
+  // di bawah), pembayaran tunainya TIDAK BOLEH lagi men-debit 5102 lagi
+  // (itu akan dobel-hitung beban yang sama). Sekarang "Biaya Operasional"
+  // di Kas berarti MELUNASI hutang beban yang sudah diakui (Dr 2140),
+  // bukan mencatat beban baru. ⚠️ Kalau ada pengeluaran operasional yang
+  // BENAR-BENAR di luar anggaran bulanan (bukan bagian dari akrual), ini
+  // akan membuat saldo 2140 negatif sementara — sinyal untuk ditinjau,
+  // bukan error (pola sama seperti 2120 Kewajiban Bagi Hasil).
+  "Biaya Operasional": "2140",
   "Biaya Logistik/Distribusi": "5104",
   "Bonus/Insentif Sales": "5103",
-  "Pencairan Bagi Hasil": "2120",          // mengurangi Hutang Bagi Hasil yang sudah diakui (Fase 6)
+  "Pencairan Bagi Hasil": "2120",          // mengurangi Hutang Bagi Hasil yang sudah diakui (Fase 6/9)
   "Pembelian Aset": "1205",                // generik — lihat catatan di atas (Fase 4 menyempurnakan)
   "Pembayaran Pajak": "5106",
   "Pembayaran Hutang Usaha": "2101",
   "Pelunasan Pinjaman": "2104",            // generik — lihat catatan di atas (Fase 5 menyempurnakan)
   "Lainnya": "5107",
 };
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FASE 9 — AKRUAL BEBAN USAHA & PENGAKUAN KEWAJIBAN BAGI HASIL
+// ═══════════════════════════════════════════════════════════════════════
+// Ditambahkan setelah keputusan eksplisit (lihat AUDIT-integrasi-neraca-
+// bagihasil-pajak.md §Kesimpulan): (1) Pendapatan HARUS historical cost
+// (sudah benar sejak Fase 3 — tidak berubah di sini), (2) Beban Usaha harus
+// diposting OTOMATIS (bukan cuma asumsi di sistem lama), (3) Kewajiban
+// Bagi Hasil butuh Fase pengakuan tersendiri (bukan cuma didebit saat
+// dicairkan tanpa pernah dikredit). Dipanggil dari titik Tutup Buku yang
+// sama seperti Amortisasi & Dana Cadangan (Fase 4/6) — proses akhir
+// periode, bukan per-transaksi.
+
+// Akrual Beban Usaha 1 periode: Dr 5102 Beban Operasional (total dari
+// config.bebanUsaha[]) / Kr 2140 Hutang Beban Usaha. Pembayaran tunainya
+// (kategori Kas "Biaya Operasional") sekarang melunasi 2140 (lihat mapping
+// KATEGORI_KAS_KELUAR_AKUN di atas), BUKAN men-debit 5102 lagi.
+export function bangunBarisJurnalAkrualBebanUsaha(totalBebanUsaha) {
+  const total = Number(totalBebanUsaha) || 0;
+  if (total <= 0) return null;
+  return [
+    { akun: "5102", debit: total, kredit: 0 },
+    { akun: "2140", debit: 0, kredit: total },
+  ];
+}
+
+// Pengakuan Kewajiban Bagi Hasil 1 periode: begitu Laba (Rugi) bulan ini
+// versi JURNAL (historical cost, dihitung dari entry jurnal bulan ini
+// SENDIRI — bukan revPeriode/akuntansi sistem lama yang live-recalculate)
+// sudah diketahui, alokasikan ke tiap pihak sesuai `config.pihak[]` (field
+// `basis`: "laba" atau "pendapatan", dan `pct`), lalu akui sebagai
+// kewajiban: Dr 3102 Laba Ditahan (total) / Kr 2120 Hutang Bagi Hasil
+// (per baris per pihak, ditandai `dimensi.pihakId` supaya bisa ditelusuri
+// per pihak tanpa perlu akun baru — pola sama dengan dimensi wilayah di
+// RANCANGAN-double-entry.md §7.1). Kalau laba <= 0 atau tidak ada pihak
+// dengan alokasi positif, kembalikan null (tidak ada yang diakui).
+export function bangunBarisJurnalPengakuanBagiHasil(pihakList, labaBulanIniJurnal, pendapatanBulanIniJurnal) {
+  const laba = Number(labaBulanIniJurnal) || 0;
+  const pendapatan = Number(pendapatanBulanIniJurnal) || 0;
+  if (laba <= 0 && pendapatan <= 0) return null;
+  const alokasi = (pihakList || []).map(p => {
+    const basis = p.basis === "laba" ? laba : pendapatan;
+    const nominal = Math.max(0, basis * ((Number(p.pct) || 0) / 100));
+    return { pihakId: p.id, pihakNama: p.nama, nominal };
+  }).filter(a => a.nominal > 0);
+  if (alokasi.length === 0) return null;
+  const totalDibagi = alokasi.reduce((s, a) => s + a.nominal, 0);
+  return [
+    { akun: "3102", debit: totalDibagi, kredit: 0 },
+    ...alokasi.map(a => ({ akun: "2120", debit: 0, kredit: a.nominal, dimensi: { pihakId: a.pihakId, pihakNama: a.pihakNama } })),
+  ];
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  FASE 9b — LABA RUGI HISTORIS UNTUK PERIODE APA PUN (dipakai Pajak)
+// ═══════════════════════════════════════════════════════════════════════
+// `bangunBarisJurnalPengakuanBagiHasil` di atas menghitung laba jurnal HANYA
+// untuk bulan yang sedang ditutup buku (inline di NeracaKeuangan.jsx). Fungsi
+// INI serupa tapi bisa dipakai untuk PERIODE APA PUN (bulanan/kuartal/
+// tahunan/kustom — sama seperti filter yang sudah ada di Tab Bagi Hasil),
+// supaya Laporan Pajak (`LaporanPajak.jsx`) bisa memakai Pendapatan &
+// Laba Kotor HISTORICAL COST (dari jurnal, harga beku sesuai Fase 3) —
+// bukan lagi live-recalculate pakai harga produk SAAT INI (lihat AUDIT
+// §Temuan 1). Cuma menghasilkan field yang benar-benar dipakai
+// LaporanPajak.jsx (`pendapatan`, `labaKotor`) — bukan tiruan lengkap
+// objek `akuntansi` lama (Beban Usaha/Amortisasi/Dana Cadangan Pajak tetap
+// pakai versi lama untuk sementara, lihat catatan di TabBagiHasil.jsx).
+export function hitungAkuntansiHistoris(bounds, jurnalUmumArr) {
+  if (!bounds?.start || !bounds?.end) return { pendapatan: 0, hpp: 0, labaKotor: 0 };
+  const entries = (jurnalUmumArr || []).filter(j => !j.void && j.tanggal >= bounds.start && j.tanggal <= bounds.end);
+  let pendapatan = 0, hpp = 0;
+  entries.forEach(j => (j.baris || []).forEach(b => {
+    if (b.akun === "4101" || b.akun === "4102" || b.akun === "4103") pendapatan += (Number(b.kredit) || 0) - (Number(b.debit) || 0);
+    if (b.akun === "5101") hpp += (Number(b.debit) || 0) - (Number(b.kredit) || 0);
+  }));
+  return { pendapatan, hpp, labaKotor: pendapatan - hpp };
+}
 
 // Bangun `baris` jurnal (belum divalidasi/disimpan) dari 1 record
 // kasTransaksi `{ tanggal, kategori, tipe: "masuk"|"keluar", nominal, id }`.

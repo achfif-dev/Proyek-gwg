@@ -386,6 +386,43 @@ diperbaiki juga, dengan catatan akun `2120` bisa negatif sementara sampai
 ada mekanisme pengakuan kewajiban Bagi Hasil (belum direncanakan sebagai
 fase terpisah).
 
+## 18. Perbaikan: Optimasi Ukuran RTDB & 2 Bug Tambahan — SELESAI ✅
+
+Lihat `CHANGES-optimasi-ukuran-rtdb.md`. Ringkas: backup harian menyalin
+penuh `jurnalUmum` (11x lipat karena 10 backup + 1 live) — jadi penyebab
+utama RTDB melonjak 3MB→7MB. Fix: `jurnalUmum` dikecualikan dari backup,
+`MAX_BACKUPS` 10→5, + fitur arsip `jurnalUmum` per tahun ke Drive
+(`archiveJurnalTahun()`, mirror arsip Kontrol). **Rules v9 wajib diupload**
+(path baru `jurnalArchiveIndex`). Ditemukan juga 2 bug tambahan sekalian:
+entry pembalik (void) salah pakai tanggal hari-ini alih-alih tanggal
+transaksi asli (fix: `buatEntryPembalik` sekarang pakai `entryLama.tanggal`);
+dan Kas↔Hutang/Piutang tidak sinkron kalau kasnya diedit langsung dari tab
+Kas Opname (fix: field link balik `hutangPiutangId` + auto-sesuaikan
+`terbayar`).
+
+## 19. Audit Integrasi: Neraca ↔ Double-Entry ↔ Bagi Hasil ↔ Pajak — SELESAI ✅
+
+Lihat `AUDIT-integrasi-neraca-bagihasil-pajak.md`. 3 temuan: (1) Pendapatan
+sistem lama live-recalculate pakai harga SEKARANG untuk histori manapun
+(vs jurnal yang beku sesuai tanggal transaksi), (2) Beban Usaha cuma
+asumsi config, tidak pernah jadi jurnal, (3) Kewajiban Bagi Hasil didebit
+tanpa pernah dikredit. Semua sudah diputuskan & ditindaklanjuti — lihat §20.
+
+## 20. Status: Fase 9 (Akrual Beban Usaha, Pengakuan Bagi Hasil, Pajak Historical Cost) — SELESAI ✅
+
+Lihat `CHANGES-fase9-akrual-beban-bagihasil.md` (termasuk addendum "Fase
+9b" untuk Pajak) untuk rincian. Ringkas: akun baru `2140` (Hutang Beban
+Akrual); Tutup Buku sekarang memposting akrual Beban Usaha (`Dr 5102/Kr
+2140`) & pengakuan Kewajiban Bagi Hasil per pihak (`Dr 3102/Kr 2120`,
+dihitung dari Laba bulan itu VERSI JURNAL — historical cost); kategori Kas
+"Biaya Operasional" diarahkan ke `2140` (melunasi akrual, bukan dobel-
+hitung beban); Laporan Pajak sekarang baca Pendapatan/Laba Kotor dari
+`hitungAkuntansiHistoris()` (jurnal, historical cost) menggantikan sistem
+lama. Tab Ringkasan Bagi Hasil SENGAJA belum diubah (masih live-recalculate
+sebagai "pratinjau", bukan catatan resmi) — hanya bagian yang benar-benar
+menggerakkan uang (Pengakuan Bagi Hasil) & pelaporan resmi (Pajak) yang
+sudah historical cost.
+
 
 
 

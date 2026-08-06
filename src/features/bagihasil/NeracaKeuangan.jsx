@@ -9,9 +9,9 @@ import {
   ringkasanHutangPiutang, hitungHppPeriode, bulanKeyOf, isPeriodeTerkunci,
   hitungStokGudang, nilaiPersediaanGabungan, hitungDanaCadanganKumulatif,
   KATEGORI_KAS_MASUK, KATEGORI_KAS_KELUAR, KATEGORI_ASET, KATEGORI_HUTANG, KATEGORI_PIUTANG,
-  KATEGORI_GUDANG_MASUK, KATEGORI_GUDANG_KELUAR,
+  KATEGORI_GUDANG_MASUK, KATEGORI_GUDANG_KELUAR, migrasiBebanUsahaLama,
 } from "../../lib/neracaHelpers";
-import { bangunBarisJurnalKas, bangunBarisJurnalAsetPerolehan, bangunBarisJurnalAmortisasi, bangunBarisJurnalHutangPiutangAwal, bangunBarisJurnalPelunasanHutangPiutang, bangunBarisJurnalApropriasiDanaCadangan, bulanSebelumnya, hitungSnapshotSaldoAkun, hitungSaldoAkunTerkini, ringkasanSaldoAkunPerTipe, DEFAULT_DAFTAR_AKUN } from "../../lib/akuntansiHelpers";
+import { bangunBarisJurnalKas, bangunBarisJurnalAsetPerolehan, bangunBarisJurnalAmortisasi, bangunBarisJurnalHutangPiutangAwal, bangunBarisJurnalPelunasanHutangPiutang, bangunBarisJurnalApropriasiDanaCadangan, bangunBarisJurnalAkrualBebanUsaha, bangunBarisJurnalPengakuanBagiHasil, bulanSebelumnya, hitungSnapshotSaldoAkun, hitungSaldoAkunTerkini, ringkasanSaldoAkunPerTipe, DEFAULT_DAFTAR_AKUN } from "../../lib/akuntansiHelpers";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -385,6 +385,54 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
         alert(`Periode berhasil ditutup, TAPI jurnal Dana Cadangannya gagal diposting: ${e.message}`);
       }
     }
+    // ✅ FASE 9: akrual Beban Usaha (Dr 5102 / Kr 2140) — mengganti asumsi
+    // "otomatis potong tanpa jurnal" di sistem lama (lihat AUDIT-integrasi-
+    // neraca-bagihasil-pajak.md, Temuan 2) dengan pengakuan jurnal riil tiap
+    // Tutup Buku. Pembayaran tunainya nanti (kategori Kas "Biaya
+    // Operasional") melunasi 2140 ini, BUKAN men-debit 5102 lagi.
+    let barisBebanUsaha = null;
+    const bebanUsahaListTutup = Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config);
+    const totalBebanUsahaTutup = bebanUsahaListTutup.reduce((s,b)=>s+(Number(b.nominal)||0), 0);
+    if (postJurnal) {
+      try {
+        barisBebanUsaha = bangunBarisJurnalAkrualBebanUsaha(totalBebanUsahaTutup);
+        if (barisBebanUsaha) postJurnal({ tanggal: bounds?.end || todayStr(), sumberTipe: "tutupBuku-bebanUsaha", sumberId: bulanIniKey,
+          keterangan: `Akrual Beban Usaha periode ${bulanIniKey}`, baris: barisBebanUsaha, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal Akrual Beban Usaha (Tutup Buku tetap tersimpan):", e);
+        alert(`Periode berhasil ditutup, TAPI jurnal Akrual Beban Usaha gagal diposting: ${e.message}`);
+      }
+    }
+    // ✅ FASE 9: pengakuan Kewajiban Bagi Hasil (Dr 3102 Laba Ditahan / Kr
+    // 2120 per pihak) — mengganti "didebit tanpa pernah dikredit" (lihat
+    // AUDIT §Temuan 3) dengan pengakuan berbasis Laba (Rugi) BULAN INI versi
+    // JURNAL (historical cost — dihitung dari entry jurnal bulan ini SENDIRI,
+    // BUKAN dari akuntansi.labaBersihFinal sistem lama yang live-recalculate
+    // harga & Beban Usaha-nya cuma asumsi — lihat AUDIT §Temuan 1 & 2).
+    // Dihitung SETELAH akrual Beban Usaha & Amortisasi bulan ini supaya ikut
+    // terhitung sebagai pengurang laba sebelum dibagi ke pihak.
+    let barisBagiHasil = null;
+    if (postJurnal) {
+      try {
+        const entriesBulanIniUntukLaba = [
+          ...(db.jurnalUmum || []).filter(j => !j.void && bulanKeyOf(j.tanggal) === bulanIniKey),
+          barisAmortisasi ? { baris: barisAmortisasi } : null,
+          barisBebanUsaha ? { baris: barisBebanUsaha } : null,
+        ].filter(Boolean);
+        let pendapatanBulanIniJurnal = 0, bebanBulanIniJurnal = 0;
+        entriesBulanIniUntukLaba.forEach(e => (e.baris||[]).forEach(b => {
+          if (String(b.akun)[0] === "4") pendapatanBulanIniJurnal += (Number(b.kredit)||0) - (Number(b.debit)||0);
+          if (String(b.akun)[0] === "5") bebanBulanIniJurnal += (Number(b.debit)||0) - (Number(b.kredit)||0);
+        }));
+        const labaBulanIniJurnal = pendapatanBulanIniJurnal - bebanBulanIniJurnal;
+        barisBagiHasil = bangunBarisJurnalPengakuanBagiHasil(config.pihak || [], labaBulanIniJurnal, pendapatanBulanIniJurnal);
+        if (barisBagiHasil) postJurnal({ tanggal: bounds?.end || todayStr(), sumberTipe: "tutupBuku-bagiHasil", sumberId: bulanIniKey,
+          keterangan: `Pengakuan Kewajiban Bagi Hasil periode ${bulanIniKey} (Laba jurnal: ${fmtRp(labaBulanIniJurnal)})`, baris: barisBagiHasil, createdBy });
+      } catch (e) {
+        console.warn("Gagal memposting jurnal Pengakuan Bagi Hasil (Tutup Buku tetap tersimpan):", e);
+        alert(`Periode berhasil ditutup, TAPI jurnal Pengakuan Kewajiban Bagi Hasil gagal diposting: ${e.message}`);
+      }
+    }
     // ✅ FASE 7: snapshot saldo SEMUA akun untuk bulan ini ke
     // `saldoAkunBulanan/{bulanIniKey}` — supaya jurnal detail bulan ini
     // SUATU SAAT bisa diarsipkan/dihapus dari RTDB tanpa kehilangan saldo
@@ -393,13 +441,16 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     // bulan pertama yang ditutup). Entry bulan ini = seluruh jurnalUmum
     // yang tanggalnya jatuh di bulan ini (SUDAH termasuk yang di-posting
     // hari-hari sebelumnya lewat Kas/Kontrol/Aset/Hutang-Piutang) DITAMBAH
-    // 2 entry Amortisasi & Dana Cadangan yang baru saja diposting di atas
-    // (belum ada di db.jurnalUmum karena state React belum sempat update).
+    // 4 entry Amortisasi/Dana Cadangan/Beban Usaha/Bagi Hasil yang baru saja
+    // diposting di atas (belum ada di db.jurnalUmum karena state React
+    // belum sempat update).
     try {
       const entriesBulanIniDb = (db.jurnalUmum || []).filter(j => !j.void && bulanKeyOf(j.tanggal) === bulanIniKey);
       const entriesTambahan = [
         barisAmortisasi ? { baris: barisAmortisasi, void: false } : null,
         barisDanaCadangan ? { baris: barisDanaCadangan, void: false } : null,
+        barisBebanUsaha ? { baris: barisBebanUsaha, void: false } : null,
+        barisBagiHasil ? { baris: barisBagiHasil, void: false } : null,
       ].filter(Boolean);
       const bulanLalu = bulanSebelumnya(bulanIniKey);
       const saldoAwalMap = db.saldoAkunBulanan?.[bulanLalu] || {};
@@ -415,6 +466,8 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     if (!confirm(`Buka kunci periode ${id}? Data di bulan ini akan bisa diubah lagi.`)) return;
     voidJurnalSumberAman("tutupBuku-amortisasi", id, `Buka kunci periode ${id}`);
     voidJurnalSumberAman("danaCadangan-apropriasi", id, `Buka kunci periode ${id}`);
+    voidJurnalSumberAman("tutupBuku-bebanUsaha", id, `Buka kunci periode ${id}`);
+    voidJurnalSumberAman("tutupBuku-bagiHasil", id, `Buka kunci periode ${id}`);
     // ✅ FASE 7: hapus snapshot saldo akun bulan ini juga — supaya kalau
     // nanti ditutup ulang, snapshot dihitung ulang dari data yang benar
     // (bukan snapshot basi dari sebelum dibuka kuncinya).

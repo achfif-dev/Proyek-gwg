@@ -10,7 +10,7 @@ import { Icon } from "../../theme/icons.jsx";
 import { NeracaKeuangan } from "./NeracaKeuangan.jsx";
 import { LaporanPajak } from "./LaporanPajak.jsx";
 import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode } from "../../lib/neracaHelpers";
-import { bangunBarisJurnalKas } from "../../lib/akuntansiHelpers";
+import { bangunBarisJurnalKas, hitungAkuntansiHistoris } from "../../lib/akuntansiHelpers";
 
 export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, createdBy }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
@@ -211,6 +211,15 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
       pihakList, totalDibagi,
     };
   }, [revPeriode, config, db.asetAmortisasi, db.produk, bounds]);
+
+  // ✅ Laba Rugi HISTORIS (dari jurnal, harga beku sesuai tanggal transaksi
+  // — lihat AUDIT-integrasi-neraca-bagihasil-pajak.md §Temuan 1) untuk
+  // periode yang sedang difilter — MENGGANTIKAN `akuntansi` lama sebagai
+  // basis Pendapatan/Laba Kotor di Laporan Pajak. Beban Usaha/Amortisasi/
+  // Dana Cadangan tetap dari `akuntansi` lama untuk sementara (LaporanPajak
+  // cuma pakai `pendapatan`+`labaKotor`, tidak menyentuh field lain).
+  const akuntansiHistoris = useMemo(() => hitungAkuntansiHistoris(bounds, db.jurnalUmum),
+    [bounds, db.jurnalUmum]);
 
   function tambahBebanUsaha() {
     setCfgDraft(p => ({ ...p, bebanUsaha: [...(p.bebanUsaha||[]), { id: genUniqueId("BU"), nama:"", nominal:0 }] }));
@@ -726,7 +735,7 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
 
       {activeSubTab === "pajak" && (
         <LaporanPajak
-          akuntansi={akuntansi} revPeriode={revPeriode} periodeMode={periodeMode}
+          akuntansi={akuntansiHistoris} revPeriode={revPeriode} periodeMode={periodeMode}
           PERIODE_LABELS={PERIODE_LABELS} config={config} saveConfig={saveConfig}
           filterBulan={filterBulan} filterTahun={filterTahun}
         />
