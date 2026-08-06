@@ -84,7 +84,6 @@ export const DEFAULT_DAFTAR_AKUN = {
   "2110": { nama: "Kewajiban Dana Cadangan", tipe: "kewajiban", protected: true, aktif: true },
   "2120": { nama: "Hutang Bagi Hasil (Belum Dicairkan)", tipe: "kewajiban", protected: true, aktif: true },
   "2130": { nama: "Hutang Pajak", tipe: "kewajiban", protected: false, aktif: true },
-  "2140": { nama: "Hutang Beban Usaha (Accrued)", tipe: "kewajiban", protected: true, aktif: true },
 
   // EKUITAS
   "3101": { nama: "Modal Disetor", tipe: "ekuitas", protected: true, aktif: true },
