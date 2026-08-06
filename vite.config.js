@@ -37,6 +37,10 @@ export default defineConfig(({ mode }) => {
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico}'],
+        // Bundle utama (Firebase + xlsx + jspdf + html2canvas, dll) sedikit
+        // di atas batas default Workbox 2 MiB, jadi service worker gagal
+        // di-generate. Dinaikkan ke 3 MB supaya file tetap ikut di-precache.
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*firebasedatabase\.app\/.*/i,
@@ -58,9 +62,34 @@ export default defineConfig(({ mode }) => {
     rollupOptions: {
       // Prevent Vite from trying to bundle Firebase CDN imports
       external: [],
+      output: {
+        // ✅ CODE-SPLITTING: sebelumnya semua dependency (Firebase, xlsx,
+        // jspdf, html2canvas, dll) digabung jadi satu file JS ~2.1 MB —
+        // ini yang bikin build gagal (lewat batas precache Workbox 2 MiB)
+        // dan bikin loading awal berat di HP dengan sinyal lemah.
+        // Dipecah per-library jadi beberapa chunk vendor terpisah supaya:
+        // 1. Tidak ada satu file pun yang mendekati/lewat batas 2 MiB lagi.
+        // 2. Browser bisa cache tiap vendor terpisah — kalau cuma kode
+        //    aplikasi (src/**) yang berubah, user tidak perlu download
+        //    ulang chunk Firebase/xlsx/jspdf yang tidak berubah.
+        manualChunks(id) {
+          if (!id.includes('node_modules')) return
+          if (id.includes('firebase') || id.includes('@capacitor-firebase')) return 'vendor-firebase'
+          if (id.includes('xlsx')) return 'vendor-xlsx'
+          if (id.includes('jspdf')) return 'vendor-jspdf'
+          if (id.includes('html2canvas')) return 'vendor-html2canvas'
+          if (id.includes('lucide-react')) return 'vendor-icons'
+          if (id.includes('react-dom') || id.includes('/react/') || id.includes('scheduler')) return 'vendor-react'
+          if (id.includes('@capacitor')) return 'vendor-capacitor'
+          return 'vendor'
+        },
+      },
     },
     // Ensure compatibility
     target: 'es2020',
+    // Naikkan ambang warning bawaan Vite (500 kB) supaya tidak berisik untuk
+    // chunk vendor yang memang wajar berukuran lebih besar (mis. Firebase).
+    chunkSizeWarningLimit: 1000,
   },
   optimizeDeps: {
     include: ['xlsx'],
