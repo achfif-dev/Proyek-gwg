@@ -186,22 +186,40 @@ export async function exportPDF(data, columns, title, filename) {
       const MIN_FONT = 4.5;
       let nativeFontSize = numColsNative <= 6 ? 9 : numColsNative <= 10 ? 8 : numColsNative <= 16 ? 7 : numColsNative <= 24 ? 6 : numColsNative <= 34 ? 5 : MIN_FONT;
 
+      // ⚡ OPTIMASI: measuredWidths() sebelumnya di-scan ULANG PENUH
+      // (semua baris × semua kolom, pakai doc.getTextWidth()) SETIAP KALI
+      // loop guard di bawah mengecilkan font — bisa sampai 21x total pass
+      // (1 awal + 20 iterasi guard). Di data 5.000 baris × banyak kolom,
+      // itu setara puluhan ribu—jutaan pemanggilan getTextWidth() dan bikin
+      // export PDF terasa macet/lag beberapa detik.
+      //
+      // Fix: doc.getTextWidth(text) di jsPDF = getStringUnitWidth(text) *
+      // fontSize / scaleFactor — SELALU proporsional linear terhadap
+      // fontSize untuk font & teks yang sama. Jadi cukup ukur SEKALI pakai
+      // getStringUnitWidth() (unit yang tidak bergantung fontSize), lalu di
+      // setiap iterasi guard tinggal kalikan angka yang sudah ada — tanpa
+      // pernah men-scan ulang data baris. Hasilnya identik persis (bukan
+      // aproksimasi), cuma jauh lebih cepat.
+      const scaleFactor = doc.internal.scaleFactor;
+      doc.setFont("helvetica", "bold");
+      const headerUnitW = columns.map(c => doc.getStringUnitWidth(pdfSafe(c.label)));
+      doc.setFont("helvetica", "normal");
+      const bodyUnitW = columns.map((c, ci) =>
+        rows.reduce((m, r) => Math.max(m, doc.getStringUnitWidth(String(r[ci] ?? ""))), 0)
+      );
+      const unitWidths = columns.map((c, ci) => Math.max(headerUnitW[ci], bodyUnitW[ci]));
+
       function measuredWidths(fontSize) {
-        doc.setFont("helvetica", "bold"); doc.setFontSize(fontSize);
-        const headerW = columns.map(c => doc.getTextWidth(pdfSafe(c.label)));
-        doc.setFont("helvetica", "normal");
-        return columns.map((c, ci) => {
-          const bodyW = rows.reduce((m, r) => Math.max(m, doc.getTextWidth(String(r[ci] ?? ""))), 0);
-          return Math.max(headerW[ci], bodyW) + CELL_PAD * 2;
-        });
+        return unitWidths.map(u => (u * fontSize) / scaleFactor + CELL_PAD * 2);
       }
 
       let colWidths = measuredWidths(nativeFontSize);
       let totalMeasured = colWidths.reduce((s, w) => s + w, 0);
       let guard = 0;
       // Kalau teks di font saat ini lebih lebar dari 1 halaman, kecilkan
-      // font sedikit demi sedikit lalu ukur ulang, sampai muat (atau sampai
-      // batas minimum font yang masih layak dibaca).
+      // font sedikit demi sedikit lalu hitung ulang (tinggal aritmatika,
+      // bukan scan ulang), sampai muat (atau sampai batas minimum font
+      // yang masih layak dibaca).
       while (totalMeasured > availableWidth && nativeFontSize > MIN_FONT && guard < 20) {
         nativeFontSize = Math.max(MIN_FONT, +(nativeFontSize * 0.92).toFixed(2));
         colWidths = measuredWidths(nativeFontSize);
