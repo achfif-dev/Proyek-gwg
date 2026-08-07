@@ -71,6 +71,32 @@ export function statusTokoPadaTanggal(toko, tanggal) {
 // Tambah 1 entri riwayat status. Dedup sederhana: kalau tanggal & status
 // persis sama dengan entri terakhir, tidak usah ditambah dobel (mis. toko
 // disimpan ulang tanpa status berubah).
+// ✅ CODE-SPLITTING: dipindah dari TabToko.jsx (komponen UI berat, 792 baris)
+// ke sini supaya App.jsx bisa memanggil fungsi ini tanpa memaksa seluruh
+// komponen TabToko ikut ter-download di awal — TabToko sekarang bisa
+// di-lazy-load murni sebagai komponen tab. Logic function-nya sendiri
+// tidak berubah sama sekali.
+export function autoUpgradeBaruToAktif(db, updateRecord) {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0,10);
+  const thirtyDaysAgo = new Date(today);
+  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+  (db.toko||[]).forEach(toko => {
+    if (toko.status !== "Baru") return;
+    if (!toko.tanggalMasuk) return;
+    const masuk = new Date(toko.tanggalMasuk);
+    if (isNaN(masuk.getTime())) return;
+    if (masuk <= thirtyDaysAgo) {
+      // Sudah lebih dari 30 hari, upgrade ke Aktif — dicatat juga di
+      // riwayat status supaya Rekap Siklus Wilayah bisa merekonstruksi
+      // status toko ini secara akurat pada tanggal berapa pun di masa lalu.
+      updateRecord("toko", toko.id, { status: "Aktif",
+        statusHistory: appendStatusHistory(toko.statusHistory, "Aktif", todayStr, "Otomatis: 30 hari sejak Tanggal Masuk (Baru → Aktif)") });
+    }
+  });
+}
+
 export function appendStatusHistory(existingHistory, status, tanggal, catatan) {
   const list = Array.isArray(existingHistory) ? [...existingHistory] : [];
   const last = list[list.length - 1];
