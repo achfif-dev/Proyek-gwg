@@ -11,7 +11,6 @@
 // (identitas Generasi Wangi Group, supaya instance yang sudah berjalan
 // sekarang tidak berubah/rusak kalau belum pernah mengisi wizard).
 
-import { GWG_LOGO_B64 } from "../theme/logo";
 import { DEFAULT_FONT_VALUE } from "../theme/fonts";
 
 const STORAGE_KEY = "gw_app_config";
@@ -50,7 +49,7 @@ const DEFAULT_CONFIG = {
     businessFieldOther: "", // dipakai kalau businessField === "lainnya"
     tagline: "Super App · Sistem Manajemen Konsinyasi",
     footerText: "Generasi Wangi Group · Sampang, Jawa Timur",
-    logoDataUrl: "", // kosong = pakai logo bawaan (GWG_LOGO_B64)
+    logoDataUrl: "", // kosong = pakai logo bawaan (file public/logo.png)
     primaryColor: "#0F4C35", // dipetakan ke T.green
     accentColor: "#C49A1A",  // dipetakan ke T.gold
     fontFamily: DEFAULT_FONT_VALUE, // ✅ FONT DINAMIS: lihat src/theme/fonts.js
@@ -110,7 +109,15 @@ export function isFirebaseConfigured(cfg = loadAppConfig()) {
 }
 
 export function getBrandLogo(cfg = loadAppConfig()) {
-  return cfg.brand.logoDataUrl || GWG_LOGO_B64;
+  // ✅ OPTIMASI: fallback default sekarang mengarah ke file /logo.png biasa
+  // (di public/), bukan lagi string base64 ~127KB yang di-embed langsung
+  // di kode JS. Sama sekali tidak mengubah cara white-label bekerja —
+  // logo custom perusahaan lain (logoDataUrl) tetap disimpan sebagai data
+  // URL terpisah di localStorage lewat Setup Wizard, tidak menyentuh file
+  // ini. Ini cuma soal BAGAIMANA logo default GWG dikirim ke browser:
+  // sebagai file gambar biasa yang bisa di-cache terpisah oleh service
+  // worker, bukan ikut membengkakkan bundle JS.
+  return cfg.brand.logoDataUrl || "/logo.png";
 }
 
 // ── Bidang Bisnis (industri) — dipakai di Setup Wizard supaya perusahaan
