@@ -2,14 +2,14 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Badge, Btn, Card, ExportMenu, StatCard, Table } from "../../components/ui";
 import { Dashboard } from "../../features/dashboard/Dashboard";
 import { TabKontrol } from "../../features/kontrol/TabKontrol";
-import { autoUpgradeBaruToAktif } from "../../features/toko/TabToko";
+import { autoUpgradeBaruToAktif } from "../../lib/dataHelpers";
 import { fmt, fmtRp, naturalCompare } from "../../lib/format";
 import { SIKLUS_GAP_DAYS, statusTokoPadaTanggal } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
 
-export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing, archivedKontrolYears }) {
+function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing, archivedKontrolYears }) {
   const isSalesRestricted = !!salesWilayahId;
   // ✅ Cari Toko: cek cepat kalau curiga ada kesalahan input kontrol, lalu
   // langsung koreksi tanpa pindah ke Tab Kontrol — cukup ketik nama/kode toko
@@ -1675,3 +1675,6 @@ export function TabRekap({ db, analytics, salesWilayahId, addRecord, updateRecor
 // ─────────────────────────────────────────────
 //  TAB BAGI HASIL — Simulasi Akuntansi Lengkap
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+export const TabRekap = React.memo(TabRekapImpl);

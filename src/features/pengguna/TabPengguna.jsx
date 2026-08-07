@@ -6,7 +6,7 @@ import { genUniqueId } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 
-export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers }) {
+function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers }) {
   // Set email (huruf kecil) yang punya minimal satu sesi aktif — dipakai
   // untuk badge "🟢 Online" per baris pengguna di tabel bawah.
   const activeEmailSet = new Set((activeUsers||[]).map(a => a.email?.toLowerCase()).filter(Boolean));
@@ -211,3 +211,6 @@ export function TabPengguna({ db, addRecord, updateRecord, deleteRecord, isEmerg
 // ─────────────────────────────────────────────
 //  LOGIN PAGE
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+export const TabPengguna = React.memo(TabPenggunaImpl);

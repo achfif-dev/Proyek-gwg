@@ -10,7 +10,7 @@ import { Icon } from "../../theme/icons.jsx";
 // ✅ CODE-SPLITTING: autoUpgradeBaruToAktif() dipindah ke src/lib/dataHelpers.js
 // supaya App.jsx bisa memanggilnya tanpa memuat komponen TabToko yang berat.
 
-export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isSalesRestricted }) {
+function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isSalesRestricted }) {
   const [modal, setModal] = useState(null);
   const [stokModal, setStokModal] = useState(null);
   const [form, setForm] = useState({ nama:"", ruteId:"", status:"Aktif", produkIds:[], catatan:"" });
@@ -772,3 +772,6 @@ export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, sales
 // ─────────────────────────────────────────────
 //  TAB PRODUK (tipe isi manual)
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+export const TabToko = React.memo(TabTokoImpl);

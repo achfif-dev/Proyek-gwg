@@ -4,7 +4,7 @@ import { fmtRp } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 
-export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
+function TabProdukImpl({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0, hargaModal:0 });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
@@ -135,3 +135,6 @@ export function TabProduk({ db, addRecord, updateRecord, deleteRecord }) {
 // ─────────────────────────────────────────────
 //  TAB KONTROL BULANAN
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+export const TabProduk = React.memo(TabProdukImpl);

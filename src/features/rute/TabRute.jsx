@@ -5,7 +5,7 @@ import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
 
-export function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
+function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", wilayahId:"", keterangan:"" });
   // ✅ PERSISTEN: filter tetap sama setelah refresh / app dibuka ulang.
@@ -122,3 +122,6 @@ export function TabRute({ db, addRecord, updateRecord, deleteRecord }) {
 // ─────────────────────────────────────────────
 //  AUTO-UPGRADE: Toko status "Baru" → "Aktif" setelah 1 bulan (30 hari)
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+export const TabRute = React.memo(TabRuteImpl);

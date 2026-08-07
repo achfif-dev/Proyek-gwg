@@ -5,7 +5,7 @@ import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
 
-export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
+function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", deskripsi:"" });
   // ✅ PERSISTEN: filter tetap sama setelah refresh / app dibuka ulang.
@@ -167,3 +167,6 @@ export function TabWilayah({ db, addRecord, updateRecord, deleteRecord }) {
 // ─────────────────────────────────────────────
 //  TAB RUTE
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+export const TabWilayah = React.memo(TabWilayahImpl);

@@ -12,7 +12,7 @@ import { LaporanPajak } from "./LaporanPajak.jsx";
 import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode } from "../../lib/neracaHelpers";
 import { bangunBarisJurnalKas, hitungAkuntansiHistoris } from "../../lib/akuntansiHelpers";
 
-export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, createdBy }) {
+function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, createdBy }) {
   const { totalRev, labaBersih, produkStats, kontrol, penjualanLuar } = analytics;
   const [activeSubTab, setActiveSubTab] = usePersistedState("bagihasil.subtab", "ringkasan");
 
@@ -929,3 +929,9 @@ export function TabBagiHasil({ db, analytics, save, addRecord, updateRecord, del
 // ─────────────────────────────────────────────
 //  TAB PENGGUNA
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+// Memo di sini juga otomatis melindungi sub-komponen NeracaKeuangan
+// (1.440 baris) di dalamnya dari re-render tak perlu, karena React.memo
+// menghentikan propagasi render ke seluruh subtree kalau props sama.
+export const TabBagiHasil = React.memo(TabBagiHasilImpl);

@@ -15,7 +15,7 @@ export function MiniBar({ value, max, color }) {
   );
 }
 
-export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
+function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId;
   // Filter analytics data berdasarkan wilayah Sales (jika berlaku)
   const { totalRev: allRev, labaBersih: allLaba, marginPctGlobal, produkStats, bagiHasil } = analytics;
@@ -316,3 +316,10 @@ export function Dashboard({ db, analytics, salesWilayahId, dataStillSyncing }) {
 // ─────────────────────────────────────────────
 //  TAB REKAP — Harian/Bulanan/Kuartal/Tahunan
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: React.memo — semua tab tetap ter-mount sekaligus (display:none
+// saat tidak aktif, bukan unmount), jadi tanpa memo, tab ini ikut re-render
+// setiap kali `db` berubah (data live-sync Firebase) walau sedang tidak
+// dilihat user. React.memo skip re-render kalau props (db, analytics, dst)
+// referensinya sama dengan render sebelumnya.
+export const Dashboard = React.memo(DashboardImpl);

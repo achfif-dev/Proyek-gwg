@@ -757,12 +757,18 @@ export default function GWGSuperApp() {
   // GUARD VIEWER: bungkus semua fungsi penulis data supaya Viewer benar-benar
   // tidak bisa mengubah database apa pun — dicek terpusat di sini, bukan
   // cuma disembunyikan di UI, supaya tidak bisa "ditembus" lewat tab manapun.
-  const tolakViewer = () => { alert("Anda login sebagai Viewer (hanya bisa melihat). Hubungi Admin untuk menaikkan akses Anda jika perlu mengubah data."); };
-  const addRecord    = (...args) => { if (isViewer) return tolakViewer(); return rawAddRecord(...args); };
-  const updateRecord = (...args) => { if (isViewer) return tolakViewer(); return rawUpdateRecord(...args); };
-  const deleteRecord = (...args) => { if (isViewer) return tolakViewer(); return rawDeleteRecord(...args); };
-  const save         = (...args) => { if (isViewer) return tolakViewer(); return rawSave(...args); };
-  const resetDB       = (...args) => { if (isViewer) return tolakViewer(); return rawResetDB(...args); };
+  const tolakViewer = useCallback(() => { alert("Anda login sebagai Viewer (hanya bisa melihat). Hubungi Admin untuk menaikkan akses Anda jika perlu mengubah data."); }, []);
+  // ✅ CODE-SPLITTING/MEMO: dibungkus useCallback (sebelumnya arrow function
+  // biasa, ganti referensi setiap kali GWGSuperApp re-render). Ini WAJIB
+  // supaya React.memo() di komponen-komponen Tab (lihat features/*/Tab*.jsx)
+  // benar-benar berefek — kalau fungsi ini terus berganti referensi, memo
+  // akan selalu menganggap props "berubah" dan tetap re-render semuanya,
+  // sia-sia. isViewer sengaja jadi dependency karena guard-nya bergantung itu.
+  const addRecord    = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawAddRecord(...args); }, [isViewer, tolakViewer, rawAddRecord]);
+  const updateRecord = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawUpdateRecord(...args); }, [isViewer, tolakViewer, rawUpdateRecord]);
+  const deleteRecord = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawDeleteRecord(...args); }, [isViewer, tolakViewer, rawDeleteRecord]);
+  const save         = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawSave(...args); }, [isViewer, tolakViewer, rawSave]);
+  const resetDB       = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawResetDB(...args); }, [isViewer, tolakViewer, rawResetDB]);
 
   // Jaga-jaga: jika tab yang aktif sekarang tidak boleh diakses oleh role
   // pengguna saat ini (misal role baru saja diturunkan oleh Admin, atau

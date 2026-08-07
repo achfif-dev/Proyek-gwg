@@ -12,7 +12,7 @@ import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
 
-export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing, postJurnal, voidJurnal, createdBy }) {
+function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing, postJurnal, voidJurnal, createdBy }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ tokoId:"", tanggal:"", catatanStatus:"", catatan:"" });
@@ -3515,3 +3515,8 @@ export function TabKontrol({ db, addRecord, updateRecord, deleteRecord, save, sa
 // ─────────────────────────────────────────────
 //  DASHBOARD
 // ─────────────────────────────────────────────
+
+// ✅ PERFORMA: lihat komentar di Dashboard.jsx untuk alasan React.memo di sini.
+// TabKontrol adalah tab terbesar (3.500+ baris) — paling banyak diuntungkan
+// dari memo ini karena paling berat untuk di-render ulang tanpa perlu.
+export const TabKontrol = React.memo(TabKontrolImpl);
