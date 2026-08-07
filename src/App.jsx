@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, lazy, Suspense } from "react";
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { T } from "./theme/tokens";
@@ -15,7 +15,7 @@ import { useAppResumeReload } from "./hooks/useAppResumeReload";
 import { usePresence } from "./hooks/usePresence";
 import { useDB } from "./hooks/useDB";
 import { useAnalytics } from "./hooks/useAnalytics";
-import { encodeEmailKey, decodeEmailKey, kontrolYearOf } from "./lib/dataHelpers";
+import { encodeEmailKey, decodeEmailKey, kontrolYearOf, autoUpgradeBaruToAktif } from "./lib/dataHelpers";
 import { downloadJSON } from "./lib/fileSave";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "./lib/googleDrive";
 import { exportExcel, autoColumns } from "./lib/exportUtils";
@@ -24,15 +24,37 @@ import { LoginPage } from "./components/LoginPage";
 import { HeaderMenu, useClampedMenuPosition } from "./components/ui/Menus";
 import { Btn, Card, Modal, Badge, Input, SearchableSelect, ConfirmDelete } from "./components/ui/Primitives";
 import { Dashboard } from "./features/dashboard/Dashboard";
-import { TabWilayah } from "./features/wilayah/TabWilayah";
-import { TabRute } from "./features/rute/TabRute";
-import { TabToko, autoUpgradeBaruToAktif } from "./features/toko/TabToko";
-import { TabProduk } from "./features/produk/TabProduk";
-import { TabKontrol } from "./features/kontrol/TabKontrol";
-import { TabRekap } from "./features/rekap/TabRekap";
-import { TabBagiHasil } from "./features/bagihasil/TabBagiHasil";
-import { TabPengguna } from "./features/pengguna/TabPengguna";
 import { Icon } from "./theme/icons.jsx";
+
+// ✅ CODE-SPLITTING: sebelumnya ke-9 tab (termasuk TabKontrol 3.500+ baris,
+// TabRekap, TabBagiHasil+NeracaKeuangan, dst) di-import statis di sini —
+// artinya SEMUA kode tab, termasuk yang tidak bisa/tidak pernah dibuka user
+// (mis. Sales tidak punya akses ke TabBagiHasil/TabPengguna/TabWilayah/
+// TabRute/TabProduk sama sekali — lihat SALES_ALLOWED_TABS di config/tabs.js)
+// tetap ikut di-download & di-parse di awal. Ini salah satu penyumbang utama
+// bundle 2+ MB yang sebelumnya bikin build gagal (lihat maximumFileSizeToCacheInBytes).
+// React.lazy() menunda pengambilan tiap tab sampai benar-benar dirender —
+// tab yang tidak pernah diakses (karena role) tidak akan pernah ter-download
+// sama sekali, dan tab yang boleh diakses dimuat paralel di background
+// (bukan memblokir render pertama), bukan lagi bagian dari 1 bundle raksasa.
+const TabWilayah   = lazy(() => import("./features/wilayah/TabWilayah").then(m => ({ default: m.TabWilayah })));
+const TabRute      = lazy(() => import("./features/rute/TabRute").then(m => ({ default: m.TabRute })));
+const TabToko      = lazy(() => import("./features/toko/TabToko").then(m => ({ default: m.TabToko })));
+const TabProduk    = lazy(() => import("./features/produk/TabProduk").then(m => ({ default: m.TabProduk })));
+const TabKontrol   = lazy(() => import("./features/kontrol/TabKontrol").then(m => ({ default: m.TabKontrol })));
+const TabRekap     = lazy(() => import("./features/rekap/TabRekap").then(m => ({ default: m.TabRekap })));
+const TabBagiHasil = lazy(() => import("./features/bagihasil/TabBagiHasil").then(m => ({ default: m.TabBagiHasil })));
+const TabPengguna  = lazy(() => import("./features/pengguna/TabPengguna").then(m => ({ default: m.TabPengguna })));
+
+// Fallback ringan selagi chunk tab sedang di-download (biasanya sangat
+// singkat di koneksi normal, lebih terasa di sinyal lemah).
+function TabLoadingFallback() {
+  return (
+    <div style={{ padding: 40, textAlign: "center", color: T.gray400 }}>
+      Memuat…
+    </div>
+  );
+}
 
 export default function GWGSuperApp() {
   // Tombol refresh manual — versi PWA/browser punya gesture "tarik ke bawah
@@ -1094,53 +1116,58 @@ export default function GWGSuperApp() {
         <div style={{ display: activeTab==="dashboard" ? "block" : "none" }}>
           <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} dataStillSyncing={dataStillSyncing} />
         </div>
-        {canAccessTab("wilayah",  { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="wilayah" ? "block" : "none" }}>
-            <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
-          </div>
-        )}
-        {canAccessTab("rute",     { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="rute" ? "block" : "none" }}>
-            <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
-          </div>
-        )}
-        {canAccessTab("toko",     { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="toko" ? "block" : "none" }}>
-            <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} isSalesRestricted={!isManajer} />
-          </div>
-        )}
-        {canAccessTab("produk",   { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="produk" ? "block" : "none" }}>
-            <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
-          </div>
-        )}
-        {canAccessTab("kontrol",  { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="kontrol" ? "block" : "none" }}>
-            <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
-              isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} dataStillSyncing={dataStillSyncing}
-              postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={user?.email || null} />
-          </div>
-        )}
-        {canAccessTab("rekap",    { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="rekap" ? "block" : "none" }}>
-            <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
-              addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} dataStillSyncing={dataStillSyncing}
-              archivedKontrolYears={archivedKontrolYears} />
-          </div>
-        )}
-        {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="bagihasil" ? "block" : "none" }}>
-            <TabBagiHasil db={db} analytics={analytics} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord}
-              archivedKontrolYears={archivedKontrolYears} archivedKontrolAgregat={archivedKontrolAgregat}
-              recalcArchivedYearAgregat={recalcArchivedYearAgregat} totalArsipPcsTerjual={totalArsipPcsTerjual}
-              postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={user?.email || null} />
-          </div>
-        )}
-        {canAccessTab("pengguna", { isAdmin, isManajer }) && (
-          <div style={{ display: activeTab==="pengguna" ? "block" : "none" }}>
-            <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} />
-          </div>
-        )}
+        {/* ✅ CODE-SPLITTING: 1 Suspense boundary membungkus semua tab yang
+            di-lazy-load. Tab yang gagal lolos canAccessTab() tidak pernah
+            masuk sini sama sekali, jadi chunk-nya tidak pernah di-fetch. */}
+        <Suspense fallback={<TabLoadingFallback />}>
+          {canAccessTab("wilayah",  { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="wilayah" ? "block" : "none" }}>
+              <TabWilayah   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+            </div>
+          )}
+          {canAccessTab("rute",     { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="rute" ? "block" : "none" }}>
+              <TabRute      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+            </div>
+          )}
+          {canAccessTab("toko",     { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="toko" ? "block" : "none" }}>
+              <TabToko      db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} isSalesRestricted={!isManajer} />
+            </div>
+          )}
+          {canAccessTab("produk",   { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="produk" ? "block" : "none" }}>
+              <TabProduk    db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} />
+            </div>
+          )}
+          {canAccessTab("kontrol",  { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="kontrol" ? "block" : "none" }}>
+              <TabKontrol   db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
+                isManajer={isManajer} loadedKontrolYears={loadedKontrolYears} availableKontrolYears={availableKontrolYears} dataStillSyncing={dataStillSyncing}
+                postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={user?.email || null} />
+            </div>
+          )}
+          {canAccessTab("rekap",    { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="rekap" ? "block" : "none" }}>
+              <TabRekap     db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""}
+                addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} save={save} isManajer={isManajer} dataStillSyncing={dataStillSyncing}
+                archivedKontrolYears={archivedKontrolYears} />
+            </div>
+          )}
+          {canAccessTab("bagihasil",{ isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="bagihasil" ? "block" : "none" }}>
+              <TabBagiHasil db={db} analytics={analytics} save={save} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord}
+                archivedKontrolYears={archivedKontrolYears} archivedKontrolAgregat={archivedKontrolAgregat}
+                recalcArchivedYearAgregat={recalcArchivedYearAgregat} totalArsipPcsTerjual={totalArsipPcsTerjual}
+                postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={user?.email || null} />
+            </div>
+          )}
+          {canAccessTab("pengguna", { isAdmin, isManajer }) && (
+            <div style={{ display: activeTab==="pengguna" ? "block" : "none" }}>
+              <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} />
+            </div>
+          )}
+        </Suspense>
       </div>
 
       {/* BACKUP & RESTORE — hanya Admin (tombol disembunyikan untuk role lain) */}
