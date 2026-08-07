@@ -7,26 +7,8 @@ import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
 
-export function autoUpgradeBaruToAktif(db, updateRecord) {
-  const today = new Date();
-  const todayStr = today.toISOString().slice(0,10);
-  const thirtyDaysAgo = new Date(today);
-  thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-  (db.toko||[]).forEach(toko => {
-    if (toko.status !== "Baru") return;
-    if (!toko.tanggalMasuk) return;
-    const masuk = new Date(toko.tanggalMasuk);
-    if (isNaN(masuk.getTime())) return;
-    if (masuk <= thirtyDaysAgo) {
-      // Sudah lebih dari 30 hari, upgrade ke Aktif — dicatat juga di
-      // riwayat status supaya Rekap Siklus Wilayah bisa merekonstruksi
-      // status toko ini secara akurat pada tanggal berapa pun di masa lalu.
-      updateRecord("toko", toko.id, { status: "Aktif",
-        statusHistory: appendStatusHistory(toko.statusHistory, "Aktif", todayStr, "Otomatis: 30 hari sejak Tanggal Masuk (Baru → Aktif)") });
-    }
-  });
-}
+// ✅ CODE-SPLITTING: autoUpgradeBaruToAktif() dipindah ke src/lib/dataHelpers.js
+// supaya App.jsx bisa memanggilnya tanpa memuat komponen TabToko yang berat.
 
 export function TabToko({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isSalesRestricted }) {
   const [modal, setModal] = useState(null);
