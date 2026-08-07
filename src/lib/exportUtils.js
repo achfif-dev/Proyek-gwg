@@ -2,7 +2,7 @@ import * as XLSX from "xlsx";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { saveOrShareBlob, saveWorkbookNative } from "./fileSave";
-import { GWG_LOGO_B64, GWG_EXPORT_LOGO_B64 } from "../theme/logo";
+import { GWG_EXPORT_LOGO_B64 } from "../theme/logo";
 import { loadAppConfig, lighten } from "../config/appConfig";
 
 // ✅ WHITE LABEL: nama & logo di semua ekspor (Excel/PDF/Print/Gambar)
@@ -12,7 +12,10 @@ const _brand = loadAppConfig().brand;
 const BRAND_NAME = _brand.companyName;
 const BRAND_TAGLINE = _brand.tagline;
 const BRAND_LOGO = _brand.logoDataUrl || GWG_EXPORT_LOGO_B64;
-const BRAND_LOGO_FALLBACK = _brand.logoDataUrl || GWG_LOGO_B64;
+// ✅ OPTIMASI: fallback pakai file /logo.png (bukan base64 GWG_LOGO_B64
+// yang sudah dihapus dari bundle) — aman di sini karena dipakai sebagai
+// <img src> di HTML export (exportHTML), bukan di-embed biner ke PDF/Excel.
+const BRAND_LOGO_FALLBACK = _brand.logoDataUrl || "/logo.png";
 // ✅ FIX WARNA EKSPOR: sebelumnya warna header PDF/Excel/Print/Gambar
 // hardcode hijau GWG ("#0F4C35") walau nama/logo sudah ikut brand —
 // akibatnya laporan perusahaan lain tetap berwarna hijau GWG. Sekarang
