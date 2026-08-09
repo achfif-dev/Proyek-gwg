@@ -338,6 +338,30 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   const [catatanTutupBuku, setCatatanTutupBuku] = useState("");
   function tutupBukuBulanIni() {
     if (!confirm(`Tutup buku periode ${bulanIniKey}? Setelah ditutup, transaksi Kas/Stock Opname/Hutang-Piutang di bulan ini tidak bisa diubah lagi sampai dibuka kuncinya.`)) return;
+    // ⚠️ FIX DOBEL-POSTING: sebelumnya jurnal Amortisasi/Beban Usaha/Bagi
+    // Hasil di bawah TIDAK PERNAH dicek "apakah sudah pernah diposting
+    // untuk bulan ini" (beda dengan Dana Cadangan yang sudah benar hitung
+    // selisih/`sudahDiposting`) — cuma dilindungi tombol UI yang hilang
+    // setelah `bulanIniSudahTertutup` jadi true. Itu TIDAK cukup kalau 2
+    // perangkat (mis. Admin & Manajer, atau Admin di 2 HP) sama-sama buka
+    // Tutup Buku bulan yang sama sebelum keduanya sempat sync — keduanya
+    // masih melihat tombol, keduanya klik, dan jurnal-jurnal itu terposting
+    // 2x (dobel Beban Operasional/Penyusutan/Hutang Bagi Hasil bulan itu),
+    // karena masing-masing dapat id unik sendiri (genUniqueId) jadi TIDAK
+    // saling menimpa — malah dua-duanya tersimpan & saling menambah saldo.
+    // Guard di bawah cek langsung ke db.jurnalUmum (bukan cuma state lokal
+    // `bulanIniSudahTertutup`) sebelum tiap posting — kalau jurnal dengan
+    // sumberTipe+sumberId yang sama SUDAH ADA (non-void), batalkan seluruh
+    // proses tutup buku ini supaya tidak dobel, dan kasih tahu penggunanya
+    // supaya refresh dulu.
+    const sudahAdaJurnalUntuk = (sumberTipe) =>
+      (db.jurnalUmum || []).some(j => j.sumberTipe === sumberTipe && j.sumberId === bulanIniKey && !j.void);
+    const sudahDiposting = ["tutupBuku-amortisasi", "tutupBuku-bebanUsaha", "tutupBuku-bagiHasil"]
+      .filter(sudahAdaJurnalUntuk);
+    if (sudahDiposting.length > 0) {
+      alert(`Periode ${bulanIniKey} sepertinya SUDAH ditutup buku sebelumnya (kemungkinan dari perangkat lain yang belum sempat sinkron ke perangkat ini) — jurnal ${sudahDiposting.join(", ")} sudah ada. Untuk mencegah dobel-posting, penutupan buku ini DIBATALKAN. Silakan refresh/tunggu sinkronisasi selesai, lalu cek ulang status di atas.`);
+      return;
+    }
     addRecord("tutupBuku", {
       id: bulanIniKey, periodeLabel: PERIODE_LABELS[periodeMode], tanggalTutup: todayStr(), catatan: catatanTutupBuku,
       snapshotSaldoKas: kasLedgerPeriode.saldoAkhir, snapshotTotalAset: totalAset, snapshotTotalKewajiban: totalKewajiban, snapshotSHU: akuntansi.labaBersihFinal,
