@@ -158,8 +158,18 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
       });
     }
     if (modal==="add") {
-      const newId = genId("T", db.toko);
-      const counter = newId.replace("T","");
+      // ⚠️ FIX ID-COLLISION: dulu id toko = genId("T", db.toko) (nomor urut
+      // dari data LOKAL). Karena addRecord menulis langsung ke path
+      // toko/{id} (set, bukan push), dua perangkat yang menambah toko baru
+      // hampir bersamaan saat offline bisa menghasilkan id yang SAMA —
+      // toko yang satu KETIMPA toko lainnya tanpa peringatan saat sync.
+      // id sekarang pakai genUniqueId() (timestamp+random, praktis mustahil
+      // bentrok lintas-perangkat) — kode tampilan (mis. "GW-RTE-057") TETAP
+      // pakai nomor urut seperti sebelumnya karena itu cuma label kosmetik,
+      // aman biar tetap "bentrok" sesekali (tidak menghilangkan data).
+      const seqForKode = genId("T", db.toko);
+      const counter = seqForKode.replace("T","");
+      const newId = genUniqueId("T");
       const today = new Date().toISOString().slice(0,10);
       const tanggalMasuk = form.status === "Baru" ? (form.tanggalMasuk || today) : (form.tanggalMasuk || null);
       // ✅ Riwayat status: catat status awal toko sejak didaftarkan, supaya
@@ -384,9 +394,12 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
       // sinkron sejak awal dibuat. Disamakan di sini: produkIds diturunkan
       // dari flag yang sama persis.
       const produkIdsFromImport = produkAktif.filter(p=>produkFlags[`produk_${p.id}`]).map(p=>p.id);
-      const newId = genId("T", [...existingToko, ...toAdd, ...dupCandidates.map(d=>d.tokoObj)]);
+      // ⚠️ FIX ID-COLLISION (sama seperti submitForm di atas): id asli
+      // pakai genUniqueId(), nomor urut cuma dipakai untuk kode tampilan.
+      const seqForKode = genId("T", [...existingToko, ...toAdd, ...dupCandidates.map(d=>d.tokoObj)]);
+      const newId = genUniqueId("T");
       const prefix = "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-";
-      const counter = newId.replace("T","");
+      const counter = seqForKode.replace("T","");
       const today = new Date().toISOString().slice(0,10);
       const tanggalMasukImport = status === "Baru" ? today : null;
       // Baca stok produk dari kolom Excel jika ada (Stok: <nama produk>)
