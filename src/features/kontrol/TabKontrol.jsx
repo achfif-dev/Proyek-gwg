@@ -971,7 +971,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     if (!adaJumlah) return alert("Isi minimal 1 jumlah produk yang disesuaikan");
     const payload = { ...pforn };
     produkAktif.forEach(p => { payload[`jumlah_${p.id}`] = Number(pforn[`jumlah_${p.id}`]||0); });
-    const newId = genId("PZ", db.penyesuaian);
+    // ⚠️ FIX ID-COLLISION: pengajuan ini bisa datang dari beberapa Sales
+    // sekaligus di lapangan (offline) — genId() (nomor urut lokal) bisa
+    // menghasilkan id sama & saling menimpa pengajuan saat sync.
+    const newId = genUniqueId("PZ");
     // ✅ WORKFLOW PERSETUJUAN: pengajuan dari Sales masuk status "menunggu"
     // dulu (tidak langsung mengubah stok), dan otomatis "disetujui" sendiri
     // kalau dalam 24 jam tidak ada penolakan dari Admin/Manajer. Pengajuan
@@ -1055,7 +1058,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       payload[`terjual_${p.id}`] = Number(lforn[`terjual_${p.id}`]||0);
       payload[`bonusInput_${p.id}`] = Number(lforn[`bonusInput_${p.id}`]||0);
     });
-    const newId = genId("PLR", db.penjualanLuar);
+    // ⚠️ FIX ID-COLLISION: pencatatan ini bisa datang dari beberapa Sales
+    // sekaligus di lapangan (offline) — genId() (nomor urut lokal) bisa
+    // menghasilkan id sama & saling menimpa data penjualan saat sync.
+    const newId = genUniqueId("PLR");
     const newEntryLuar = { ...payload, id:newId };
     addRecord("penjualanLuar", newEntryLuar);
     postJurnalPenjualanLuar(newEntryLuar);
@@ -1255,8 +1261,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     );
     if (isDup) return alert(`Toko "${nama}" sudah terdaftar di rute ini.`);
     const prefix = ruteObj ? "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-" : "GW-XXX-";
-    const newId = genId("T", db.toko);
-    const counter = newId.replace("T","");
+    // ⚠️ FIX ID-COLLISION: tombol ini dipakai Sales di lapangan (offline),
+    // jadi id TIDAK BOLEH lagi pakai genId() (nomor urut lokal) — dua Sales
+    // di rute berbeda bisa dapat id sama & saling menimpa toko saat sync.
+    // id sekarang genUniqueId(); nomor urut cuma dipakai untuk kode tampilan.
+    const seqForKode = genId("T", db.toko);
+    const newId = genUniqueId("T");
+    const counter = seqForKode.replace("T","");
     const today = new Date().toISOString().slice(0,10);
     const tanggalMasuk = status === "Baru" ? today : null;
     // ✅ Produk yang dititip + stok awalnya langsung tersimpan sejak toko
