@@ -11,7 +11,7 @@ import {
   KATEGORI_KAS_MASUK, KATEGORI_KAS_KELUAR, KATEGORI_ASET, KATEGORI_HUTANG, KATEGORI_PIUTANG,
   KATEGORI_GUDANG_MASUK, KATEGORI_GUDANG_KELUAR, migrasiBebanUsahaLama,
 } from "../../lib/neracaHelpers";
-import { bangunBarisJurnalKas, bangunBarisJurnalAsetPerolehan, bangunBarisJurnalAmortisasi, bangunBarisJurnalHutangPiutangAwal, bangunBarisJurnalPelunasanHutangPiutang, bangunBarisJurnalApropriasiDanaCadangan, bangunBarisJurnalAkrualBebanUsaha, bangunBarisJurnalPengakuanBagiHasil, bulanSebelumnya, hitungSnapshotSaldoAkun, hitungSaldoAkunTerkini, ringkasanSaldoAkunPerTipe, DEFAULT_DAFTAR_AKUN } from "../../lib/akuntansiHelpers";
+import { bangunBarisJurnalKas, bangunBarisJurnalAsetPerolehan, bangunBarisJurnalAmortisasi, bangunBarisJurnalHutangPiutangAwal, bangunBarisJurnalPelunasanHutangPiutang, bangunBarisJurnalApropriasiDanaCadangan, bangunBarisJurnalAkrualBebanUsaha, bangunBarisJurnalPengakuanBagiHasil, bulanSebelumnya, hitungSnapshotSaldoAkun, hitungSaldoAkunTerkini, ringkasanSaldoAkunPerTipe, getTipeAkunDariKode, getNormalBalance, DEFAULT_DAFTAR_AKUN } from "../../lib/akuntansiHelpers";
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
@@ -549,6 +549,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     { key: "hutangpiutang", label: "Hutang/Piutang", icon: Icon.receipt },
     { key: "neraca", label: "Laporan Neraca", icon: Icon.spreadsheet },
     { key: "tutupbuku", label: "Tutup Buku", icon: Icon.checklist },
+    { key: "jurnalpembuka", label: "Jurnal Pembuka (Setup)", icon: Icon.piggyBank },
   ];
 
   return (
@@ -1386,6 +1387,10 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
           </Card>
         </>
       )}
+
+      {section === "jurnalpembuka" && (
+        <JurnalPembukaForm db={db} postJurnal={postJurnal} voidJurnal={voidJurnal} createdBy={createdBy} />
+      )}
     </div>
   );
 }
@@ -1460,5 +1465,171 @@ function NeracaVersiJurnal({ db }) {
         </div>
       )}
     </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  JURNAL PEMBUKA (Saldo Awal) — persiapan migrasi penuh ke Neraca Jurnal
+// ═══════════════════════════════════════════════════════════════════════
+// Kenapa fitur ini perlu ada SEBELUM Neraca versi Jurnal (Fase 8, di atas)
+// bisa diandalkan sebagai sumber kebenaran tunggal: Fase 1-9 hanya
+// memposting jurnal untuk TRANSAKSI yang terjadi SETELAH sistem jurnal
+// dipakai (Kas, Kontrol, Aset baru, Hutang/Piutang baru, dst) — tidak ada
+// mekanisme yang otomatis "mengisi" saldo yang SUDAH ADA sebelum migrasi
+// (Modal, Kas riil, Persediaan Gudang/Toko, Aset Tetap existing). Tanpa
+// entry pembuka, akun-akun itu diam-diam mulai dari 0 — paling parah untuk
+// 1111 (Persediaan Beredar di Toko) yang TERUS DIKURANGI tiap ada penjualan
+// Kontrol sejak hari pertama, jadi akan bergerak ke NEGATIF tanpa henti
+// kalau nilai stok yang sudah beredar duluan tidak pernah "dimasukkan" ke
+// jurnal lewat entry ini.
+//
+// Desain: SATU entry jurnal gabungan (sumberTipe:"jurnalPembuka",
+// sumberId tetap "OPENING" — cuma boleh ada SATU aktif kapan pun, dicek
+// lewat `existing` di bawah) berisi saldo AWAL tiap akun Aset/Kewajiban/
+// Ekuitas (bukan Pendapatan/Beban — itu memang harus mulai dari 0 karena
+// sifatnya akumulasi sejak pemakaian, lihat catatan di NeracaVersiJurnal).
+// Nilai yang diisi diinterpretasikan sebagai NORMAL BALANCE akun itu
+// (mis. isi 5000000 di 1101 Kas → otomatis jadi DEBIT 5000000, isi
+// 5000000 di 2101 Hutang Usaha → otomatis jadi KREDIT 5000000) — supaya
+// pengguna tidak perlu mikir debit/kredit manual, cukup isi "berapa
+// saldonya", searah dengan cara berpikir Neraca biasa.
+//
+// Kalau total sisi Aset ≠ total sisi Kewajiban+Ekuitas yang diisi (jamak
+// terjadi karena Modal Disetor riil sering tidak persis diketahui),
+// tombol "Auto-isi Selisih ke Modal Disetor" menghitung selisihnya dan
+// menaruhnya ke 3101 — konsisten dengan definisi Modal Disetor sebagai
+// sisa klaim pemilik atas Aset setelah dikurangi Kewajiban.
+function JurnalPembukaForm({ db, postJurnal, voidJurnal, createdBy }) {
+  const daftarAkunEfektif = db.daftarAkun && Object.keys(db.daftarAkun).length > 0 ? db.daftarAkun : DEFAULT_DAFTAR_AKUN;
+  const akunNeraca = useMemo(() => Object.keys(daftarAkunEfektif)
+    .filter(k => ["aset", "kewajiban", "ekuitas"].includes(getTipeAkunDariKode(k)) && daftarAkunEfektif[k]?.aktif !== false)
+    .sort(), [daftarAkunEfektif]);
+
+  const existing = (db.jurnalUmum || []).find(j => j.sumberTipe === "jurnalPembuka" && j.sumberId === "OPENING" && !j.void);
+
+  const [tanggal, setTanggal] = useState(todayStr());
+  const [keterangan, setKeterangan] = useState("Saldo awal migrasi ke sistem jurnal double-entry");
+  const [nilai, setNilai] = useState({}); // { kode: "angka string" }
+
+  const totalDebit = akunNeraca.reduce((s, k) => (getNormalBalance(k) === "debit" ? s + (Number(nilai[k]) || 0) : s), 0);
+  const totalKredit = akunNeraca.reduce((s, k) => (getNormalBalance(k) === "kredit" ? s + (Number(nilai[k]) || 0) : s), 0);
+  const selisih = Math.round((totalDebit - totalKredit) * 100) / 100;
+  const jumlahDiisi = akunNeraca.filter(k => (Number(nilai[k]) || 0) !== 0).length;
+
+  function autoIsiSelisihKeModal() {
+    const modalSaatIni = Number(nilai["3101"]) || 0;
+    // 3101 Modal Disetor bertipe ekuitas → normal balance KREDIT. Menaikkan
+    // nilainya sebesar `selisih` (Debit − Kredit saat ini) membuat totalKredit
+    // ikut naik sebesar itu, sehingga selisih baru = 0.
+    setNilai(n => ({ ...n, "3101": String(modalSaatIni + selisih) }));
+  }
+
+  function submit() {
+    if (existing) return;
+    if (jumlahDiisi < 2) return alert("Isi minimal 2 akun (kalau cuma 1 sisi yang diisi, tidak mungkin balance).");
+    if (selisih !== 0) return alert(`Belum balance — Total Aset (Rp${fmt(totalDebit)}) ≠ Total Kewajiban+Ekuitas (Rp${fmt(totalKredit)}), selisih Rp${fmt(selisih)}. Pakai tombol "Auto-isi Selisih ke Modal Disetor" atau koreksi manual dulu.`);
+    if (!confirm(`Posting Jurnal Pembuka per ${tanggal}? Ini akan jadi SALDO AWAL sistem jurnal untuk ${jumlahDiisi} akun. Sebaiknya cuma dilakukan SEKALI — kalau nanti ada yang salah, batalkan dulu lewat tombol "Batalkan" sebelum input ulang.`)) return;
+    const baris = akunNeraca.map(k => {
+      const v = Number(nilai[k]) || 0;
+      if (v === 0) return null;
+      const isDebit = getNormalBalance(k) === "debit";
+      return { akun: k, debit: isDebit ? v : 0, kredit: isDebit ? 0 : v };
+    }).filter(Boolean);
+    try {
+      postJurnal({ tanggal, sumberTipe: "jurnalPembuka", sumberId: "OPENING", keterangan, baris, createdBy });
+      setNilai({});
+      alert("Jurnal Pembuka berhasil diposting. Cek hasilnya di \"Neraca (versi Jurnal)\" pada sub-tab Laporan Neraca.");
+    } catch (e) {
+      alert(`Gagal memposting Jurnal Pembuka: ${e.message}`);
+    }
+  }
+
+  function batalkan() {
+    if (!existing || !voidJurnal) return;
+    if (!confirm("Batalkan Jurnal Pembuka yang sudah diposting? Ini akan membalik semua saldo awalnya (jadi 0 lagi) — dipakai kalau mau input ulang dari awal karena ada yang salah.")) return;
+    voidJurnal(existing.id, { alasan: "Jurnal Pembuka dibatalkan untuk diinput ulang", createdBy });
+  }
+
+  const LABEL_TIPE = { aset: "Aset", kewajiban: "Kewajiban", ekuitas: "Ekuitas" };
+  const grouped = { aset: [], kewajiban: [], ekuitas: [] };
+  akunNeraca.forEach(k => grouped[getTipeAkunDariKode(k)].push(k));
+
+  return (
+    <>
+      <Card style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: T.gray800, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+          <Icon.piggyBank size={16} strokeWidth={2} /> Jurnal Pembuka (Saldo Awal)
+        </div>
+        <div style={{ fontSize: 12, color: T.gray400, marginBottom: 14, lineHeight: 1.5 }}>
+          Isi SEKALI SAJA sebelum "Neraca (versi Jurnal)" dipakai sebagai acuan resmi — supaya akun seperti Persediaan
+          Beredar di Toko, Aset Tetap, Kas, dan Modal tidak diam-diam mulai dari Rp0 padahal secara riil sudah ada
+          nilainya sejak sebelum sistem jurnal ini dipakai. Cukup isi akun yang relevan (boleh dikosongkan kalau
+          memang belum ada/masih Rp0) — nilai yang diisi otomatis dianggap sebagai saldo NORMAL akun itu (Aset & Beban
+          = Debit, Kewajiban/Ekuitas/Pendapatan = Kredit), tidak perlu pusing debit/kredit manual.
+        </div>
+
+        {existing ? (
+          <div style={{ padding: "12px 16px", background: T.greenLt, borderRadius: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: T.green }}>✓ Jurnal Pembuka sudah diposting ({existing.tanggal})</span>
+              <Btn size="sm" variant="secondary" onClick={batalkan}>Batalkan</Btn>
+            </div>
+            {existing.keterangan && <div style={{ fontSize: 12, color: T.gray600, marginBottom: 8 }}>{existing.keterangan}</div>}
+            {(existing.baris || []).map((b, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", padding: "4px 0", fontSize: 12.5, color: T.gray600 }}>
+                <span>{b.akun} — {daftarAkunEfektif[b.akun]?.nama || b.akun}</span>
+                <span style={{ fontWeight: 600, color: T.gray800 }}>{fmtRp(b.debit || b.kredit)} ({b.debit > 0 ? "Debit" : "Kredit"})</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 14 }} className="gw-grid2">
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Tanggal Saldo Awal</label>
+                <input type="date" value={tanggal} onChange={e => setTanggal(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+              <div>
+                <label style={{ fontSize: 12, fontWeight: 600, color: T.gray600, display: "block", marginBottom: 4 }}>Keterangan</label>
+                <input value={keterangan} onChange={e => setKeterangan(e.target.value)}
+                  style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+              </div>
+            </div>
+
+            {Object.keys(LABEL_TIPE).map(tipe => (
+              <div key={tipe} style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: T.gray400, textTransform: "uppercase", marginBottom: 8 }}>{LABEL_TIPE[tipe]}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }} className="gw-grid2">
+                  {grouped[tipe].map(k => (
+                    <div key={k}>
+                      <label style={{ fontSize: 11.5, color: T.gray600, display: "block", marginBottom: 3 }}>{k} — {daftarAkunEfektif[k]?.nama || k}</label>
+                      <input type="number" value={nilai[k] || ""} onChange={e => setNilai(n => ({ ...n, [k]: e.target.value }))} placeholder="0"
+                        style={{ width: "100%", padding: "7px 10px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 12px", background: selisih === 0 ? T.greenLt : T.orangeLt,
+              border: `1.5px solid ${selisih === 0 ? T.green : T.orange}55`, borderRadius: 8, marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+              <span style={{ fontSize: 12.5, fontWeight: 700, color: selisih === 0 ? T.green : T.orange }}>
+                {selisih === 0 ? "✓ Balance" : `⚠️ Belum balance — selisih ${fmtRp(selisih)}`}
+              </span>
+              <span style={{ fontSize: 12, color: T.gray600 }}>Aset: {fmtRp(totalDebit)} · Kewajiban+Ekuitas: {fmtRp(totalKredit)}</span>
+            </div>
+            {selisih !== 0 && (
+              <Btn size="sm" variant="secondary" onClick={autoIsiSelisihKeModal} style={{ marginBottom: 12 }}>
+                Auto-isi Selisih ke Modal Disetor (3101)
+              </Btn>
+            )}
+            <div>
+              <Btn icon={Icon.save} onClick={submit} disabled={selisih !== 0 || jumlahDiisi < 2}>Posting Jurnal Pembuka</Btn>
+            </div>
+          </>
+        )}
+      </Card>
+    </>
   );
 }
