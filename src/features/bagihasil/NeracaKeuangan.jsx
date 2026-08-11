@@ -414,14 +414,38 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     // neraca-bagihasil-pajak.md, Temuan 2) dengan pengakuan jurnal riil tiap
     // Tutup Buku. Pembayaran tunainya nanti (kategori Kas "Biaya
     // Operasional") melunasi 2140 ini, BUKAN men-debit 5102 lagi.
+    //
+    // ✅ FIX ITEM "SEKALI": sebelumnya SEMUA item (termasuk yang frekuensinya
+    // "sekali" — biaya non-rutin spt beli properti satu kali) ikut dijumlah
+    // FLAT tiap kali Tutup Buku jalan, jadi kalau admin lupa hapus item itu
+    // dari daftar, nominalnya keakru ULANG tiap bulan berikutnya seolah
+    // rutin bulanan. Sekarang: item "bulanan" tetap selalu ikut (memang
+    // rutin tiap bulan); item "sekali" HANYA ikut di bulan Tutup Buku
+    // PERTAMA setelah ditambahkan (ditandai `diakruPadaBulan` di config
+    // setelah berhasil diposting) — bulan-bulan berikutnya otomatis
+    // dilewati tanpa admin perlu ingat menghapusnya manual. Kalau bulan itu
+    // dibuka-kunci lagi (lihat bukaKunciBulan di bawah), tanda ini dilepas
+    // supaya bisa diakru ulang saat ditutup lagi (idempoten, sama seperti
+    // jurnal lain di Tutup Buku ini).
     let barisBebanUsaha = null;
     const bebanUsahaListTutup = Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config);
-    const totalBebanUsahaTutup = bebanUsahaListTutup.reduce((s,b)=>s+(Number(b.nominal)||0), 0);
+    const itemSekaliBaruDiakru = bebanUsahaListTutup.filter(b => b.frekuensi === "sekali" && !b.diakruPadaBulan);
+    const totalBebanUsahaTutup = bebanUsahaListTutup.reduce((s,b) => {
+      if (b.frekuensi === "sekali") return s + (b.diakruPadaBulan ? 0 : (Number(b.nominal)||0));
+      return s + (Number(b.nominal)||0); // "bulanan" (atau kosong/data lama) — selalu ikut tiap bulan
+    }, 0);
     if (postJurnal) {
       try {
         barisBebanUsaha = bangunBarisJurnalAkrualBebanUsaha(totalBebanUsahaTutup);
         if (barisBebanUsaha) postJurnal({ tanggal: bounds?.end || todayStr(), sumberTipe: "tutupBuku-bebanUsaha", sumberId: bulanIniKey,
           keterangan: `Akrual Beban Usaha periode ${bulanIniKey}`, baris: barisBebanUsaha, createdBy });
+        // Tandai item "sekali" yang baru saja diakru supaya tidak ikut lagi
+        // di Tutup Buku bulan-bulan berikutnya.
+        if (itemSekaliBaruDiakru.length > 0) {
+          const bebanUsahaBaru = bebanUsahaListTutup.map(b =>
+            itemSekaliBaruDiakru.some(x => x.id === b.id) ? { ...b, diakruPadaBulan: bulanIniKey } : b);
+          saveConfig({ ...config, bebanUsaha: bebanUsahaBaru });
+        }
       } catch (e) {
         console.warn("Gagal memposting jurnal Akrual Beban Usaha (Tutup Buku tetap tersimpan):", e);
         alert(`Periode berhasil ditutup, TAPI jurnal Akrual Beban Usaha gagal diposting: ${e.message}`);
@@ -492,6 +516,15 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     voidJurnalSumberAman("danaCadangan-apropriasi", id, `Buka kunci periode ${id}`);
     voidJurnalSumberAman("tutupBuku-bebanUsaha", id, `Buka kunci periode ${id}`);
     voidJurnalSumberAman("tutupBuku-bagiHasil", id, `Buka kunci periode ${id}`);
+    // ✅ Lepas tanda `diakruPadaBulan` dari item Beban Usaha "sekali" yang
+    // diakru DI BULAN INI — supaya kalau bulan ini ditutup ulang nanti,
+    // item tsb ikut diakru lagi (idempoten, konsisten dengan jurnal lain
+    // di atas yang juga di-void supaya bisa diposting ulang).
+    const bebanUsahaListSaatIni = Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config);
+    if (bebanUsahaListSaatIni.some(b => b.diakruPadaBulan === id)) {
+      saveConfig({ ...config, bebanUsaha: bebanUsahaListSaatIni.map(b =>
+        b.diakruPadaBulan === id ? { ...b, diakruPadaBulan: undefined } : b) });
+    }
     // ✅ FASE 7: hapus snapshot saldo akun bulan ini juga — supaya kalau
     // nanti ditutup ulang, snapshot dihitung ulang dari data yang benar
     // (bukan snapshot basi dari sebelum dibuka kuncinya).
@@ -1359,6 +1392,28 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
                   <input value={catatanTutupBuku} onChange={e => setCatatanTutupBuku(e.target.value)} placeholder="cth: sudah dicek & cocok per akhir bulan"
                     style={{ width: "100%", padding: "8px 12px", border: `1.5px solid ${T.gray200}`, borderRadius: 8, fontSize: 13, fontFamily: "inherit", boxSizing: "border-box" }} />
                 </div>
+                {(() => {
+                  const bebanUsahaListPreview = Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config);
+                  const sekaliPending = bebanUsahaListPreview.filter(b => b.frekuensi === "sekali" && !b.diakruPadaBulan);
+                  const sekaliSudah = bebanUsahaListPreview.filter(b => b.frekuensi === "sekali" && b.diakruPadaBulan);
+                  if (sekaliPending.length === 0 && sekaliSudah.length === 0) return null;
+                  return (
+                    <div style={{ padding: "10px 14px", background: T.gray50, borderRadius: 8, fontSize: 12, color: T.gray600, marginBottom: 12 }}>
+                      {sekaliPending.length > 0 && (
+                        <div style={{ marginBottom: sekaliSudah.length > 0 ? 4 : 0 }}>
+                          <b style={{ color: T.gray700 }}>Item Beban Usaha "Sekali" yang akan diakru bulan ini:</b>{" "}
+                          {sekaliPending.map(b => `${b.nama} (${fmtRp(Number(b.nominal)||0)})`).join(", ")}.
+                        </div>
+                      )}
+                      {sekaliSudah.length > 0 && (
+                        <div>
+                          <b style={{ color: T.gray400 }}>Sudah diakru sebelumnya (dilewati bulan ini):</b>{" "}
+                          {sekaliSudah.map(b => `${b.nama} — bulan ${b.diakruPadaBulan}`).join(", ")}.
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
                 <Btn icon={Icon.save} onClick={tutupBukuBulanIni}>Tutup Buku Periode {bulanIniKey}</Btn>
               </>
             )}

@@ -56,6 +56,23 @@ export function hitungAmortisasiPeriode(asetArr, bounds) {
   return { total, detail };
 }
 
+// Jumlah bulan (inklusif, granularitas bulanan — sama seperti proration
+// Amortisasi di atas) yang tercakup dalam periode terpilih. Dipakai untuk
+// men-scale item Beban Usaha yang bersifat BULANAN (mis. Gaji, Biaya
+// Operasional rutin) supaya laporan Tahunan/Kustom otomatis mengalikan
+// nominal bulanan tsb × jumlah bulan periode — bukan cuma dijumlah 1x
+// seperti nominal itu berlaku utuh untuk periode berapa pun panjangnya.
+// Mode "bulanan" & "tahunan" selalu pas bulan penuh (lihat periodeBounds),
+// jadi hasilnya presisi (1 / 12). Mode "kustom" pakai tanggal bebas —
+// di sini tetap dihitung berbasis bulan kalender yang disentuh (inklusif),
+// konsisten dengan cara Amortisasi menghitung overlap bulan aset.
+export function hitungJumlahBulanPeriode(bounds) {
+  const pStart = ymOf(bounds?.start);
+  const pEnd = ymOf(bounds?.end);
+  if (pStart === null || pEnd === null) return 0;
+  return Math.max(0, pEnd - pStart + 1);
+}
+
 // Status aset pada tanggal tertentu (default: hari ini) — dipakai baik di
 // tabel daftar aset (asOf = hari ini) maupun Laporan Neraca (asOf = akhir
 // periode terpilih, supaya Nilai Buku konsisten dengan tanggal neraca).
@@ -164,10 +181,10 @@ export function isPeriodeTerkunci(tutupBukuArr, dateStr) {
 // menyimpan Konfigurasi sekali, hasil migrasi ini permanen tersimpan.
 export function migrasiBebanUsahaLama(cfg) {
   const items = [];
-  if (Number(cfg?.biayaOperasional)) items.push({ id: "BU_MIG_1", nama: "Biaya Operasional", nominal: Number(cfg.biayaOperasional) });
-  if (Number(cfg?.biayaBonus)) items.push({ id: "BU_MIG_2", nama: "Biaya Bonus Produk", nominal: Number(cfg.biayaBonus) });
-  if (Number(cfg?.biayaLogistik)) items.push({ id: "BU_MIG_3", nama: "Biaya Logistik/Distribusi", nominal: Number(cfg.biayaLogistik) });
-  if (Number(cfg?.biayaLainnya)) items.push({ id: "BU_MIG_4", nama: "Biaya Lainnya", nominal: Number(cfg.biayaLainnya) });
+  if (Number(cfg?.biayaOperasional)) items.push({ id: "BU_MIG_1", nama: "Biaya Operasional", nominal: Number(cfg.biayaOperasional), frekuensi: "bulanan" });
+  if (Number(cfg?.biayaBonus)) items.push({ id: "BU_MIG_2", nama: "Biaya Bonus Produk", nominal: Number(cfg.biayaBonus), frekuensi: "bulanan" });
+  if (Number(cfg?.biayaLogistik)) items.push({ id: "BU_MIG_3", nama: "Biaya Logistik/Distribusi", nominal: Number(cfg.biayaLogistik), frekuensi: "bulanan" });
+  if (Number(cfg?.biayaLainnya)) items.push({ id: "BU_MIG_4", nama: "Biaya Lainnya", nominal: Number(cfg.biayaLainnya), frekuensi: "bulanan" });
   return items;
 }
 

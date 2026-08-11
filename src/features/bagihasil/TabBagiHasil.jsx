@@ -9,7 +9,7 @@ import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
 import { NeracaKeuangan } from "./NeracaKeuangan.jsx";
 import { LaporanPajak } from "./LaporanPajak.jsx";
-import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode } from "../../lib/neracaHelpers";
+import { periodeBounds, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode, hitungHppPeriode, hitungJumlahBulanPeriode } from "../../lib/neracaHelpers";
 import { bangunBarisJurnalKas, hitungAkuntansiHistoris } from "../../lib/akuntansiHelpers";
 
 function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, deleteRecord, archivedKontrolYears, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, createdBy }) {
@@ -81,6 +81,18 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
   // Batas tanggal periode terpilih (dipakai bareng oleh Amortisasi & Neraca Keuangan)
   const bounds = useMemo(() => periodeBounds(periodeMode, filterBulan, filterTahun, filterStart, filterEnd),
     [periodeMode, filterBulan, filterTahun, filterStart, filterEnd]);
+
+  // ✅ FIX LOGIKA BEBAN BULANAN: jumlah bulan (inklusif) yang tercakup periode
+  // terpilih — dipakai untuk men-scale item Beban Usaha yang frekuensinya
+  // "bulanan" (Gaji, Biaya Operasional rutin, dst). Sebelumnya nominal item
+  // Beban Usaha dijumlah APA ADANYA tanpa peduli periode Bulanan/Tahunan/
+  // Kustom yang dipilih (beda dari Amortisasi yang sudah benar di-prorate
+  // per bulan) — akibatnya laporan Tahunan (12 bulan) hanya menghitung
+  // beban gaji SATU bulan, bikin Laba Bersih & Bagi Hasil jauh lebih besar
+  // dari yang seharusnya. Item ber-frekuensi "sekali" TIDAK di-scale
+  // (nominal dianggap berlaku utuh sekali untuk periode yang dipilih,
+  // mis. biaya proyek satu kali, pembelian non-aset, dll).
+  const jumlahBulanPeriode = useMemo(() => hitungJumlahBulanPeriode(bounds), [bounds]);
 
   // Tahun-tahun terarsip (sudah dipindah ke Google Drive & dihapus dari
   // RTDB) yang OVERLAP dengan periode laporan yang sedang dipilih admin.
@@ -158,7 +170,25 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
     // hilang/reset — begitu Admin membuka & simpan Konfigurasi sekali, list
     // ini permanen tersimpan menggantikan 4 field lama.
     const bebanUsahaList = Array.isArray(config.bebanUsaha) ? config.bebanUsaha : migrasiBebanUsahaLama(config);
-    const bebanUsahaTotal = bebanUsahaList.reduce((s,b)=>s+(Number(b.nominal)||0), 0);
+    // ✅ Item tanpa field `frekuensi` (data lama sebelum fitur ini ada)
+    // default-nya "bulanan" — supaya konsisten dengan asumsi awal (nominal
+    // yang diisi admin di form = biaya per bulan, seperti gaji karyawan).
+    // Item "sekali" tidak dikali jumlah bulan periode.
+    const bebanUsahaDetail = bebanUsahaList.map(b => {
+      const frekuensi = b.frekuensi === "sekali" ? "sekali" : "bulanan";
+      const nominalBulanan = Number(b.nominal) || 0;
+      const multiplier = frekuensi === "sekali" ? 1 : jumlahBulanPeriode;
+      const totalPeriode = nominalBulanan * multiplier;
+      return { ...b, frekuensi, nominalBulanan, multiplier, totalPeriode };
+    });
+    const bebanUsahaTotal = bebanUsahaDetail.reduce((s,b)=>s+b.totalPeriode, 0);
+    // Nilai beban usaha BULANAN MURNI (1 bulan, item "sekali" dikecualikan) —
+    // dipakai khusus oleh estimasi Tren 12 Bulan di bawah, yang selalu
+    // menghitung per bulan kalender individual TERLEPAS dari periode filter
+    // (Bulanan/Tahunan/Kustom) yang sedang aktif di layar. Kalau dibiarkan
+    // pakai `bebanUsahaTotal` (yang sekarang ikut ter-scale sesuai filter),
+    // tren 12-bulan bisa salah kali 12 saat filter aktif = Tahunan.
+    const bebanUsahaBulananTotal = bebanUsahaDetail.filter(b=>b.frekuensi==="bulanan").reduce((s,b)=>s+b.nominalBulanan, 0);
     // (field lama tetap dihitung terpisah untuk kompatibilitas ekspor lama, tapi TIDAK dobel-hitung ke totalBiaya)
     const biayaOps = Number(config.biayaOperasional)||0;
     const biayaBonus = Number(config.biayaBonus)||0;
@@ -205,12 +235,12 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
 
     return {
       pendapatan, biayaOps, biayaBonus, biayaLogistik, biayaLain, biayaAmortisasi, totalBiaya,
-      bebanUsahaList, bebanUsahaTotal, metodeHpp, hppInfo, marginPct,
+      bebanUsahaList, bebanUsahaDetail, bebanUsahaTotal, bebanUsahaBulananTotal, jumlahBulanPeriode, metodeHpp, hppInfo, marginPct,
       danaCadanganPeriode,
       labaKotor, labaSebelumCadangan, labaBersihFinal,
       pihakList, totalDibagi,
     };
-  }, [revPeriode, config, db.asetAmortisasi, db.produk, bounds]);
+  }, [revPeriode, config, db.asetAmortisasi, db.produk, bounds, jumlahBulanPeriode]);
 
   // ✅ Laba Rugi HISTORIS (dari jurnal, harga beku sesuai tanggal transaksi
   // — lihat AUDIT-integrasi-neraca-bagihasil-pajak.md §Temuan 1) untuk
@@ -222,7 +252,7 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
     [bounds, db.jurnalUmum]);
 
   function tambahBebanUsaha() {
-    setCfgDraft(p => ({ ...p, bebanUsaha: [...(p.bebanUsaha||[]), { id: genUniqueId("BU"), nama:"", nominal:0 }] }));
+    setCfgDraft(p => ({ ...p, bebanUsaha: [...(p.bebanUsaha||[]), { id: genUniqueId("BU"), nama:"", nominal:0, frekuensi:"bulanan" }] }));
   }
   function updateBebanUsaha(id, field, value) {
     setCfgDraft(p => ({ ...p, bebanUsaha: (p.bebanUsaha||[]).map(b => b.id===id ? { ...b, [field]: value } : b) }));
@@ -282,7 +312,7 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
       { keterangan:"", nilai:"" },
       { keterangan:"=== BEBAN USAHA ===", nilai:"" },
       ...(akuntansi.metodeHpp==="otomatis" ? [{ keterangan:"HPP (Harga Pokok Penjualan)", nilai: fmtRp(akuntansi.hppInfo.totalHpp) }] : []),
-      ...akuntansi.bebanUsahaList.map(b=>({ keterangan:b.nama, nilai: fmtRp(b.nominal) })),
+      ...akuntansi.bebanUsahaDetail.map(b=>({ keterangan: b.frekuensi==="bulanan" ? `${b.nama} (${fmtRp(b.nominalBulanan)}/bln × ${b.multiplier} bln)` : `${b.nama} (sekali)`, nilai: fmtRp(b.totalPeriode) })),
       { keterangan:"Biaya Amortisasi (Aset Tetap)", nilai: fmtRp(akuntansi.biayaAmortisasi) },
       { keterangan:"TOTAL BEBAN USAHA", nilai: fmtRp(akuntansi.totalBiaya) },
       { keterangan:`Laba Kotor${akuntansi.metodeHpp==="otomatis"?" (Riil, dari HPP)":""}`, nilai: fmtRp(akuntansi.labaKotor) },
@@ -457,12 +487,22 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
           {/* Beban Usaha — list dinamis, diatur di tombol Konfigurasi */}
           <div style={{ marginBottom:14 }}>
             <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:8, textTransform:"uppercase", letterSpacing:"0.06em" }}>II. Beban Usaha</div>
-            {akuntansi.bebanUsahaList.length === 0 ? (
+            {akuntansi.bebanUsahaDetail.length === 0 ? (
               <div style={{ fontSize:12, color:T.gray400, padding:"6px 12px" }}>Belum ada item Beban Usaha — atur lewat tombol Konfigurasi.</div>
-            ) : akuntansi.bebanUsahaList.map((b,i)=>(
+            ) : akuntansi.bebanUsahaDetail.map((b,i)=>(
               <div key={b.id||i} style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px", borderBottom:`1px solid ${T.gray100}` }}>
-                <span style={{ fontSize:13, color:T.gray600 }}>{b.nama}</span>
-                <span style={{ fontSize:13, color:T.red }}>({fmtRp(b.nominal)})</span>
+                <span style={{ fontSize:13, color:T.gray600 }}>
+                  {b.nama}
+                  {b.frekuensi==="bulanan" && (
+                    <span style={{ fontSize:10, color:T.gray400, marginLeft:6 }}>
+                      ({fmtRp(b.nominalBulanan)}/bln × {b.multiplier} bln)
+                    </span>
+                  )}
+                  {b.frekuensi==="sekali" && (
+                    <span style={{ fontSize:10, color:T.gray400, marginLeft:6 }}>(sekali)</span>
+                  )}
+                </span>
+                <span style={{ fontSize:13, color:T.red }}>({fmtRp(b.totalPeriode)})</span>
               </div>
             ))}
             <div style={{ display:"flex", justifyContent:"space-between", padding:"6px 12px", borderBottom:`1px solid ${T.gray100}` }}>
@@ -677,9 +717,9 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
             if (akuntansi.metodeHpp === "otomatis") {
               const hppBulan = hitungHppPeriode({ rows, luarRows }, produkArr).totalHpp;
               labaKotorBulan = rev - hppBulan;
-              labaSblmCadangan = Math.max(labaKotorBulan - akuntansi.bebanUsahaTotal - amortisasiBulan, 0);
+              labaSblmCadangan = Math.max(labaKotorBulan - akuntansi.bebanUsahaBulananTotal - amortisasiBulan, 0);
             } else {
-              labaKotorBulan = rev - akuntansi.bebanUsahaTotal - amortisasiBulan;
+              labaKotorBulan = rev - akuntansi.bebanUsahaBulananTotal - amortisasiBulan;
               labaSblmCadangan = Math.max(labaKotorBulan * (akuntansi.marginPct/100), 0);
             }
             const cadanganBulan = hitungDanaCadanganPeriode(terjual, config.danaCadangan);
@@ -802,8 +842,14 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
               <div key={b.id} style={{ display:"flex", gap:8, marginBottom:8, alignItems:"center" }}>
                 <input value={b.nama} onChange={e=>updateBebanUsaha(b.id,"nama",e.target.value)} placeholder="Nama beban, cth: Gaji Karyawan"
                   style={{ flex:"1.4 1 0%", minWidth:0, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
-                <input type="number" value={b.nominal} min={0} onChange={e=>updateBebanUsaha(b.id,"nominal",e.target.value)} placeholder="Rp"
+                <input type="number" value={b.nominal} min={0} onChange={e=>updateBebanUsaha(b.id,"nominal",e.target.value)} placeholder="Rp / bln"
                   style={{ flex:"1 1 0%", minWidth:0, padding:"7px 10px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }} />
+                <select value={b.frekuensi||"bulanan"} onChange={e=>updateBebanUsaha(b.id,"frekuensi",e.target.value)}
+                  title="Bulanan = nominal dikali otomatis sesuai jumlah bulan periode laporan. Sekali = nominal dihitung utuh 1x, tidak dikali."
+                  style={{ flex:"0.9 1 0%", minWidth:0, padding:"7px 8px", border:`1.5px solid ${T.gray200}`, borderRadius:7, fontSize:12, fontFamily:"inherit", boxSizing:"border-box" }}>
+                  <option value="bulanan">Bulanan</option>
+                  <option value="sekali">Sekali</option>
+                </select>
                 <button onClick={()=>hapusBebanUsaha(b.id)} title="Hapus item"
                   style={{ border:"none", background:T.redLt, color:T.red, borderRadius:6, width:28, height:28, display:"flex",
                     alignItems:"center", justifyContent:"center", cursor:"pointer", flexShrink:0 }}>
@@ -811,9 +857,16 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
                 </button>
               </div>
             ))}
+            <div style={{ fontSize:11, color:T.gray400, marginBottom:8 }}>
+              <b>Bulanan</b>: nominal = biaya per bulan, otomatis dikali jumlah bulan periode laporan yang dipilih (persis seperti Amortisasi). <b>Sekali</b>: nominal dihitung utuh 1× tanpa dikali, cocok untuk biaya non-rutin.
+            </div>
             <div style={{ display:"flex", justifyContent:"space-between", padding:"8px 4px", fontSize:12, fontWeight:700, color:T.gray700, borderTop:`1px solid ${T.gray100}`, marginTop:4 }}>
-              <span>Total Beban Usaha (belum termasuk Amortisasi otomatis)</span>
-              <span>{fmtRp((cfgDraft.bebanUsaha||[]).reduce((s,b)=>s+(Number(b.nominal)||0),0))}</span>
+              <span>Total Beban Usaha untuk periode terpilih ({jumlahBulanPeriode} bln, belum termasuk Amortisasi otomatis)</span>
+              <span>{fmtRp((cfgDraft.bebanUsaha||[]).reduce((s,b)=>{
+                const nominal = Number(b.nominal)||0;
+                const mult = b.frekuensi==="sekali" ? 1 : jumlahBulanPeriode;
+                return s + nominal*mult;
+              },0))}</span>
             </div>
           </div>
           <div style={{ marginBottom:16 }}>
