@@ -42,6 +42,48 @@ export const LIST_TABLES = ["wilayah", "rute", "toko", "produk", "kontrol", "pen
 // kalender, karena siklus kunjungan tiap wilayah bisa maju-mundur tanggalnya.
 export const SIKLUS_GAP_DAYS = 10;
 
+// ✅ Pecah SATU daftar tanggal kontrol (sudah untuk 1 wilayah) menjadi
+// beberapa SEGMEN SIKLUS (putaran) terpisah: dua tanggal berurutan dianggap
+// masih 1 siklus yang sama kalau jaraknya ≤ SIKLUS_GAP_DAYS hari, kalau
+// lebih maka siklus baru dimulai. Hasil terurut kronologis (siklus paling
+// LAMA duluan, siklus TERBARU di elemen terakhir array).
+export function computeSiklusSegments(dates) {
+  const sorted = [...new Set(dates)].filter(Boolean).sort();
+  if (!sorted.length) return [];
+  const segments = [];
+  let segStart = sorted[0], segEnd = sorted[0];
+  for (let i = 1; i < sorted.length; i++) {
+    const diffDays = (new Date(sorted[i]) - new Date(segEnd)) / 86400000;
+    if (diffDays > SIKLUS_GAP_DAYS) { segments.push({ start: segStart, end: segEnd }); segStart = sorted[i]; }
+    segEnd = sorted[i];
+  }
+  segments.push({ start: segStart, end: segEnd });
+  return segments;
+}
+
+// ✅ Sama seperti computeSiklusSegments, tapi langsung dari daftar entri
+// kontrol (butuh field .wilayahId & .tanggal), dikelompokkan PER WILAYAH.
+// Dipakai bersama oleh TabKontrol.jsx (badge "Belum Kontrol"/"Kunjungan
+// Berulang" di siklus berjalan) dan TabRekap.jsx (filter "Siklus Wilayah" —
+// termasuk saat MENGGABUNGKAN >1 wilayah, supaya tiap wilayah bisa memilih
+// SIKLUS KE BERAPA yang mau diikutkan sendiri-sendiri, bukan dipaksa 1
+// rentang tanggal global yang bisa salah "menyedot" siklus lain dari
+// wilayah yang putarannya lebih pendek/cepat daripada wilayah lain yang
+// digabung bersamanya). Hasil: { [wilayahId]: [{start,end}, ...] } terurut
+// kronologis per wilayah.
+export function computeSiklusSegmentsPerWilayah(kontrolList) {
+  const byWilayah = {};
+  (kontrolList || []).forEach(k => {
+    if (!k.wilayahId || !k.tanggal) return;
+    (byWilayah[k.wilayahId] ||= new Set()).add(k.tanggal);
+  });
+  const map = {};
+  Object.entries(byWilayah).forEach(([wilayahId, dateSet]) => {
+    map[wilayahId] = computeSiklusSegments([...dateSet]);
+  });
+  return map;
+}
+
 // ✅ RIWAYAT STATUS TOKO (statusHistory): array {status, tanggal, catatan}
 // disimpan di record toko, ditambah setiap kali status toko BENAR-BENAR
 // berubah (dari Master Toko, "Tarik Toko", "Edit Status Toko", maupun
