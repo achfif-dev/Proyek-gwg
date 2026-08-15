@@ -275,6 +275,15 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
       // ✅ Tandai berapa banyak entri Penjualan Luar Rute yang ikut tergabung
       // ke rute ini (jika ada) — luar rute dikenali karena tidak punya tokoId.
       const jumlahLuarRute = g.rows.filter(r=>!r.tokoId).length;
+      // ✅ Urutkan detail toko berdasarkan urutan INPUT kontrol (pertama →
+      // terakhir), pakai createdAt (timestamp saat sales submit). Ini supaya
+      // urutan toko di tabel Rekap Harian cocok dengan urutan foto yang
+      // dilaporkan sales di lapangan, jadi admin gampang mencocokkannya satu
+      // per satu. Fallback ke perbandingan id (mengandung timestamp juga)
+      // untuk entri lama yang mungkin belum punya createdAt.
+      const detailUrut = [...g.rows].sort((a,b) =>
+        (a.createdAt||0) - (b.createdAt||0) || String(a.id).localeCompare(String(b.id))
+      );
       return {
         ...g,
         ruteNama: jumlahLuarRute>0 ? `${g.ruteNama} (+${jumlahLuarRute} luar rute)` : g.ruteNama,
@@ -283,7 +292,7 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
         totalBonus: g.rows.reduce((s,k)=>s+(k.totalBonus||0),0),
         ...sp,
         ...hitungStatusKunjungan(g.rows),
-        detail: g.rows,
+        detail: detailUrut,
       };
     });
     // Urutkan alami (BKLU1, BKLU2, ..., BKLU14) supaya rapi seperti mode
