@@ -172,7 +172,17 @@ export function buildProdukFlagUpdates(produkAktif, newIds) {
 // nilai yang diset satu fitur "hilang" tertimpa diam-diam oleh fitur lain.
 // extraKontrolList / extraPenyesuaianList: dipakai saat dipanggil tepat
 // setelah addRecord, karena `db` di closure pemanggil belum memuat data terbaru.
-export function recalcTokoStok(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList) {
+// forceIfEmpty: kalau true, TETAP reset stok ke 0 walau tidak ada kontrol
+// maupun penyesuaian tersisa untuk toko ini — dipakai KHUSUS oleh alur
+// PENGHAPUSAN kontrol/penyesuaian (bukan pembuatan toko baru). Beda dengan
+// kasus toko baru (memang belum pernah punya riwayat sama sekali, jadi
+// stok manual awalnya harus dibiarkan apa adanya), di sini toko SUDAH
+// pernah punya kontrol/penyesuaian sebelumnya (makanya recalc ini
+// dipanggil) — begitu satu-satunya entri itu dihapus, guard "belum ada
+// riwayat" di bawah akan salah mengira ini toko baru dan MEMBIARKAN stok
+// lama (dari entri yang baru saja dihapus) tetap nyangkut alih-alih
+// direset — parameter ini mencegah itu.
+export function recalcTokoStok(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList, forceIfEmpty) {
   const semuaKontrol = extraKontrolList || (db.kontrol||[]);
   const semuaPenyesuaian = extraPenyesuaianList || (db.penyesuaian||[]);
   const entriesToko = semuaKontrol
@@ -196,7 +206,9 @@ export function recalcTokoStok(db, produkAktif, tokoId, updateRecord, extraKontr
     });
   });
 
-  if (!terakhir && penyesuaianRelevan.length === 0) return; // belum ada kontrol maupun penyesuaian → biarkan stok toko (input manual awal) apa adanya
+  // belum ada kontrol maupun penyesuaian → biarkan stok toko (input manual
+  // awal) apa adanya, KECUALI forceIfEmpty=true (lihat komentar di atas).
+  if (!terakhir && penyesuaianRelevan.length === 0 && !forceIfEmpty) return;
 
   const updates = {};
   (produkAktif||[]).forEach(p => { updates[`stok_${p.id}`] = Math.max(0, baseline[p.id]||0); });
