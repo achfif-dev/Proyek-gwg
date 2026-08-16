@@ -115,7 +115,12 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   function submitKas() {
     if (!kasForm.tanggal || !kasForm.kategori || !Number(kasForm.nominal)) return alert("Tanggal, kategori, & nominal wajib diisi");
     if (cekKunci(kasForm.tanggal)) return;
-    const rec = { ...kasForm, nominal: Number(kasForm.nominal) };
+    // ✅ bulanKey ("YYYY-MM") dikirim eksplisit di setiap record — dipakai
+    // Firebase Rules untuk menegakkan kunci Tutup Buku di level database
+    // (bukan cuma cekKunci() di JS ini, yang bisa dilewati device/versi app
+    // lama). Rules tidak punya .substring(), makanya field turunan ini yang
+    // dicocokkan lewat beginsWith().
+    const rec = { ...kasForm, nominal: Number(kasForm.nominal), bulanKey: bulanKeyOf(kasForm.tanggal) };
     if (kasForm.id) {
       // Edit: batalkan (void) jurnal lama dulu, baru posting jurnal baru
       // dengan angka/kategori yang sudah diubah — supaya saldo akun tetap
@@ -174,7 +179,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
       const p = produkArr.find(pp => pp.id === it.produkId);
       return s + (it.stokFisik - it.stokSistem) * (p?.harga || 0);
     }, 0);
-    addRecord("stockOpname", { id: genUniqueId("SO"), tanggal: opnameStokForm.tanggal, keterangan: opnameStokForm.keterangan, items, totalSelisihPcs, totalSelisihRp });
+    addRecord("stockOpname", { id: genUniqueId("SO"), tanggal: opnameStokForm.tanggal, bulanKey: bulanKeyOf(opnameStokForm.tanggal), keterangan: opnameStokForm.keterangan, items, totalSelisihPcs, totalSelisihRp });
     setOpnameStokForm(null);
   }
   function submitEditOpnameStok() {
@@ -185,7 +190,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
       const p = produkArr.find(pp => pp.id === it.produkId);
       return s + (it.stokFisik - it.stokSistem) * (p?.harga || 0);
     }, 0);
-    updateRecord("stockOpname", detailOpnameStok.id, { tanggal: detailOpnameStok.tanggal, keterangan: detailOpnameStok.keterangan, items, totalSelisihPcs, totalSelisihRp });
+    updateRecord("stockOpname", detailOpnameStok.id, { tanggal: detailOpnameStok.tanggal, bulanKey: bulanKeyOf(detailOpnameStok.tanggal), keterangan: detailOpnameStok.keterangan, items, totalSelisihPcs, totalSelisihRp });
     setDetailOpnameStok(null);
   }
   function hapusStockOpname(id) {
@@ -201,7 +206,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   function submitGudang() {
     if (!gudangForm.tanggal || !gudangForm.produkId || !Number(gudangForm.qty)) return alert("Tanggal, Produk, & Jumlah wajib diisi");
     if (cekKunci(gudangForm.tanggal)) return;
-    const rec = { ...gudangForm, qty: Number(gudangForm.qty) };
+    const rec = { ...gudangForm, qty: Number(gudangForm.qty), bulanKey: bulanKeyOf(gudangForm.tanggal) };
     if (gudangForm.id) updateRecord("gudangTransaksi", gudangForm.id, rec);
     else addRecord("gudangTransaksi", { ...rec, id: genUniqueId("GDG") });
     setGudangForm(null);
@@ -223,7 +228,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   function submitHp() {
     if (!hpForm.pihak || !Number(hpForm.nominalAwal) || !hpForm.tanggal) return alert("Nama Pihak, Nominal, & Tanggal wajib diisi");
     if (cekKunci(hpForm.tanggal)) return;
-    const rec = { ...hpForm, nominalAwal: Number(hpForm.nominalAwal), terbayar: Number(hpForm.terbayar) || 0 };
+    const rec = { ...hpForm, nominalAwal: Number(hpForm.nominalAwal), terbayar: Number(hpForm.terbayar) || 0, bulanKey: bulanKeyOf(hpForm.tanggal) };
     const id = hpForm.id || genUniqueId(hpForm.tipe === "hutang" ? "HTG" : "PIU");
     if (hpForm.id) updateRecord("hutangPiutang", hpForm.id, rec);
     else addRecord("hutangPiutang", { ...rec, id });
@@ -260,8 +265,9 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     updateRecord("hutangPiutang", row.id, { terbayar: Math.min(terbayarBaru, row.nominalAwal) });
     // ✅ Auto-link ke Kas: hutang dibayar = Kas Keluar, piutang tertagih = Kas Masuk
     const kasId = genUniqueId("KAS");
+    const kasTanggal = bayarForm.tanggal || todayStr();
     const kasRecAutoLink = {
-      id: kasId, tanggal: bayarForm.tanggal || todayStr(),
+      id: kasId, tanggal: kasTanggal, bulanKey: bulanKeyOf(kasTanggal),
       tipe: row.tipe === "hutang" ? "keluar" : "masuk",
       kategori: row.tipe === "hutang" ? "Pembayaran Hutang Usaha" : "Piutang Tertagih",
       nominal, keterangan: `${row.tipe === "hutang" ? "Bayar hutang ke" : "Tagih piutang dari"} ${row.pihak}`,
@@ -552,7 +558,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     if (!asetForm.nama || !Number(asetForm.nilaiPerolehan) || !Number(asetForm.umurBulan) || !asetForm.tanggalPerolehan)
       return alert("Nama, Nilai Perolehan, Umur Ekonomis, & Tanggal Perolehan wajib diisi");
     if (cekKunci(asetForm.tanggalPerolehan)) return;
-    const rec = { ...asetForm, nilaiPerolehan: Number(asetForm.nilaiPerolehan), nilaiResidu: Number(asetForm.nilaiResidu) || 0, umurBulan: Number(asetForm.umurBulan) };
+    const rec = { ...asetForm, nilaiPerolehan: Number(asetForm.nilaiPerolehan), nilaiResidu: Number(asetForm.nilaiResidu) || 0, umurBulan: Number(asetForm.umurBulan), bulanKey: bulanKeyOf(asetForm.tanggalPerolehan) };
     const id = asetForm.id || genUniqueId("AST");
     if (asetForm.id) updateRecord("asetAmortisasi", asetForm.id, rec);
     else addRecord("asetAmortisasi", { ...rec, id });
