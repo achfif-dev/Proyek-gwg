@@ -191,7 +191,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     deleteRecord("kontrol", id);
     if (tokoIdTerdampak) {
       const remaining = (db.kontrol||[]).filter(k => k.id !== id);
-      recalcTokoStok(tokoIdTerdampak, remaining);
+      // forceIfEmpty=true: kalau ini kontrol terakhir toko ini, reset stok
+      // ke 0 alih-alih membiarkan angka basi dari kontrol yang baru dihapus.
+      recalcTokoStok(tokoIdTerdampak, remaining, undefined, true);
     }
   }
   function tolakHapusKontrol(id) {
@@ -354,7 +356,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         const affectedTokoIds = [...new Set(langsungBisaHapus.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
         langsungBisaHapus.forEach(id => { voidJurnalSumber("kontrol", id, "Kontrol dihapus (bulk)"); deleteRecord("kontrol", id); });
         const remaining = (db.kontrol||[]).filter(k => !langsungBisaHapus.includes(k.id));
-        affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining));
+        affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining, undefined, true));
       }
     }
     if (perluAjukan.length > 0) {
@@ -888,8 +890,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // yang SAMA PERSIS — wrapper tipis ini cuma mengisi db/produkAktif/updateRecord
   // dari closure tab ini, supaya semua pemanggilan yang sudah ada di file ini
   // tidak perlu diubah.
-  function recalcTokoStok(tokoId, extraKontrolList, extraPenyesuaianList) {
-    return recalcTokoStokShared(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList);
+  function recalcTokoStok(tokoId, extraKontrolList, extraPenyesuaianList, forceIfEmpty) {
+    return recalcTokoStokShared(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList, forceIfEmpty);
   }
 
   // ✅ Helper: dari daftar produkIds baru, hasilkan juga flag produk_<id>
@@ -1956,7 +1958,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             deleteRecord("kontrol", deleteTarget);
             if (tokoIdTerdampak) {
               const remaining = (db.kontrol||[]).filter(k => k.id !== deleteTarget);
-              recalcTokoStok(tokoIdTerdampak, remaining);
+              recalcTokoStok(tokoIdTerdampak, remaining, undefined, true);
             }
             setDeleteTarget(null);
           }}
@@ -3026,7 +3028,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                                       if (!confirm("Hapus penyesuaian stok ini?")) return;
                                       deleteRecord("penyesuaian", pz.id);
                                       const remaining = (db.penyesuaian||[]).filter(x=>x.id!==pz.id);
-                                      recalcTokoStok(toko.id, undefined, remaining);
+                                      recalcTokoStok(toko.id, undefined, remaining, true);
                                       // ✅ FIX SINKRONISASI: sama seperti "Tolak" di atas — kalau penyesuaian
                                       // yang dihapus ini jenis "Tambah" dan sempat mendaftarkan produk baru
                                       // ke ceklis "Produk yang Dijual", hapus juga ceklisnya kalau tidak ada
@@ -3102,7 +3104,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                   voidJurnalSumber("kontrol", id, "Kontrol dihapus");
                   deleteRecord("kontrol", id);
                   const remaining = (db.kontrol||[]).filter(k=>k.id!==id);
-                  if (rec?.tokoId) recalcTokoStok(rec.tokoId, remaining);
+                  if (rec?.tokoId) recalcTokoStok(rec.tokoId, remaining, undefined, true);
                 } else {
                   requestHapusKontrol(id);
                 }
