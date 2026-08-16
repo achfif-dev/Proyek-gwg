@@ -1421,9 +1421,35 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // ✅ Riwayat status dengan tanggal PASTI yang dipilih admin — dipakai
       // Rekap → Siklus Wilayah untuk merekonstruksi status toko secara akurat.
       statusHistory: appendStatusHistory(toko.statusHistory, editStatusValue, tanggalPasti, editStatusCatatan || "Diubah lewat Edit Status Toko") };
-    // Jika diubah ke Non-Aktif via jalur ini (bukan via "Tarik Toko"),
-    // stok TIDAK diubah — tetap seperti semula di master toko.
+    // ✅ FIX (audit): dulu kalau diubah ke Non-Aktif via jalur ini (bukan
+    // via "Tarik Toko"), stok TIDAK diubah — dibiarkan seperti semula di
+    // Master Toko. Akibatnya toko yang dinonaktifkan lewat sini terus
+    // menyumbang "stok hantu" ke hitungStokSistem() (Stock Opname & Neraca)
+    // selamanya, karena fungsi itu (sebelum diperbaiki) menjumlahkan stok
+    // semua toko tanpa peduli status. Sekarang stok ikut dinolkan di sini
+    // juga — SEKALIGUS dicatat sebagai Penyesuaian "Tarik" (status langsung
+    // disetujui, sama seperti pola di terapkanPenarikanToko) supaya kalau
+    // suatu saat recalcTokoStok() terpicu lagi untuk toko ini (mis. toko
+    // diaktifkan ulang lalu dapat kontrol baru), angka nol ini tetap
+    // "tercatat" secara resmi di riwayat penyesuaian dan tidak diam-diam
+    // ditimpa balik oleh perhitungan ulang dari kontrol lama.
+    let penyesuaianNonAktif = null;
+    if (editStatusValue === "Non-Aktif") {
+      const turun = {};
+      let adaTurun = false;
+      produkAktif.forEach(p => {
+        const sebelum = Number(toko[`stok_${p.id}`]||0);
+        updates[`stok_${p.id}`] = 0;
+        if (sebelum > 0) { turun[`jumlah_${p.id}`] = sebelum; adaTurun = true; }
+      });
+      if (adaTurun) {
+        penyesuaianNonAktif = { id: genUniqueId("PZ"), tokoId: toko.id, tanggal: tanggalPasti, jenis: "Tarik",
+          catatan: `Otomatis: stok dinolkan karena toko dinonaktifkan lewat Edit Status Toko${editStatusCatatan ? ` (${editStatusCatatan})` : ""}.`,
+          dicatatOleh: "Sistem (Manual)", ...turun, status: "disetujui" };
+      }
+    }
     updateRecord("toko", toko.id, updates);
+    if (penyesuaianNonAktif) addRecord("penyesuaian", penyesuaianNonAktif);
     setEditStatusModal(null);
     setEditStatusValue("");
     setEditStatusCatatan("");
