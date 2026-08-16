@@ -754,16 +754,40 @@ export function useDB(user) {
           const newYear = kontrolYearOf(mergedRecord);
           const yearsIndexKey = table === "kontrol" ? "kontrolYearsIndex" : "jurnalYearsIndex";
           if (oldYear !== newYear) {
-            // Tanggal record diedit lintas-tahun: pindahkan node-nya.
+            // Tanggal record diedit lintas-tahun: pindahkan node-nya. Ini
+            // tetap menulis SELURUH record (bukan per-field) karena memang
+            // operasinya "pindah path", bukan sekadar ubah beberapa field —
+            // kasusnya juga jarang (ganti tanggal sampai lintas tahun).
             pushUpdates({
               [`${table}/${oldYear}/${id}`]: null,
               [`${table}/${newYear}/${id}`]: mergedRecord,
               [`${yearsIndexKey}/${newYear}`]: true,
             });
           } else {
-            pushUpdates({ [`${table}/${newYear}/${id}`]: mergedRecord });
+            // ✅ FIX RISIKO TABRAKAN EDIT BERSAMAAN: dulu baris ini menulis
+            // SELURUH `mergedRecord` (hasil gabungan field baru DENGAN
+            // snapshot lokal lama) ke satu path. Untuk record kontrol —
+            // yang field-nya bisa diubah dari 2 "aktor" berbeda hampir
+            // bersamaan (mis. Sales mengedit kuantitas terjual dari HP-nya
+            // sementara Admin menyetujui/menolak entri yang sama dari HP
+            // lain, keduanya sempat offline) — siapa pun yang SINKRON
+            // PALING AKHIR akan menimpa path itu dengan snapshotnya sendiri
+            // yang sudah basi, sehingga perubahan pihak lain yang sudah
+            // lebih dulu tersimpan di Firebase ikut hilang tanpa pesan
+            // error apa pun. Sekarang tiap FIELD yang benar-benar berubah
+            // (`updated`, bukan seluruh `mergedRecord`) ditulis sebagai
+            // path terpisah `${table}/${year}/${id}/${field}` — supaya dua
+            // tulisan yang menyentuh field BERBEDA pada record yang sama
+            // tidak lagi saling menimpa, sama seperti pola yang sudah
+            // dipakai untuk "toko" di bawah (alasan asalnya beda — rules
+            // Sales — tapi manfaat anti-tabrakannya sama).
+            const fieldUpdates = {};
+            Object.keys(updated).forEach(field => {
+              fieldUpdates[`${table}/${newYear}/${id}/${field}`] = updated[field] === undefined ? null : updated[field];
+            });
+            pushUpdates(fieldUpdates);
           }
-        } else if (table === "toko") {
+        } else if (table === "toko" || table === "penyesuaian") {
           // ✅ FIX: Firebase Rules mendefinisikan izin Sales HANYA di level
           // `toko/$tokoId/$field` (per field: status/produkIds/stok_*/
           // produk_*) — TIDAK ADA rule Sales di level `toko/$tokoId` atau di
@@ -781,9 +805,13 @@ export function useDB(user) {
           // yang diasumsikan rules — supaya field yang diizinkan untuk Sales
           // benar-benar bisa tersimpan, sekaligus tetap menolak field yang
           // memang di luar wewenang Sales (mis. nama, ruteId, statusHistory).
+          // "penyesuaian" ikut dipindah ke pola ini juga (bukan karena
+          // masalah rules seperti "toko", tapi karena tabel ini juga rawan
+          // ditulis dari 2 aktor berbeda hampir bersamaan — Sales mengajukan,
+          // Admin menyetujui/menolak — lihat catatan tabrakan edit di atas.
           const fieldUpdates = {};
           Object.keys(updated).forEach(field => {
-            fieldUpdates[`toko/${id}/${field}`] = updated[field] === undefined ? null : updated[field];
+            fieldUpdates[`${table}/${id}/${field}`] = updated[field] === undefined ? null : updated[field];
           });
           pushUpdates(fieldUpdates);
         } else {
