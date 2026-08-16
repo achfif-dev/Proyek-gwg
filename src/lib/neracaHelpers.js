@@ -110,14 +110,21 @@ export function ringkasanHutangPiutang(arr, tipe) {
   return { rows, totalOutstanding };
 }
 
-// Total stok konsinyasi yang SEDANG BEREDAR di semua toko per produk
+// Total stok konsinyasi yang SEDANG BEREDAR di semua toko AKTIF per produk
 // (sum field stok_{produkId} di tiap record toko) — dipakai sebagai "Stok
 // Sistem" pembanding Stock Opname. Catatan: ini TIDAK termasuk stok gudang
 // pusat, karena aplikasi ini memang belum punya modul gudang terpisah.
+// ✅ FIX (audit): sebelumnya SEMUA toko dijumlahkan tanpa peduli status —
+// toko yang dinonaktifkan tetap ikut menyumbang ke "Stok Sistem"/Neraca
+// selamanya kalau nonaktifnya lewat jalur "Edit Status Toko" (yang memang
+// sengaja tidak menyentuh stok_X, beda dengan "Tarik Toko" yang sudah
+// menghitung ulang & menolkan/menyesuaikan). Sekarang toko berstatus
+// "Non-Aktif" dikecualikan dari total — toko "Baru"/"Aktif" tetap dihitung
+// karena secara fisik produknya memang masih beredar di toko itu.
 export function hitungStokSistem(tokoArr, produkArr) {
   const map = {};
   (produkArr || []).forEach(p => { map[p.id] = 0; });
-  (tokoArr || []).forEach(t => {
+  (tokoArr || []).filter(t => t.status !== "Non-Aktif").forEach(t => {
     (produkArr || []).forEach(p => {
       map[p.id] = (map[p.id] || 0) + (Number(t[`stok_${p.id}`]) || 0);
     });
