@@ -606,7 +606,21 @@ export function useDB(user) {
     flushingRef.current = true;
     try {
       const { db: rtdb, ref, set } = firebaseDB;
-      const entries = await queueGetAll();
+      // ✅ FIX (audit): IndexedDB getAll() mengembalikan entri terurut
+      // ALFABETIS berdasarkan `path` (primary key object store), BUKAN
+      // urutan sebenarnya saat perubahan itu terjadi. Ini berbahaya untuk
+      // urutan yang punya KETERGANTUNGAN antar-koleksi — contoh nyata: Sales
+      // offline mendaftarkan toko baru ("toko/...") lalu langsung mencatat
+      // kontrol/penyesuaian pertamanya ("kontrol/...", "penyesuaian/...").
+      // Rules mensyaratkan toko-nya SUDAH ADA di server saat kontrol/
+      // penyesuaian baru dibuat (untuk cek kecocokan wilayah) — tapi
+      // alfabetis, "kontrol"/"penyesuaian" (k, p) terkirim SEBELUM "toko"
+      // (t), jadi ditolak permanen oleh rules walau toko-nya sendiri
+      // berhasil terdaftar belakangan. Sekarang antrean diurutkan dulu
+      // berdasarkan `ts` (waktu sebenarnya perubahan itu di-queue) supaya
+      // urutan pengiriman ke Firebase sama persis dengan urutan Sales
+      // melakukannya di lapangan.
+      const entries = (await queueGetAll()).sort((a, b) => (a.ts||0) - (b.ts||0));
       for (const { path, value } of entries) {
         try {
           await set(ref(rtdb, `gwg_data/shared/${path}`), value);
