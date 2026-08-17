@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, ImportMenu, Input, Modal, SearchableSelect, Table } from "../../components/ui";
-import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
+import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
 import { downloadTokoTemplate } from "../../lib/importUtils";
 import { appendStatusHistory, buildProdukFlagUpdates, recalcTokoStok } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
@@ -39,6 +39,45 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
   const [pindahRuteModal, setPindahRuteModal] = useState(false);
   const [pindahRuteWilayahId, setPindahRuteWilayahId] = useState(""); // filter wilayah di modal
   const [pindahRuteTarget, setPindahRuteTarget] = useState("");
+  // ✅ ALAT PERBAIKAN (audit, dilaporkan lewat screenshot — banyak toko beda
+  // kebagian "kode" tampilan yang identik akibat bug lama di nextKodeCounter
+  // (dulu genId) yang sudah diperbaiki di format.js. Ini alat SEKALI PAKAI
+  // untuk merapikan data yang SUDAH TERLANJUR tersimpan dengan kode
+  // duplikat SEBELUM perbaikan itu — bukan bagian dari alur normal.
+  const [fixKodeModal, setFixKodeModal] = useState(null); // { fixList, totalGrup }
+  function scanDuplicateKode() {
+    const byKode = {};
+    (db.toko||[]).forEach(t => { const k = t.kode || ""; if (k) (byKode[k] = byKode[k]||[]).push(t); });
+    const dupGroups = Object.entries(byKode).filter(([,list]) => list.length > 1);
+    if (dupGroups.length === 0) { alert("Tidak ditemukan toko dengan kode duplikat. Data sudah bersih."); return; }
+    // Dalam tiap grup yang kodenya sama, toko yang PALING DULU didaftarkan
+    // (tanggalMasuk paling awal) kodenya DIPERTAHANKAN apa adanya — cuma
+    // toko ke-2, ke-3, dst dalam grup yang sama yang diberi kode baru.
+    let runningList = [...(db.toko||[])];
+    const fixList = [];
+    dupGroups.forEach(([kodeLama, list]) => {
+      const sorted = [...list].sort((a,b) =>
+        (a.tanggalMasuk||"9999-99-99").localeCompare(b.tanggalMasuk||"9999-99-99") || String(a.id).localeCompare(String(b.id)));
+      sorted.slice(1).forEach(t => {
+        const ruteObj = (db.rute||[]).find(r=>r.id===t.ruteId);
+        const prefix = ruteObj ? "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-" : "GW-XXX-";
+        const nomor = nextKodeCounter(runningList);
+        const kodeBaru = prefix + String(nomor).padStart(3,"0");
+        fixList.push({ id:t.id, nama:t.nama, ruteNama: ruteObj?.nama||"—", kodeLama, kodeBaru });
+        // "seolah-olah" toko ini sudah punya kode baru itu, supaya toko
+        // berikutnya yang diperbaiki dalam scan yang sama tidak dapat
+        // nomor yang sama juga.
+        runningList = runningList.map(x => x.id===t.id ? {...x, kode:kodeBaru} : x);
+      });
+    });
+    setFixKodeModal({ fixList, totalGrup: dupGroups.length });
+  }
+  function terapkanFixKode() {
+    if (!fixKodeModal) return;
+    fixKodeModal.fixList.forEach(f => updateRecord("toko", f.id, { kode: f.kodeBaru }));
+    setFixKodeModal(null);
+    alert(`Selesai — ${fixKodeModal.fixList.length} toko sudah diberi kode baru yang unik.`);
+  }
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
   function toggleSelect(id) {
@@ -164,11 +203,11 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
       // hampir bersamaan saat offline bisa menghasilkan id yang SAMA —
       // toko yang satu KETIMPA toko lainnya tanpa peringatan saat sync.
       // id sekarang pakai genUniqueId() (timestamp+random, praktis mustahil
-      // bentrok lintas-perangkat) — kode tampilan (mis. "GW-RTE-057") TETAP
-      // pakai nomor urut seperti sebelumnya karena itu cuma label kosmetik,
-      // aman biar tetap "bentrok" sesekali (tidak menghilangkan data).
-      const seqForKode = genId("T", db.toko);
-      const counter = seqForKode.replace("T","");
+      // bentrok lintas-perangkat) — kode tampilan (mis. "GW-RTE-057") tetap
+      // pakai nomor urut terpisah, sekarang diturunkan dari field `kode`
+      // (bukan dari `id` lagi — lihat nextKodeCounter() di format.js untuk
+      // kenapa itu penting).
+      const counter = String(nextKodeCounter(db.toko)).padStart(3,"0");
       const newId = genUniqueId("T");
       const today = new Date().toISOString().slice(0,10);
       const tanggalMasuk = form.status === "Baru" ? (form.tanggalMasuk || today) : (form.tanggalMasuk || null);
@@ -395,11 +434,17 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
       // dari flag yang sama persis.
       const produkIdsFromImport = produkAktif.filter(p=>produkFlags[`produk_${p.id}`]).map(p=>p.id);
       // ⚠️ FIX ID-COLLISION (sama seperti submitForm di atas): id asli
-      // pakai genUniqueId(), nomor urut cuma dipakai untuk kode tampilan.
-      const seqForKode = genId("T", [...existingToko, ...toAdd, ...dupCandidates.map(d=>d.tokoObj)]);
+      // pakai genUniqueId(), nomor urut cuma dipakai untuk kode tampilan —
+      // dan sekarang diturunkan dari field `kode` (bukan `id`), lihat
+      // nextKodeCounter() di format.js. Ini titik yang PALING kena dampak
+      // bug lama: import sekali jalan bisa menambah puluhan toko dengan
+      // Date.now() yang nyaris sama, jadi kode yang diturunkan dari `id`
+      // (basis-36) gampang tabrakan MASSAL dalam satu batch — persis kasus
+      // yang dilaporkan (banyak toko beda kebagian kode identik).
+      const seqForKode = nextKodeCounter([...existingToko, ...toAdd, ...dupCandidates.map(d=>d.tokoObj)]);
       const newId = genUniqueId("T");
       const prefix = "GW-"+ruteObj.nama.slice(0,3).toUpperCase()+"-";
-      const counter = seqForKode.replace("T","");
+      const counter = String(seqForKode).padStart(3,"0");
       const today = new Date().toISOString().slice(0,10);
       const tanggalMasukImport = status === "Baru" ? today : null;
       // Baca stok produk dari kolom Excel jika ada (Stok: <nama produk>)
@@ -475,6 +520,7 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           {!isSalesRestricted && <ImportMenu label="Import Toko" onTemplate={()=>downloadTokoTemplate(db)} onParseRows={importTokoFromRows} />}
           <ExportMenu data={data} columns={cols} title="Data Toko" filename="toko" />
+          {!isSalesRestricted && <Btn variant="secondary" onClick={scanDuplicateKode} icon={Icon.refresh} title="Alat sekali-pakai: cari & perbaiki toko yang kebagian kode tampilan yang sama (bug lama, sudah diperbaiki untuk data baru)">Perbaiki Kode Duplikat</Btn>}
           {!isSalesRestricted && <Btn onClick={openAdd} icon={Icon.add}>Tambah Toko</Btn>}
         </div>
       </div>
@@ -751,6 +797,41 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setStokModal(false)}>Batal</Btn>
             <Btn onClick={submitStok}>Simpan Stok</Btn>
+          </div>
+        </Modal>
+      )}
+
+      {fixKodeModal && (
+        <Modal title={<><Icon.refresh size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Perbaiki Kode Duplikat — {fixKodeModal.fixList.length} Toko</>} onClose={()=>setFixKodeModal(null)}>
+          <div style={{ fontSize:13, color:T.gray600, marginBottom:14 }}>
+            Ditemukan <b>{fixKodeModal.totalGrup}</b> kode yang dipakai lebih dari satu toko (bug lama
+            saat pembuatan kode — sudah diperbaiki untuk toko baru). Untuk tiap kode yang bentrok, toko
+            yang paling <b>duluan didaftarkan</b> kodenya dibiarkan seperti semula; toko lain di grup yang
+            sama akan diberi kode baru yang unik seperti daftar di bawah:
+          </div>
+          <div style={{ maxHeight:320, overflowY:"auto", border:`1px solid ${T.gray200}`, borderRadius:8 }}>
+            <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12.5 }}>
+              <thead><tr style={{ background:T.gray50, textAlign:"left" }}>
+                <th style={{ padding:"7px 10px" }}>Toko</th>
+                <th style={{ padding:"7px 10px" }}>Rute</th>
+                <th style={{ padding:"7px 10px" }}>Kode Lama</th>
+                <th style={{ padding:"7px 10px" }}>Kode Baru</th>
+              </tr></thead>
+              <tbody>
+                {fixKodeModal.fixList.map(f => (
+                  <tr key={f.id} style={{ borderTop:`1px solid ${T.gray100}` }}>
+                    <td style={{ padding:"7px 10px" }}>{f.nama}</td>
+                    <td style={{ padding:"7px 10px" }}>{f.ruteNama}</td>
+                    <td style={{ padding:"7px 10px", color:T.gray400 }}>{f.kodeLama}</td>
+                    <td style={{ padding:"7px 10px", color:T.green, fontWeight:700 }}>{f.kodeBaru}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:14 }}>
+            <Btn variant="secondary" onClick={()=>setFixKodeModal(null)}>Batal</Btn>
+            <Btn onClick={terapkanFixKode}>Terapkan {fixKodeModal.fixList.length} Perbaikan</Btn>
           </div>
         </Modal>
       )}
