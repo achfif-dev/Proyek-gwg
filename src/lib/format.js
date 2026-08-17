@@ -6,6 +6,29 @@ export function genId(prefix, arr) {
   return `${prefix}${String(next).padStart(3,"0")}`;
 }
 
+// ✅ FIX (audit, dilaporkan lewat screenshot Master Toko — banyak toko beda
+// kebagian "kode" tampilan yang SAMA persis, mis. "GW-SMP-780116971" muncul
+// di 14 toko sekaligus): dulu nomor urut "kode" toko (GW-<rute>-###) dibuat
+// lewat genId("T", listToko) — yaitu ambil ANGKA dari `id` toko itu sendiri.
+// Itu cocok SELAMA id toko masih format lama "T014" (murni angka). Tapi
+// sejak id toko dipindah ke genUniqueId() (fix ID-collision, campuran huruf
+// + angka basis-36 dari timestamp — lihat format di bawah), membuang huruf
+// dari id semacam itu menyisakan angka ACAK yang gampang KEBETULAN SAMA
+// untuk toko-toko yang dibuat berdekatan waktu (satu sesi import: Date.now()
+// hampir sama, digit yang tersisa setelah huruf dibuang pun sering identik)
+// — makanya kodenya jadi tabrakan massal, bukan cuma sesekali.
+// Sekarang nomor urut kode diambil dari field `kode` YANG SUDAH ADA di
+// record (bukan dari `id`) — field ini murni angka di ujungnya sejak dulu,
+// jadi tetap bisa diandalkan sebagai sumber urutan berikutnya, terlepas
+// format `id` internalnya seperti apa.
+export function nextKodeCounter(existingList) {
+  const nums = (existingList||[]).map(r => {
+    const m = String(r.kode||"").match(/(\d+)$/);
+    return m ? parseInt(m[1], 10) : 0;
+  });
+  return nums.length ? Math.max(...nums) + 1 : 1;
+}
+
 // ID unik lintas-perangkat: dipakai khusus untuk record yang bisa dibuat
 // otomatis dari beberapa perangkat/sesi hampir bersamaan (mis. auto-register
 // pengguna baru saat login). BEDA dengan genId() yang sekuensial berbasis
