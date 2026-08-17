@@ -3,7 +3,7 @@ import { Badge, Btn, BulkActionBar, Card, ConfirmDelete, ExportMenu, FilterBar, 
 import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
-import { fmt, fmtRp, genId, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
+import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
 import { SIKLUS_GAP_DAYS, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
 import { isPeriodeTerkunci, bulanKeyOf } from "../../lib/neracaHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
@@ -1267,9 +1267,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // jadi id TIDAK BOLEH lagi pakai genId() (nomor urut lokal) — dua Sales
     // di rute berbeda bisa dapat id sama & saling menimpa toko saat sync.
     // id sekarang genUniqueId(); nomor urut cuma dipakai untuk kode tampilan.
-    const seqForKode = genId("T", db.toko);
+    // id sekarang genUniqueId(); nomor urut kode tampilan diturunkan dari
+    // field `kode` (bukan `id` — lihat nextKodeCounter() di format.js,
+    // ini titik yang paling rawan karena dipakai berbarengan oleh banyak
+    // Sales offline hampir bersamaan, persis kondisi yang bikin kode
+    // tabrakan massal sebelumnya).
+    const counter = String(nextKodeCounter(db.toko)).padStart(3,"0");
     const newId = genUniqueId("T");
-    const counter = seqForKode.replace("T","");
     const today = new Date().toISOString().slice(0,10);
     const tanggalMasuk = status === "Baru" ? today : null;
     // ✅ Produk yang dititip + stok awalnya langsung tersimpan sejak toko
