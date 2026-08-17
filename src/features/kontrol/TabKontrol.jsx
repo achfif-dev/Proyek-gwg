@@ -2755,6 +2755,17 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             <div style={{ fontSize:12.5, fontWeight:700, color:T.gray700 }}>
               <Icon.calendarDays size={15} strokeWidth={2} style={{verticalAlign:"-3px", marginRight:6}}/> Ringkasan Tanggal Kontrol
               {" — "}{fmt(ringkasanTanggalKontrol.length)} tanggal{!filter.bulan && " (semua bulan yang termuat)"}
+              {/* ✅ FIX (audit): baris ringkasan di atas kartu ini sudah
+                  menampilkan badge "masih memuat…" saat dataStillSyncing,
+                  tapi kartu ini sendiri (jumlah entri PER TANGGAL, sumber
+                  datanya sama persis) tidak — jadi kelihatan seperti angka
+                  final padahal bisa masih bertambah. Disamakan di sini. */}
+              {dataStillSyncing && (
+                <span title="Data kontrol masih disinkronkan di latar belakang — jumlah entri per tanggal di bawah bisa masih bertambah"
+                  style={{ marginLeft:6, color:T.gold, fontWeight:700 }}>
+                  <Icon.refresh size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}}/>masih memuat…
+                </span>
+              )}
             </div>
             <span style={{ fontSize:11, color:T.gray500 }}>{ringkasanTanggalOpen?"▲ Tutup":"▼ Lihat Tanggal"}</span>
           </div>
