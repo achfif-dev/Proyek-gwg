@@ -164,7 +164,19 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.wilayah size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Revenue per Wilayah</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}>
+            <Icon.wilayah size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px"}}/>Revenue per Wilayah
+            {/* ✅ FIX (audit): StatCard "Total Pendapatan" di atas sudah
+                menandai dataStillSyncing, tapi rincian per-wilayah di kartu
+                ini (sumbernya sama persis) belum — disamakan supaya tidak
+                kelihatan seperti angka final saat masih disinkronkan. */}
+            {dataStillSyncing && (
+              <span title="Data kontrol masih disinkronkan di latar belakang — revenue per wilayah bisa masih bertambah"
+                style={{ fontSize:11, color:T.gold, fontWeight:700 }}>
+                <Icon.refresh size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}}/>masih memuat…
+              </span>
+            )}
+          </div>
           {perWilayah.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data</div>}
           {perWilayah.map(w => (
             <div key={w.id} style={{ marginBottom:14 }}>
@@ -181,7 +193,15 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
         </Card>
 
         <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.produk size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Performa Produk</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}>
+            <Icon.produk size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px"}}/>Performa Produk
+            {dataStillSyncing && (
+              <span title="Data kontrol masih disinkronkan di latar belakang — angka per produk bisa masih bertambah"
+                style={{ fontSize:11, color:T.gold, fontWeight:700 }}>
+                <Icon.refresh size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}}/>masih memuat…
+              </span>
+            )}
+          </div>
           {produkStatsScoped.length===0 && <div style={{ color:T.gray400, fontSize:12 }}>Belum ada data produk</div>}
           {produkStatsScoped.map((p, i) => {
             const maxP = Math.max(...produkStatsScoped.map(x=>x.terjual),1);
@@ -210,7 +230,15 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>
-          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.rute size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Rute Aktif</div>
+          <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}>
+            <Icon.rute size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px"}}/>Rute Aktif
+            {dataStillSyncing && (
+              <span title="Data kontrol masih disinkronkan di latar belakang — kolom Pcs Terjual/Revenue bisa masih bertambah"
+                style={{ fontSize:11, color:T.gold, fontWeight:700 }}>
+                <Icon.refresh size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}}/>masih memuat…
+              </span>
+            )}
+          </div>
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12 }}>
             <thead>
               <tr style={{ borderBottom:`2px solid ${T.gray200}` }}>
@@ -265,7 +293,15 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
       {/* Kontrol Terbaru */}
       <Card>
-        <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14 }}><Icon.kontrol size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Data Kontrol Terbaru</div>
+        <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:14, display:"flex", alignItems:"center", gap:6 }}>
+          <Icon.kontrol size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px"}}/>Data Kontrol Terbaru
+          {dataStillSyncing && (
+            <span title="Data kontrol masih disinkronkan di latar belakang — daftar di bawah bisa belum lengkap"
+              style={{ fontSize:11, color:T.gold, fontWeight:700 }}>
+              <Icon.refresh size={11} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:3}}/>masih memuat…
+            </span>
+          )}
+        </div>
         {(() => {
           // ✅ Di-scope ke wilayah Sales — sebelumnya menampilkan kontrol
           // terbaru dari SEMUA wilayah, bukan cuma wilayah Sales sendiri.
