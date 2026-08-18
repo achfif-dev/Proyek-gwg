@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, SearchableSelect, Table } from "../../components/ui";
-import { genId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
+import { genUniqueId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
@@ -60,7 +60,18 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
       alert(`Nama rute "${form.nama}" sudah ada di wilayah ini pada data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama rute yang berbeda.`);
       return;
     }
-    if (modal==="add") addRecord("rute", { ...form, id:genId("RTE-",db.rute) });
+    // ✅ FIX ID-COLLISION (audit): dulu id rute baru = genId("RTE-", db.rute)
+    // — nomor urut dihitung dari data LOKAL perangkat ini saja. Kalau 2
+    // Admin/Manajer menambah rute baru hampir bersamaan di device berbeda
+    // (data lokal belum sempat sinkron), keduanya bisa menghitung nomor
+    // yang SAMA → id yang sama → yang sinkron ke Firebase belakangan
+    // MENIMPA TOTAL punya yang duluan, tanpa pesan error. Karena ruteId
+    // dipakai sebagai rujukan di ribuan toko/kontrol, ini bisa bikin toko
+    // yang sudah menunjuk ke rute itu diam-diam "pindah" ke rute yang salah.
+    // genUniqueId() (timestamp+random) praktis mustahil bentrok lintas
+    // perangkat — sama seperti yang sudah dipakai untuk toko/kontrol/
+    // penyesuaian sejak fix ID-collision sebelumnya.
+    if (modal==="add") addRecord("rute", { ...form, id:genUniqueId("RTE-") });
     else updateRecord("rute", form.id, form);
     setModal(null);
   }
