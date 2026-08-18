@@ -143,6 +143,21 @@ function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergenc
           diberi akses Admin <b>sementara</b> agar bisa memperbaiki ini. Segera ubah role akun Anda
           (atau pengguna lain yang tepat) kembali menjadi <b>Admin</b> di tabel di bawah, supaya akses
           Admin permanen tidak hilang lagi.
+          {/* ✅ FIX (audit): akses "Admin sementara" di atas cuma tampilan di
+              HP — Firebase Rules TIDAK punya cara mengecek "apakah ada baris
+              lain yang role-nya Admin" (keterbatasan bahasa rules itu
+              sendiri, bukan bisa ditambal dari sini), jadi tombol Simpan di
+              bawah kemungkinan besar akan ditolak Firebase ("permission
+              denied") walau tampilannya terlihat seperti berhasil. Baris
+              peringatan tambahan ini jujur soal itu, supaya orangnya tidak
+              bingung berulang kali mencoba hal yang percuma — dan langsung
+              diarahkan ke jalan keluar yang benar-benar berfungsi. */}
+          <div style={{ marginTop:8, fontWeight:400 }}>
+            ⚠️ Catatan: karena keterbatasan sistem, tombol Simpan di bawah <b>kemungkinan besar akan
+            gagal</b> ("permission denied") walau akses sementara ini aktif. Kalau itu terjadi, hubungi
+            pengelola sistem/developer aplikasi ini — perbaikan untuk kondisi ini perlu dilakukan
+            langsung lewat Firebase Console, bukan lewat aplikasi.
+          </div>
         </div>
       )}
       <div style={{ background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:10, padding:"10px 14px",
