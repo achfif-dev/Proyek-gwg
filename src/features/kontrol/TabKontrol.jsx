@@ -35,7 +35,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     catatanStatus:"", minJumlah:"", maxJumlah:"",
     // ✅ Filter "Kunjungan Berulang": toko yang dikunjungi >1× dalam siklus
     // yang sama (tutup/perlu diulang, dobel input, dsb).
-    kunjunganBerulang:false });
+    kunjunganBerulang:false,
+    // ✅ Filter "Setoran Kurang Belum Tercatat Piutang": entri yang nominal
+    // disetornya lebih kecil dari estimasi TAPI belum sempat tercatat
+    // sebagai Piutang di Neraca Keuangan — bisa terjadi kalau pengajuan
+    // Sales auto-approve lewat 24 jam tanpa sempat ditinjau Admin/Manajer
+    // (yang satu-satunya jalur boleh menulis ke modul Piutang).
+    piutangBelumTercatat:false });
   const [viewMode, setViewMode] = usePersistedState("kontrol.viewMode", "table"); // table | monthly
   // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
@@ -205,6 +211,59 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // baik dari banner ringkasan (panel "Tinjau Pengajuan") maupun dari baris
   // riwayat kontrol per-toko, supaya logikanya satu tempat (tidak diduplikasi).
   const [kontrolPanelOpen, setKontrolPanelOpen] = useState(false);
+  // ─── PIUTANG OTOMATIS DARI SETORAN SEBAGIAN ───
+  // Kalau nominal yang disetor toko < estimasi revenue kunjungan ini,
+  // otomatis catat selisihnya sebagai Piutang di modul Neraca Keuangan
+  // (kategori "Piutang Toko/Konsinyasi") — supaya bisa dilacak & dilunasi
+  // lewat sana, bukan cuma nyangkut sebagai catatan teks di kontrolnya.
+  // ⚠️ HANYA dipanggil dari titik yang PASTI dieksekusi Admin/Manajer
+  // (submit Admin/Manajer langsung, atau saat Admin/Manajer menyetujui
+  // pengajuan Sales) — rules Firebase untuk "hutangPiutang" memang cuma
+  // mengizinkan Admin/Manajer menulis sama sekali, tidak ada jalur Sales.
+  // Kalau dipanggil dari device Sales (mis. lewat auto-approve 24 jam yang
+  // bisa terpicu dari device mana pun), tulisannya akan DITOLAK rules —
+  // makanya sengaja TIDAK dipanggil dari alur auto-approve; piutangnya
+  // baru tercatat begitu ada Admin/Manajer yang membuka & menyetujui entri
+  // itu secara eksplisit (nominal/keterangan setoran tetap tersimpan utuh
+  // di kontrolnya sendiri sambil menunggu).
+  function syncPiutangSetoran(rec) {
+    const estimasi = produkAktif.reduce((s,p)=>s+(Number(rec[`terjual_${p.id}`])||0)*(p.harga||0),0);
+    const nominalIsi = rec.nominalDisetor==="" || rec.nominalDisetor==null ? null : Number(rec.nominalDisetor)||0;
+    const selisih = nominalIsi==null ? 0 : Math.max(0, estimasi - nominalIsi);
+    const existingPiutang = rec.piutangId ? (db.hutangPiutang||[]).find(h=>h.id===rec.piutangId) : null;
+    if (selisih <= 0) {
+      // Tidak ada (lagi) piutang dari setoran kunjungan ini. Kalau
+      // sebelumnya sempat tercatat piutang (mis. nominal diedit ulang jadi
+      // pas) dan belum ada cicilan sama sekali, hapus supaya tidak nyangkut
+      // piutang "hantu" Rp0 / sudah tidak relevan lagi.
+      if (existingPiutang && !Number(existingPiutang.terbayar||0)) {
+        deleteRecord("hutangPiutang", existingPiutang.id);
+        updateRecord("kontrol", rec.id, { piutangId: null });
+      }
+      return;
+    }
+    const tokoNama = (db.toko||[]).find(t=>t.id===rec.tokoId)?.nama || "Toko";
+    const keterangan = `Otomatis dari kunjungan kontrol ${rec.tanggal} (${tokoNama}): estimasi ${fmtRp(estimasi)}, disetor ${fmtRp(nominalIsi)}.`
+      + (rec.keteranganSetoran ? ` Catatan sales: ${rec.keteranganSetoran}` : "");
+    if (existingPiutang) {
+      // Update piutang yang SUDAH ADA (bukan bikin baru) — supaya kontrol
+      // yang diedit ulang tidak menghasilkan piutang dobel untuk kunjungan
+      // yang sama. Nominal cicilan (terbayar) yang mungkin sudah dilunasi
+      // sebagian lewat modul Piutang TIDAK disentuh di sini.
+      updateRecord("hutangPiutang", existingPiutang.id, {
+        nominalAwal: selisih, keterangan, tanggal: rec.tanggal, bulanKey: bulanKeyOf(rec.tanggal),
+      });
+    } else {
+      const newId = genUniqueId("HP");
+      addRecord("hutangPiutang", {
+        id: newId, tipe: "piutang", pihak: tokoNama, kategori: "Piutang Toko/Konsinyasi",
+        nominalAwal: selisih, terbayar: 0, tanggal: rec.tanggal, bulanKey: bulanKeyOf(rec.tanggal),
+        jatuhTempo: "", keterangan, sumberKontrolId: rec.id,
+      });
+      updateRecord("kontrol", rec.id, { piutangId: newId });
+    }
+  }
+
   function setujuiKontrolPengajuan(id) {
     const rec = (db.kontrol||[]).find(k=>k.id===id);
     if (!rec) return;
@@ -226,6 +285,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     recalcTokoStok(rec.tokoId, updatedList);
     syncProdukIdsDariStokKontrol(rec.tokoId, updatedRec);
     syncJurnalKontrol(updatedRec);
+    syncPiutangSetoran(updatedRec);
   }
   function tolakKontrolPengajuan(id) {
     if (!confirm("Tolak pengajuan Kontrol Bulanan (Stok Awal) ini? Entri akan tetap tersimpan (ditandai Ditolak) tapi tidak memengaruhi stok Master Toko.")) return;
@@ -633,6 +693,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     (filter.maxJumlah==="" || filter.maxJumlah==null || k.totalTerjual <= Number(filter.maxJumlah)) &&
     (!filter.kunjunganBerulang || kunjunganBerulangIds.has(k.id))
   )
+    // ✅ Filter "Setoran Kurang Belum Tercatat Piutang" (lihat komentar di
+    // definisi filter di atas) — diterapkan lewat .filter TERPISAH setelah
+    // yang lain, supaya gampang dibaca sebagai langkah audit tambahan.
+    .filter(k => !filter.piutangBelumTercatat || (
+      k.status==="disetujui" && k.nominalDisetor!=="" && k.nominalDisetor!=null &&
+      Number(k.nominalDisetor) < (k.totalRev||0) && !k.piutangId
+    ))
     // ✅ FIX (dilaporkan lewat screenshot — urutan tabel beda antara HP admin
     // yang input & HP super admin, walau datanya identik): dulu tabel ini
     // tidak diurutkan sama sekali — ikut apa adanya urutan `db.kontrol`
@@ -1255,6 +1322,11 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // (Sales), ceklis Master Toko belum boleh berubah sampai disetujui.
       if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
       syncJurnalKontrol(newEntry);
+      // Cuma Admin/Manajer yang statusnya langsung "disetujui" di sini —
+      // aman untuk langsung sinkron Piutang (lihat catatan izin di
+      // syncPiutangSetoran). Kalau ini pengajuan Sales ("menunggu"),
+      // piutangnya baru dibuat nanti saat Admin/Manajer menyetujui.
+      if (!isSalesRestricted) syncPiutangSetoran(newEntry);
     } else {
       const updatedPayload = { ...payload, ...approvalFields };
       updateRecord("kontrol", form.id, updatedPayload);
@@ -1262,7 +1334,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       const updatedList = (db.kontrol||[]).map(k => k.id===form.id ? { ...k, ...updatedPayload } : k);
       recalcTokoStok(form.tokoId, updatedList);
       if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
-      syncJurnalKontrol({ ...updatedList.find(k => k.id === form.id) });
+      const finalRec = { ...updatedList.find(k => k.id === form.id) };
+      syncJurnalKontrol(finalRec);
+      if (!isSalesRestricted) syncPiutangSetoran(finalRec);
     }
     setModal(null);
     if (isSalesRestricted) {
@@ -2739,7 +2813,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         else setFilter(p=>({...p,[k]:v}));
       }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", q:"",
         cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
-        catatanStatus:"", minJumlah:"", maxJumlah:"", kunjunganBerulang:false})} />
+        catatanStatus:"", minJumlah:"", maxJumlah:"", kunjunganBerulang:false, piutangBelumTercatat:false})} />
 
       {/* Filter rentang Jumlah Penjualan (total pcs semua produk per entri)
           — membantu cari entri yang kelihatan janggal, mis. salah ketik
@@ -2770,6 +2844,15 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             onChange={e=>setFilter(p=>({...p, kunjunganBerulang:e.target.checked}))} />
           <Icon.repeat size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Toko Dikunjungi &gt;1× (tutup/lainnya)
         </label>
+        {!isSalesRestricted && (
+          <label style={{ display:"flex", alignItems:"center", gap:6, fontSize:12, color:T.gray700,
+            cursor:"pointer", padding:"7px 10px", border:`1.5px solid ${filter.piutangBelumTercatat?T.orange:T.gray200}`,
+            borderRadius:7, background:filter.piutangBelumTercatat?T.orangeLt:T.white }}>
+            <input type="checkbox" checked={!!filter.piutangBelumTercatat}
+              onChange={e=>setFilter(p=>({...p, piutangBelumTercatat:e.target.checked}))} />
+            <Icon.wallet size={13} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Setoran Kurang, Piutang Belum Tercatat
+          </label>
+        )}
       </div>
 
       {/* ✅ Kartu Ringkasan Tanggal Kontrol — menampilkan tanggal apa saja
@@ -3554,6 +3637,18 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                   <div style={{ background:T.orangeLt, color:T.orange, borderRadius:7, padding:"8px 10px",
                     fontSize:12, fontWeight:700, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
                     <Icon.warning size={13} strokeWidth={2}/> Piutang toko kunjungan ini: {fmtRp(selisih)}
+                  </div>
+                )}
+                {/* ✅ BARU: begitu tersimpan (khusus lewat jalur Admin/Manajer —
+                    langsung, atau approve pengajuan Sales), selisih setoran
+                    otomatis tercatat sebagai Piutang di modul Neraca
+                    Keuangan → Hutang/Piutang, supaya bisa ditagih & dilunasi
+                    dari sana. Indikator ini cuma penanda visual, tidak
+                    mengubah apa pun sendiri. */}
+                {form.piutangId && (
+                  <div style={{ background:T.greenLt, color:T.green, borderRadius:7, padding:"8px 10px",
+                    fontSize:11.5, fontWeight:600, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
+                    <Icon.checkCircle size={13} strokeWidth={2}/> Sudah tercatat sebagai Piutang di Neraca Keuangan — bisa dilunasi dari sana.
                   </div>
                 )}
                 {selisih!==null && selisih<0 && (
