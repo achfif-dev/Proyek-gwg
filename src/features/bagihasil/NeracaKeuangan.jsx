@@ -365,7 +365,27 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     const sudahDiposting = ["tutupBuku-amortisasi", "tutupBuku-bebanUsaha", "tutupBuku-bagiHasil"]
       .filter(sudahAdaJurnalUntuk);
     if (sudahDiposting.length > 0) {
-      alert(`Periode ${bulanIniKey} sepertinya SUDAH ditutup buku sebelumnya (kemungkinan dari perangkat lain yang belum sempat sinkron ke perangkat ini) — jurnal ${sudahDiposting.join(", ")} sudah ada. Untuk mencegah dobel-posting, penutupan buku ini DIBATALKAN. Silakan refresh/tunggu sinkronisasi selesai, lalu cek ulang status di atas.`);
+      // ✅ FIX JALAN BUNTU (dilaporkan lewat screenshot): sebelumnya kalau
+      // kondisi ini kejadian (jurnal tutupBuku-* sudah ada TAPI catatan
+      // "tutupBuku" resminya sendiri hilang/tidak pernah tersimpan —
+      // misalnya sisa percobaan yang terputus antar-device sebelum sempat
+      // sinkron), penutupan dibatalkan begitu saja tanpa jalan keluar sama
+      // sekali: tombol "Buka Kunci" cuma bisa dipencet dari baris di tabel
+      // "Riwayat Periode Tertutup", yang KOSONG persis karena catatan
+      // tutupBuku-nya tidak ada — jadi periode ini terkunci PERMANEN dari
+      // ditutup ulang, tanpa cara membersihkannya lewat aplikasi. Sekarang
+      // ditawarkan pembersihan langsung dari sini (void jurnal sisa itu),
+      // tanpa perlu ada catatan tutupBuku untuk melakukannya.
+      const mauBersihkan = confirm(
+        `Periode ${bulanIniKey} punya jurnal (${sudahDiposting.join(", ")}) yang sudah pernah diposting, TAPI tidak ada catatan "Tutup Buku" resmi untuk periode ini — kemungkinan sisa percobaan yang terputus/belum sinkron sebelumnya.\n\n`+
+        `Karena catatan Tutup Buku-nya tidak ada, tombol "Buka Kunci" biasa juga tidak bisa dipakai untuk membersihkan ini.\n\n`+
+        `Batalkan (void) jurnal sisa itu sekarang supaya periode ${bulanIniKey} bisa ditutup buku ulang dari awal?`
+      );
+      if (mauBersihkan) {
+        sudahDiposting.forEach(sumberTipe => voidJurnalSumberAman(sumberTipe, bulanIniKey,
+          `Pembersihan: jurnal sisa tanpa catatan Tutup Buku untuk periode ${bulanIniKey}`));
+        alert(`Jurnal sisa periode ${bulanIniKey} sudah dibatalkan. Tekan sekali lagi tombol "Tutup Buku Periode ${bulanIniKey}" untuk menutup ulang dari awal.`);
+      }
       return;
     }
     addRecord("tutupBuku", {
