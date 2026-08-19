@@ -632,7 +632,19 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     (filter.minJumlah==="" || filter.minJumlah==null || k.totalTerjual >= Number(filter.minJumlah)) &&
     (filter.maxJumlah==="" || filter.maxJumlah==null || k.totalTerjual <= Number(filter.maxJumlah)) &&
     (!filter.kunjunganBerulang || kunjunganBerulangIds.has(k.id))
-  ), [enriched, filter, kunjunganBerulangIds]);
+  )
+    // ✅ FIX (dilaporkan lewat screenshot — urutan tabel beda antara HP admin
+    // yang input & HP super admin, walau datanya identik): dulu tabel ini
+    // tidak diurutkan sama sekali — ikut apa adanya urutan `db.kontrol`
+    // lokal di perangkat masing-masing, yang bisa beda-beda tergantung
+    // urutan data itu diterima/sinkron di device itu (BUKAN urutan
+    // sebenarnya toko itu diinput). Sekarang selalu diurutkan berdasarkan
+    // `createdAt` (waktu SEBENARNYA kontrol itu disimpan) — sama seperti
+    // fix urutan toko di Rekap Harian sebelumnya — supaya urutan yang
+    // tampil SELALU sama persis di perangkat mana pun, sesuai toko yang
+    // pertama kali diinput.
+    .sort((a,b) => (a.createdAt||0)-(b.createdAt||0) || String(a.id).localeCompare(String(b.id)))
+  , [enriched, filter, kunjunganBerulangIds]);
 
   // ✅ Penjualan Luar Rute yang cocok dengan filter Wilayah/Rute/Bulan yang
   // sedang aktif di tab ini — dipakai supaya ringkasan Revenue, ringkasan
@@ -1085,7 +1097,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
 
   function openAdd() {
     const today = new Date().toISOString().slice(0,10);
-    const initial = { tokoId:"", tanggal:today, catatanStatus:"", catatan:"" };
+    const initial = { tokoId:"", tanggal:today, catatanStatus:"", catatan:"",
+      // ✅ BARU: nominal uang yang benar-benar disetor toko saat kunjungan
+      // ini. Kosong (bukan 0) di awal supaya tidak keliru terbaca "toko
+      // belum bayar sama sekali" sebelum admin/sales benar-benar mengisi —
+      // lihat catatan di kotak Estimasi Revenue untuk kapan field ini
+      // "cocok" dengan estimasi vs kapan dianggap ada piutang toko.
+      nominalDisetor:"", keteranganSetoran:"" };
     produkAktif.forEach(p => {
       initial[`stok_${p.id}`] = 0;
       initial[`terjual_${p.id}`] = 0;
@@ -1109,7 +1127,11 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   }, [initialQuery]);
 
   function openEdit(row) {
-    const initial = { ...row, catatanStatus: row.catatanStatus||"" };
+    const initial = { ...row, catatanStatus: row.catatanStatus||"",
+      // ✅ default aman untuk entri LAMA (sebelum field setoran ini ada) —
+      // supaya input Nominal Disetor tidak "uncontrolled→controlled".
+      nominalDisetor: row.nominalDisetor==null ? "" : row.nominalDisetor,
+      keteranganSetoran: row.keteranganSetoran||"" };
     // Pastikan bonusInput tersedia
     produkAktif.forEach(p => {
       if (initial[`bonusInput_${p.id}`] === undefined) initial[`bonusInput_${p.id}`] = p.bonus||0;
@@ -1177,6 +1199,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     const d = form.tanggal;
     const [y,m] = d.split("-");
     const payload = { ...form };
+    // ✅ BARU: nominal setoran — kosongkan (bukan simpan angka acak) kalau
+    // memang tidak diisi, supaya jelas beda antara "belum diisi" vs
+    // "disetor Rp0". Kalau diisi, pastikan berupa angka valid.
+    payload.nominalDisetor = form.nominalDisetor==="" || form.nominalDisetor==null
+      ? "" : Number(form.nominalDisetor)||0;
+    payload.keteranganSetoran = String(form.keteranganSetoran||"").trim();
     // catatanStatus tetap disimpan apa adanya (boleh ada catatan meski ada penjualan)
     // Jika user tidak pilih status apapun → biarkan kosong (= Terjual normal)
     produkAktif.forEach(p => {
@@ -3492,6 +3520,55 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             </div>
           </div>
 
+          {/* ✅ BARU: Nominal uang yang benar-benar disetor toko saat kunjungan
+              ini. Kasus nyata: toko terjual 3 pcs @Rp8.000 = Rp24.000, tapi
+              pemilik toko baru bisa bayar Rp10.000 (bukan kelipatan harga
+              produk) — sisanya jadi piutang toko yang dibayar belakangan.
+              Sengaja field TERPISAH dari "Terjual" (bukan mengubah rumus
+              Estimasi Revenue itu sendiri) — jumlah pcs terjual tetap harus
+              mencerminkan barang yang BENAR-BENAR keluar dari toko itu untuk
+              akurasi stok, terlepas dari berapa yang sudah dibayar tunai. */}
+          {adaTerjual && (() => {
+            const estimasiRevenue = produkAktif.reduce((s,p)=>s+(Number(form[`terjual_${p.id}`])||0)*(p.harga||0),0);
+            const nominalIsi = form.nominalDisetor==="" || form.nominalDisetor==null ? null : Number(form.nominalDisetor)||0;
+            const selisih = nominalIsi==null ? null : estimasiRevenue - nominalIsi;
+            return (
+              <div style={{ marginBottom:16, padding:"12px 14px", border:`1.5px solid ${T.gray200}`, borderRadius:8 }}>
+                <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:8, display:"flex", alignItems:"center", gap:5 }}>
+                  <Icon.wallet size={13} strokeWidth={2}/> Setoran Uang dari Toko
+                </div>
+                <div style={{ fontSize:11, color:T.gray400, marginBottom:8 }}>
+                  Kosongkan kalau setoran sudah pas sesuai Estimasi Revenue di atas. Isi kalau
+                  toko cuma bayar SEBAGIAN (mis. belum kelipatan harga produk) — sisanya akan
+                  tercatat sebagai piutang toko untuk kunjungan ini.
+                </div>
+                <div style={{ marginBottom:8 }}>
+                  <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Nominal Disetor (Rp)</div>
+                  <input type="number" value={form.nominalDisetor} min={0}
+                    onChange={e=>f("nominalDisetor", e.target.value)}
+                    placeholder={`cth: 10000 (kosongkan jika pas ${fmtRp(estimasiRevenue)})`}
+                    style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                      borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                </div>
+                {selisih!==null && selisih>0 && (
+                  <div style={{ background:T.orangeLt, color:T.orange, borderRadius:7, padding:"8px 10px",
+                    fontSize:12, fontWeight:700, marginBottom:8, display:"flex", alignItems:"center", gap:6 }}>
+                    <Icon.warning size={13} strokeWidth={2}/> Piutang toko kunjungan ini: {fmtRp(selisih)}
+                  </div>
+                )}
+                {selisih!==null && selisih<0 && (
+                  <div style={{ background:T.blueLt, color:T.gray700, borderRadius:7, padding:"8px 10px",
+                    fontSize:12, fontWeight:700, marginBottom:8 }}>
+                    Setoran melebihi estimasi Rp{fmt(Math.abs(selisih))} (mis. sekalian bayar sisa kunjungan lalu) — cek kembali kalau bukan salah ketik.
+                  </div>
+                )}
+                <Input label="Keterangan Setoran (opsional)" value={form.keteranganSetoran||""}
+                  onChange={v=>f("keteranganSetoran", v)} type="textarea"
+                  placeholder="cth: baru bayar Rp10.000 dari Rp24.000, sisanya dilunasi kunjungan berikutnya" />
+              </div>
+            );
+          })()}
+
           {/* Status kunjungan: selalu tampil.
                - Saat tidak ada penjualan → WAJIB dipilih
                - Saat ada penjualan       → OPSIONAL (untuk catatan tambahan) */}
@@ -3543,7 +3620,18 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                  padahal Bermasalah justru paling sering terjadi TANPA ada
                  penjualan sama sekali, jadi kolomnya malah hilang tepat saat
                  paling dibutuhkan. */}
-            {(catatanSt==="manual" || catatanSt==="masalah" || (adaTerjual && catatanSt && catatanSt!=="")) && (
+            {/* ✅ FIX (diminta user): sebelumnya kolom Keterangan di sini
+                 CUMA muncul kalau admin/sales memilih status selain
+                 "Terjual — tanpa catatan tambahan" (mis. harus pindah ke
+                 "Isi Manual" dulu) — padahal kunjungan dengan penjualan
+                 NORMAL pun kadang perlu catatan (mis. kasus setoran
+                 sebagian di atas, atau catatan lain). Sekarang kolom ini
+                 SELALU muncul begitu ada penjualan (adaTerjual), apa pun
+                 status yang dipilih — tetap OPSIONAL, tidak wajib diisi,
+                 supaya alur "Terjual tanpa catatan" yang sudah biasa
+                 dipakai tidak berubah kalau memang tidak ada yang perlu
+                 dicatat. Kolom Bermasalah/Manual WAJIB tetap seperti semula. */}
+            {(catatanSt==="manual" || catatanSt==="masalah" || adaTerjual) && (
               <div style={{ marginTop:10 }}>
                 <Input label={catatanSt==="masalah" ? "Keterangan (wajib diisi)" : catatanSt==="manual" ? "Catatan" : "Catatan Tambahan (opsional)"}
                   value={form.catatan||""} onChange={v=>f("catatan",v)} type="textarea"
