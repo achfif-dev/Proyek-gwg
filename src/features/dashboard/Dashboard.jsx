@@ -2,6 +2,7 @@ import React from "react";
 import { Badge, Card, ExportMenu, StatCard } from "../../components/ui";
 import { useDB } from "../../hooks/useDB";
 import { fmt, fmtRp } from "../../lib/format";
+import { hitungHppPeriode } from "../../lib/neracaHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 
@@ -18,7 +19,8 @@ export function MiniBar({ value, max, color }) {
 function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
   const isSalesRestricted = !!salesWilayahId;
   // Filter analytics data berdasarkan wilayah Sales (jika berlaku)
-  const { totalRev: allRev, labaBersih: allLaba, marginPctGlobal, produkStats, bagiHasil } = analytics;
+  const { totalRev: allRev, labaBersih: allLaba, marginPctGlobal, metodeHppGlobal,
+    kontrol: enrichKontrolAll, penjualanLuar: enrichLuarRuteAll, produkStats, bagiHasil } = analytics;
   const perWilayahAll = analytics.perWilayah;
   const perRuteAll = analytics.perRute;
 
@@ -34,7 +36,25 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
 
   // Hitung ulang total hanya untuk wilayah yang tampil
   const totalRev = isSalesRestricted ? perWilayah.reduce((s,w)=>s+w.rev,0) : allRev;
-  const labaBersih = totalRev * (marginPctGlobal/100);
+  // ✅ FIX "Laba Bersih Est. masih pakai margin, padahal konfigurasi Tab Bagi
+  // Hasil pakai HPP": sebelumnya baris ini SELALU menghitung ulang labaBersih
+  // pakai rumus margin% (mengabaikan metodeHppGlobal dari useAnalytics, yang
+  // sebenarnya SUDAH benar menghitung via HPP produk riil kalau config-nya
+  // "otomatis") — jadi kartu "Laba Bersih Est." di Dashboard tidak pernah
+  // ikut metode HPP walau sudah diatur di Tab Bagi Hasil. Sekarang: untuk
+  // tampilan GLOBAL (Admin/Manajer, tidak di-scope wilayah), pakai langsung
+  // `allLaba` yang sudah dihitung dengan metode yang benar oleh useAnalytics.
+  // Untuk tampilan ter-scope wilayah (Sales), hitung ulang dengan metode yang
+  // SAMA (HPP atau margin) tapi hanya dari entri kontrol/penjualan luar rute
+  // milik wilayah itu — sebelumnya scoped view juga ikut salah pakai margin.
+  const labaBersih = !isSalesRestricted ? allLaba : (
+    metodeHppGlobal === "otomatis"
+      ? Math.max(totalRev - hitungHppPeriode({
+          rows: (enrichKontrolAll||[]).filter(k => k.wilayahId === salesWilayahId),
+          luarRows: (enrichLuarRuteAll||[]).filter(pl => pl.wilayahId === salesWilayahId),
+        }, db.produk||[]).totalHpp, 0)
+      : totalRev * (marginPctGlobal/100)
+  );
   const tokoAktif = isSalesRestricted
     ? (db.toko||[]).filter(t => {
         if (t.status !== "Aktif") return false;
@@ -108,7 +128,7 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
   const dashboardExportRows = [
     // ── Keuangan ──
     { kategori:"💰 KEUANGAN",      metrik:"Total Revenue",          nilai:fmtRp(totalRev) },
-    { kategori:"",                  metrik:`Laba Bersih Est. (${marginPctGlobal}%)`, nilai:fmtRp(labaBersih) },
+    { kategori:"",                  metrik:metodeHppGlobal === "otomatis" ? "Laba Bersih Est. (HPP Produk Riil)" : `Laba Bersih Est. (${marginPctGlobal}% margin)`, nilai:fmtRp(labaBersih) },
     { kategori:"",                  metrik:"",                       nilai:"" },
     // ── Master Data ──
     { kategori:"🏪 MASTER DATA",   metrik:"Toko Aktif",             nilai:`${tokoAktif} dari ${tokoTotalScoped}` },
@@ -152,7 +172,7 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
         <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon={Icon.wilayah} color={T.teal} />
         <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon={Icon.wallet} color={T.gold}
           pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Pendapatan bisa masih bertambah" />
-        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={`${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon={Icon.rekap} color={T.green}
+        <StatCard label="Laba Bersih Est." value={fmtRp(labaBersih)}    sub={metodeHppGlobal === "otomatis" ? `HPP Produk Riil · ${totalPendapatanSub}` : `${marginPctGlobal}% margin · ${totalPendapatanSub}`} icon={Icon.rekap} color={T.green}
           pending={dataStillSyncing} pendingTitle="Dihitung dari Total Pendapatan yang masih disinkronkan" />
         <StatCard label="Total Produk"    value={(db.produk||[]).filter(p=>p.aktif!==false).length+" produk"} sub="aktif" icon={Icon.produk} color={T.purple} />
         <StatCard label="Entri Kontrol"   value={kontrolUntukRentang.length} sub="total transaksi"                  icon={Icon.kontrol} color={T.blue}
@@ -272,7 +292,7 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
         {!isSalesRestricted && (
           <Card>
             <div style={{ fontSize:14, fontWeight:700, color:T.gray800, marginBottom:4 }}><Icon.wallet size={16} strokeWidth={2} style={{display:"inline", verticalAlign:"-3px", marginRight:6}}/>Simulasi Bagi Hasil</div>
-            <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>Asumsi margin laba bersih {marginPctGlobal}% dari pendapatan · ikut konfigurasi Tab Bagi Hasil</div>
+            <div style={{ fontSize:11, color:T.gray400, marginBottom:14 }}>{metodeHppGlobal === "otomatis" ? "Dihitung dari HPP Produk Riil (Harga Modal)" : `Asumsi margin laba bersih ${marginPctGlobal}% dari pendapatan`} · ikut konfigurasi Tab Bagi Hasil</div>
             {bagiHasil.map((b,i)=>(
               <div key={i} style={{ display:"flex", justifyContent:"space-between", alignItems:"center",
                 padding:"10px 12px", borderRadius:8, marginBottom:8, background:i===0?T.greenLt:T.gray50 }}>
