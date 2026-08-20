@@ -692,29 +692,72 @@ export function useDB(user) {
       LIST_TABLES.forEach(key => {
         if (newDB[key] === prevDB[key]) return;
         if (key === "kontrol" || key === "jurnalUmum") {
-          // "kontrol" dan "jurnalUmum" TIDAK ditulis sebagai satu blob di
-          // root — dipecah per tahun (lihat komentar kontrol di atas; logika
-          // yang sama berlaku untuk jurnalUmum karena sama-sama punya field
-          // `.tanggal` dan dipartisi lewat kontrolYearOf()).
+          // ✅ FIX "GAGAL disimpan — tidak ada izin" pada import massal (mis.
+          // Import Excel Kontrol): sebelumnya baris ini menulis SATU BLOB
+          // berisi seluruh record 1 tahun langsung ke path `kontrol/{tahun}`
+          // (atau null untuk hapus semua). Tapi rules Firebase HANYA memberi
+          // .write satu level lebih dalam lagi, di `kontrol/{tahun}/{id}`
+          // (sama untuk jurnalUmum) — menulis di level tahun (lebih dangkal
+          // dari situ) SELALU ditolak PERMISSION_DENIED, walau akunnya
+          // Admin/Manajer, karena izin di child tidak "naik" ke induknya.
+          // Sekarang dipecah per record (per id) supaya path yang ditulis
+          // persis cocok dengan path yang diberi izin oleh rules — dan HANYA
+          // record yang benar-benar berubah/dihapus yang dikirim (bukan
+          // seluruh tahun), sekalian lebih hemat bandwidth untuk import besar.
           const yearsIndexKey = key === "kontrol" ? "kontrolYearsIndex" : "jurnalYearsIndex";
-          const byYear = {};
+          const byYearBaru = {};
           (newDB[key] || []).forEach(rec => {
             const y = kontrolYearOf(rec);
-            (byYear[y] = byYear[y] || {})[rec.id] = rec;
+            (byYearBaru[y] = byYearBaru[y] || {})[rec.id] = rec;
           });
-          const prevYears = new Set((prevDB[key] || []).map(kontrolYearOf));
-          const touchedYears = new Set([...Object.keys(byYear), ...prevYears]);
+          const byYearLama = {};
+          (prevDB[key] || []).forEach(rec => {
+            const y = kontrolYearOf(rec);
+            (byYearLama[y] = byYearLama[y] || {})[rec.id] = rec;
+          });
+          const touchedYears = new Set([...Object.keys(byYearBaru), ...Object.keys(byYearLama)]);
           touchedYears.forEach(y => {
-            updates[`${key}/${y}`] = byYear[y] || null; // null = tahun itu jadi kosong
-            if (byYear[y]) {
-              updates[`${yearsIndexKey}/${y}`] = true;
-              Object.keys(byYear[y]).forEach(id => markLocalWrite(key, id));
-            }
+            const idsBaru = byYearBaru[y] || {};
+            const idsLama = byYearLama[y] || {};
+            const allIds = new Set([...Object.keys(idsBaru), ...Object.keys(idsLama)]);
+            allIds.forEach(id => {
+              if (idsBaru[id] === idsLama[id]) return; // record ini tidak berubah, skip
+              updates[`${key}/${y}/${id}`] = idsBaru[id] || null; // null = record ini dihapus
+              if (idsBaru[id]) markLocalWrite(key, id);
+            });
+            if (Object.keys(idsBaru).length > 0) updates[`${yearsIndexKey}/${y}`] = true;
           });
           return;
         }
-        updates[key] = arrToMap(newDB[key]);
-        if (key === "toko") (newDB.toko||[]).forEach(rec => markLocalWrite("toko", rec.id));
+        // ✅ FIX pencegahan (audit lanjutan, kasus sama dengan
+        // kontrol/jurnalUmum/saldoAkunBulanan di atas): SEBAGIAN tabel di
+        // LIST_TABLES ("kasTransaksi", "asetAmortisasi", "stockOpname",
+        // "hutangPiutang", "penyesuaian", "penjualanLuar", "penarikanToko",
+        // "gudangTransaksi", "pengguna") rules-nya HANYA memberi .write di
+        // level `{table}/{id}`, TIDAK di root tabelnya — jadi menulis blob
+        // `updates[key] = arrToMap(...)` ke root tabel (perilaku lama) akan
+        // ditolak PERMISSION_DENIED untuk tabel-tabel itu kalau suatu saat
+        // ada kode yang memanggil save() generik ini dengan tabel tsb
+        // berubah (saat ini belum ada — semua mutasinya lewat addRecord/
+        // updateRecord/deleteRecord yang sudah benar — tapi ini jadi jebakan
+        // laten kalau ada fitur baru nanti yang pakai save()). Tabel yang
+        // root-nya MEMANG diizinkan blob (wilayah/rute/produk/toko/
+        // distribusiLog/tutupBuku) tetap aman ditulis per-record juga,
+        // karena izin di root otomatis mengalir ke child-nya. Jadi: tulis
+        // SEMUA tabel di sini per-record ke `{table}/{id}` — selalu cocok
+        // dengan level permission tersempit yang mungkin berlaku, dan
+        // sekalian lebih hemat bandwidth (hanya record yang berubah yang
+        // dikirim).
+        const lamaMap = {};
+        (prevDB[key] || []).forEach(rec => { lamaMap[rec.id] = rec; });
+        const baruMap = {};
+        (newDB[key] || []).forEach(rec => { baruMap[rec.id] = rec; });
+        const semuaId = new Set([...Object.keys(lamaMap), ...Object.keys(baruMap)]);
+        semuaId.forEach(id => {
+          if (baruMap[id] === lamaMap[id]) return; // record ini tidak berubah, skip
+          updates[`${key}/${id}`] = baruMap[id] || null; // null = record ini dihapus
+          if (baruMap[id]) markLocalWrite(key, id);
+        });
       });
       if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
       if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
@@ -735,7 +778,13 @@ export function useDB(user) {
         touchedBulan.forEach(bulan => {
           if (saldoBaru[bulan] === saldoLama[bulan]) return; // bulan ini tidak berubah, skip
           if (!saldoBaru[bulan]) {
-            updates[`saldoAkunBulanan/${bulan}`] = null; // bulan ini dihapus (jarang terjadi)
+            // Bulan ini dihapus seluruhnya (mis. saat "Buka Kunci" periode) —
+            // hapus tiap akun SATU-SATU (`saldoAkunBulanan/{bulan}/{kode}` =
+            // null), BUKAN sekaligus di level bulan — rules hanya beri .write
+            // di level {bulan}/{kode}, sama seperti alasan di atas.
+            Object.keys(saldoLama[bulan] || {}).forEach(kode => {
+              updates[`saldoAkunBulanan/${bulan}/${kode}`] = null;
+            });
             return;
           }
           Object.entries(saldoBaru[bulan]).forEach(([kode, val]) => {
@@ -1094,19 +1143,66 @@ export function useDB(user) {
         try { await set(ref(rtdb, `gwg_data/shared/${key}`), value); }
         catch (e) { console.warn(`Gagal restore tabel "${key}":`, e); failed.push(key); }
       };
+      // ✅ FIX "GAGAL disimpan — tidak ada izin" saat Restore Backup (bug
+      // sama dengan save()/tutup buku di atas): "pengguna", "penyesuaian",
+      // "penarikanToko", "penjualanLuar", "kasTransaksi", "asetAmortisasi",
+      // "stockOpname", "hutangPiutang", dan "gudangTransaksi" rules-nya
+      // HANYA memberi .write di level `{table}/{id}`, TIDAK di root
+      // tabelnya — writeTable(key, arrToMap(...)) di atas menulis blob ke
+      // root dan SELALU ditolak PERMISSION_DENIED untuk tabel-tabel itu.
+      // "saldoAkunBulanan" sama, tapi levelnya `{bulan}/{kode}`. Sekarang
+      // ditulis PER RECORD (dan record lama yang tidak ada lagi di
+      // snapshot dihapus satu-satu juga, bukan set(null) di root) supaya
+      // path yang ditulis selalu cocok dengan level permission tersempit.
+      const writeTablePerRecord = async (key, arr) => {
+        try {
+          const idBaru = new Set((arr || []).map(r => r.id));
+          const idLama = (db[key] || []).map(r => r.id).filter(id => !idBaru.has(id));
+          await Promise.all([
+            ...(arr || []).map(rec => set(ref(rtdb, `gwg_data/shared/${key}/${rec.id}`), rec)),
+            ...idLama.map(id => set(ref(rtdb, `gwg_data/shared/${key}/${id}`), null)),
+          ]);
+        } catch (e) { console.warn(`Gagal restore tabel "${key}":`, e); failed.push(key); }
+      };
+      const writeSaldoAkunBulanan = async (saldoMap) => {
+        try {
+          const bulanBaru = saldoMap || {};
+          const bulanLama = db.saldoAkunBulanan || {};
+          const semuaBulan = new Set([...Object.keys(bulanBaru), ...Object.keys(bulanLama)]);
+          const jobs = [];
+          semuaBulan.forEach(bulan => {
+            const kodeBaru = bulanBaru[bulan] || {};
+            const kodeLama = bulanLama[bulan] || {};
+            new Set([...Object.keys(kodeBaru), ...Object.keys(kodeLama)]).forEach(kode => {
+              jobs.push(set(ref(rtdb, `gwg_data/shared/saldoAkunBulanan/${bulan}/${kode}`), kodeBaru[kode] ?? null));
+            });
+          });
+          await Promise.all(jobs);
+        } catch (e) { console.warn('Gagal restore tabel "saldoAkunBulanan":', e); failed.push("saldoAkunBulanan"); }
+      };
       await Promise.all([
         writeTable("wilayah", arrToMap(restored.wilayah)),
         writeTable("rute", arrToMap(restored.rute)),
         writeTable("toko", arrToMap(restored.toko)),
         writeTable("produk", arrToMap(restored.produk)),
-        writeTable("pengguna", arrToMap(restored.pengguna)),
-        writeTable("penyesuaian", arrToMap(restored.penyesuaian)),
-        writeTable("penarikanToko", arrToMap(restored.penarikanToko)),
-        writeTable("penjualanLuar", arrToMap(restored.penjualanLuar)),
+        writeTablePerRecord("pengguna", restored.pengguna),
+        writeTablePerRecord("penyesuaian", restored.penyesuaian),
+        writeTablePerRecord("penarikanToko", restored.penarikanToko),
+        writeTablePerRecord("penjualanLuar", restored.penjualanLuar),
+        // ✅ Tabel yang sebelumnya TIDAK di-restore sama sekali ke cloud
+        // walau ikut di-backup (data lokal terlihat "sudah dipulihkan",
+        // tapi diam-diam hilang lagi setelah reload/dari device lain).
+        writeTablePerRecord("kasTransaksi", restored.kasTransaksi),
+        writeTablePerRecord("asetAmortisasi", restored.asetAmortisasi),
+        writeTablePerRecord("stockOpname", restored.stockOpname),
+        writeTablePerRecord("hutangPiutang", restored.hutangPiutang),
+        writeTablePerRecord("distribusiLog", restored.distribusiLog),
+        writeTablePerRecord("tutupBuku", restored.tutupBuku),
+        writeTablePerRecord("gudangTransaksi", restored.gudangTransaksi),
         writeTable("stokAwal", restored.stokAwal || {}),
         writeTable("bagiHasilConfig", restored.bagiHasilConfig ?? null),
         writeTable("daftarAkun", restored.daftarAkun || {}),
-        writeTable("saldoAkunBulanan", restored.saldoAkunBulanan || {}),
+        writeSaldoAkunBulanan(restored.saldoAkunBulanan),
       ]);
 
       // "jurnalUmum" — partisi per tahun, sama pola persis dengan "kontrol"
@@ -1163,9 +1259,15 @@ export function useDB(user) {
         failed.push("kontrol");
       }
     } else {
-      // Mode lokal tanpa Firebase: cukup pushUpdates seperti semula.
+      // Mode lokal tanpa Firebase: antrean ini baru benar-benar dikirim ke
+      // Firebase NANTI kalau/ketika Firebase tersedia (lihat flushWriteQueue)
+      // — jadi tetap harus per-record (bukan blob per tabel) supaya path-nya
+      // sudah cocok dari awal dengan level permission yang berlaku nanti,
+      // sama seperti cabang firebaseDB di atas.
       const updates = {};
-      LIST_TABLES.forEach(key => { updates[key] = arrToMap(restored[key]); });
+      LIST_TABLES.forEach(key => {
+        (restored[key] || []).forEach(rec => { updates[`${key}/${rec.id}`] = rec; });
+      });
       updates.stokAwal = restored.stokAwal || {};
       updates.bagiHasilConfig = restored.bagiHasilConfig ?? null;
       pushUpdates(updates);
