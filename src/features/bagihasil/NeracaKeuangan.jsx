@@ -60,8 +60,10 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
   // Cari entry jurnal AKTIF (belum void) yang sumbernya 1 record kasTransaksi
   // tertentu — dipakai submitKas (edit) & hapusKas (hapus) untuk membatalkan
   // jurnal lama sebelum memposting yang baru / setelah record dihapus.
+  // ✅ FIX (konsisten dengan jurnalAktifSumber di bawah — sama-sama untuk
+  // mencegah entry pembalik ikut dibalik ulang secara berantai):
   function jurnalAktifUntukKas(kasId) {
-    return (db.jurnalUmum || []).filter(j => j.sumberTipe === "kasTransaksi" && j.sumberId === kasId && !j.void);
+    return (db.jurnalUmum || []).filter(j => j.sumberTipe === "kasTransaksi" && j.sumberId === kasId && !j.void && !j.isPembalik);
   }
 
   // Posting/repost jurnal untuk 1 record Kas. Kalau gagal (mis. kategori
@@ -360,8 +362,15 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     // sumberTipe+sumberId yang sama SUDAH ADA (non-void), batalkan seluruh
     // proses tutup buku ini supaya tidak dobel, dan kasih tahu penggunanya
     // supaya refresh dulu.
+    // ✅ FIX (lihat catatan lengkap di buatEntryPembalik(), akuntansiHelpers.js):
+    // entry PEMBALIK (dibuat otomatis oleh voidJurnal — Buka Kunci ATAU
+    // tombol pembersihan jurnal sisa) ikut kepakai sumberTipe+sumberId yang
+    // SAMA dengan entry aslinya, jadi HARUS dikecualikan di sini — kalau
+    // tidak, keberadaan entry pembalik (yang justru berarti closure-nya
+    // SUDAH DIBATALKAN) malah disalahartikan sebagai "closure masih aktif"
+    // dan terus memblokir Tutup Buku ulang tanpa henti.
     const sudahAdaJurnalUntuk = (sumberTipe) =>
-      (db.jurnalUmum || []).some(j => j.sumberTipe === sumberTipe && j.sumberId === bulanIniKey && !j.void);
+      (db.jurnalUmum || []).some(j => j.sumberTipe === sumberTipe && j.sumberId === bulanIniKey && !j.void && !j.isPembalik);
     const sudahDiposting = ["tutupBuku-amortisasi", "tutupBuku-bebanUsaha", "tutupBuku-bagiHasil"]
       .filter(sudahAdaJurnalUntuk);
     if (sudahDiposting.length > 0) {
@@ -564,8 +573,19 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
   // Cari & batalkan (void) semua jurnal AKTIF untuk 1 sumber tertentu — pola
   // sama persis dengan yang dipakai submitKas/hapusKas di atas.
+  // ✅ FIX (akar masalah siklus tak berhenti di Tutup Buku — lihat catatan
+  // lengkap di buatEntryPembalik(), akuntansiHelpers.js): dulu fungsi ini
+  // mengambil SEMUA entry non-void untuk sumberTipe+sumberId ini — termasuk
+  // entry PEMBALIK yang sudah lebih dulu ada (sisa dari void sebelumnya).
+  // voidJurnalSumberAman() lalu MEMBATALKAN ULANG entry pembalik itu juga —
+  // padahal membalik sebuah pembalik artinya justru MENEGASKAN KEMBALI efek
+  // entry asli yang harusnya sudah batal! Ini yang bikin Buka Kunci /
+  // pembersihan jurnal sisa bisa "muter" tak berhenti: tiap kali dipanggil,
+  // ikut membalik pembalik-pembalik sebelumnya secara berantai. Sekarang
+  // entry pembalik dikecualikan — hanya entry ASLI (bukan hasil pembalikan)
+  // yang akan dibatalkan di sini.
   function jurnalAktifSumber(sumberTipe, sumberId) {
-    return (db.jurnalUmum || []).filter(j => j.sumberTipe === sumberTipe && j.sumberId === sumberId && !j.void);
+    return (db.jurnalUmum || []).filter(j => j.sumberTipe === sumberTipe && j.sumberId === sumberId && !j.void && !j.isPembalik);
   }
   function voidJurnalSumberAman(sumberTipe, sumberId, alasan) {
     if (!voidJurnal) return;
@@ -1395,6 +1415,50 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
       {section === "tutupbuku" && (
         <>
+          {/* ✅ ALAT PEMBERSIHAN SEKALI-PAKAI (audit — data testing bersama
+              periode Juni-Agustus 2026, dikonfirmasi Admin aman dihapus).
+              Menarget ID SPESIFIK yang sudah diverifikasi dari ekspor RTDB,
+              BUKAN "cari lalu hapus otomatis" — supaya tidak ada risiko
+              salah kena data lain. Kartu ini otomatis hilang begitu semua
+              targetnya sudah tidak ada (jadi aman ditinggal, tidak perlu
+              diingat untuk dihapus manual nanti). */}
+          {(() => {
+            const targetJurnal2026 = ["J_msvvvkrxgwvnos","J_msvvvkrxva79c7","J_mt02wocxbeudem","J_mt02wocxhz36e5",
+              "J_mt02x4r6g03inw","J_mt02x4r6p6v5ss","J_mt02ybffq3gtjn","J_mt02ybg5ndqdiz","J_mt02ybg5va2b1j",
+              "J_mt02ybg62ee1ao","J_mt0lf9nko2wg86","J_mt0lfh028tnuy1","J_mt0lfh04t0fger","J_mt0lfvwwie2ico",
+              "J_mt0lfvxj4o976e","J_mt0lgwxz92m8y5","J_mt0lgwyioznlpk","J_mt0lhbq1axgq9k","J_mt0lhbr6xelrne",
+              "J_mt0li9azur4ftm","J_mt0li9bl9nzu0e","J_mt0liser6q3fq6","J_mt0liserwgip9w","J_mt0ljt5rbrvc01",
+              "J_mt0ljt6aw4725q","J_mt0ll8ep4no5dq","J_mt0ll8f9t9e4zc"];
+            const targetJurnal2023 = ["J_msmgmdhtycand6","J_msmgnssygy7nln","J_msmgnssywewyhq","J_mso1qpxh75i2c5"];
+            const targetAsetId = "ASTmsmgmdhi99e8j0";
+            const targetOpnameId = "SOmsmgdtcg7wu5yo";
+            const jurnal2026Ids = new Set((db.jurnalUmum||[]).map(j=>j.id));
+            const asetAda = (db.asetAmortisasi||[]).some(a=>a.id===targetAsetId);
+            const opnameAda = (db.stockOpname||[]).some(o=>o.id===targetOpnameId);
+            const sisaJurnal = [...targetJurnal2026, ...targetJurnal2023].filter(id => jurnal2026Ids.has(id));
+            const totalSisa = sisaJurnal.length + (asetAda?1:0) + (opnameAda?1:0);
+            if (totalSisa === 0) return null;
+            return (
+              <Card style={{ marginBottom: 16, border: `1.5px solid #FCA5A5` }}>
+                <div style={{ fontSize: 14, fontWeight: 800, color: T.red, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
+                  <Icon.trash size={16} strokeWidth={2} /> Bersihkan Sisa Data Testing (satu kali)
+                </div>
+                <div style={{ fontSize: 12, color: T.gray500, marginBottom: 12 }}>
+                  {totalSisa} item sisa dari testing Tutup Buku bersama (jurnal Beban Usaha/Dana Cadangan/Amortisasi
+                  yang tabrakan, Aset "Rak display", Stock Opname 9 Agustus) — sudah dikonfirmasi aman dihapus.
+                  Kartu ini otomatis hilang setelah dijalankan.
+                </div>
+                <Btn variant="secondary" icon={Icon.trash} onClick={() => {
+                  if (!confirm(`Hapus ${totalSisa} item sisa testing ini? Tidak bisa dibatalkan (tapi memang cuma data testing, bukan transaksi asli).`)) return;
+                  sisaJurnal.forEach(id => deleteRecord("jurnalUmum", id));
+                  if (asetAda) deleteRecord("asetAmortisasi", targetAsetId);
+                  if (opnameAda) deleteRecord("stockOpname", targetOpnameId);
+                  alert(`Selesai — ${totalSisa} item sisa testing sudah dihapus. Silakan cek ulang Tutup Buku Periode 2026-07.`);
+                }}>Hapus {totalSisa} Item Sisa Testing</Btn>
+              </Card>
+            );
+          })()}
+
           <Card style={{ marginBottom: 16 }}>
             <div style={{ fontSize: 14, fontWeight: 800, color: T.gray800, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
               <Icon.checklist size={16} strokeWidth={2} /> Tutup Buku Bulan Berjalan
