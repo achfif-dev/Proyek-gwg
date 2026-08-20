@@ -1589,6 +1589,14 @@ export function useDB(user) {
     const entryLama = (db.jurnalUmum || []).find(j => j.id === entryId);
     if (!entryLama) return { ok: false, message: "Entry jurnal tidak ditemukan." };
     if (entryLama.void) return { ok: false, message: "Entry ini sudah pernah dibatalkan sebelumnya." };
+    // ✅ FIX (audit — akar masalah siklus Tutup Buku tak berhenti, lihat
+    // catatan lengkap di buatEntryPembalik(), akuntansiHelpers.js): entry
+    // PEMBALIK tidak boleh dibalik lagi — membalik sebuah pembalik artinya
+    // justru MENEGASKAN KEMBALI efek entry asli yang harusnya sudah batal.
+    // Pemanggil (jurnalAktifSumber dkk) sudah dibenahi untuk tidak
+    // menyertakan entry pembalik sejak awal — guard ini cuma jaring
+    // pengaman kedua kalau ada jalur lain yang lolos.
+    if (entryLama.isPembalik) return { ok: false, message: "Entry ini adalah entry pembalik — tidak boleh dibatalkan lagi." };
     const entryBalik = buatEntryPembalik(entryLama, { keterangan: alasan, createdBy });
     updateRecord("jurnalUmum", entryId, { void: true, voidAt: Date.now(), voidKeterangan: alasan || "" });
     addRecord("jurnalUmum", entryBalik);
