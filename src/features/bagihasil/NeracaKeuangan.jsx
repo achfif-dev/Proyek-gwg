@@ -1441,14 +1441,14 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
             return (
               <Card style={{ marginBottom: 16, border: `1.5px solid #FCA5A5` }}>
                 <div style={{ fontSize: 14, fontWeight: 800, color: T.red, marginBottom: 4, display: "flex", alignItems: "center", gap: 6 }}>
-                  <Icon.trash size={16} strokeWidth={2} /> Bersihkan Sisa Data Testing (satu kali)
+                  <Icon.delete size={16} strokeWidth={2} /> Bersihkan Sisa Data Testing (satu kali)
                 </div>
                 <div style={{ fontSize: 12, color: T.gray500, marginBottom: 12 }}>
                   {totalSisa} item sisa dari testing Tutup Buku bersama (jurnal Beban Usaha/Dana Cadangan/Amortisasi
                   yang tabrakan, Aset "Rak display", Stock Opname 9 Agustus) — sudah dikonfirmasi aman dihapus.
                   Kartu ini otomatis hilang setelah dijalankan.
                 </div>
-                <Btn variant="secondary" icon={Icon.trash} onClick={() => {
+                <Btn variant="secondary" icon={Icon.delete} onClick={() => {
                   if (!confirm(`Hapus ${totalSisa} item sisa testing ini? Tidak bisa dibatalkan (tapi memang cuma data testing, bukan transaksi asli).`)) return;
                   sisaJurnal.forEach(id => deleteRecord("jurnalUmum", id));
                   if (asetAda) deleteRecord("asetAmortisasi", targetAsetId);
