@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { naturalCompare } from "../lib/format";
+import { hitungHppPeriode } from "../lib/neracaHelpers";
 
 // ─────────────────────────────────────────────────────────────────────────
 // ⚡ OPTIMISASI PERFORMA (setelah laporan "input kontrol masih terasa stuck"
@@ -140,7 +141,19 @@ export function useAnalytics(db) {
     // yang sama, supaya "Laba Bersih Estimasi" di Dashboard & Tab Rekap
     // selalu konsisten dengan margin % yang di-set user di Tab Bagi Hasil.
     const marginPctGlobal = Number(db.bagiHasilConfig?.marginLaba) || 70;
-    const labaBersih = totalRev * (marginPctGlobal/100);
+    // ✅ FIX "Laba Bersih Est. masih pakai margin, padahal konfigurasi di Tab
+    // Bagi Hasil pakai HPP": labaBersih di sini SELALU dihitung pakai rumus
+    // margin%, tidak peduli metodeHpp yang dipilih user di Tab Bagi Hasil
+    // (db.bagiHasilConfig.metodeHpp: "manual" pakai margin% | "otomatis"
+    // pakai HPP produk riil). metodeHppGlobal juga belum pernah di-return
+    // dari hook ini, padahal Dashboard.jsx sudah mencoba membacanya —
+    // akibatnya kondisi di Dashboard selalu jatuh ke cabang margin. Sekarang
+    // ikuti metodeHpp yang sama seperti Tab Bagi Hasil, pakai helper
+    // hitungHppPeriode yang sama juga (Laba Kotor Riil = pendapatan - HPP).
+    const metodeHppGlobal = db.bagiHasilConfig?.metodeHpp === "otomatis" ? "otomatis" : "manual";
+    const labaBersih = metodeHppGlobal === "otomatis"
+      ? Math.max(hitungHppPeriode({ rows: enrichKontrol, luarRows: enrichLuarRute }, produkArr).labaKotorRiil, 0)
+      : totalRev * (marginPctGlobal/100);
 
     // Jumlah toko per rute & per wilayah — dihitung 1x scan toko (bukan
     // filter toko berulang per wilayah seperti sebelumnya).
@@ -200,7 +213,7 @@ export function useAnalytics(db) {
     });
 
     return { kontrol: enrichKontrol, penjualanLuar: enrichLuarRute, totalRevLuarRute,
-      totalRev, labaBersih, marginPctGlobal, tokoAktif, perWilayah, perRute, produkStats, bagiHasil };
+      totalRev, labaBersih, marginPctGlobal, metodeHppGlobal, tokoAktif, perWilayah, perRute, produkStats, bagiHasil };
   }, [db]);
 }
 
