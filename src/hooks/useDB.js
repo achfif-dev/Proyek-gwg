@@ -719,7 +719,30 @@ export function useDB(user) {
       if (newDB.stokAwal !== prevDB.stokAwal) updates.stokAwal = newDB.stokAwal || {};
       if (newDB.bagiHasilConfig !== prevDB.bagiHasilConfig) updates.bagiHasilConfig = newDB.bagiHasilConfig ?? null;
       if (newDB.daftarAkun !== prevDB.daftarAkun) updates.daftarAkun = newDB.daftarAkun || {};
-      if (newDB.saldoAkunBulanan !== prevDB.saldoAkunBulanan) updates.saldoAkunBulanan = newDB.saldoAkunBulanan || {};
+      // ✅ FIX "GAGAL disimpan — tidak ada izin" saat Tutup Buku: "saldoAkunBulanan"
+      // TIDAK ditulis sebagai satu blob di root — rules Firebase HANYA memberi
+      // .write di level saldoAkunBulanan/{bulan}/{kode} (2 level lebih dalam),
+      // bukan di saldoAkunBulanan atau saldoAkunBulanan/{bulan}. Menulis blob
+      // utuh ke path yang lebih dangkal dari itu SELALU ditolak PERMISSION_DENIED
+      // walau akunnya Admin/Manajer, karena Firebase tidak "menaikkan" izin dari
+      // child ke ancestor-nya. Sekarang dipecah per bulan/kode (pola sama dengan
+      // kontrol/jurnalUmum di atas) supaya path yang ditulis persis cocok dengan
+      // path yang diberi izin oleh rules.
+      if (newDB.saldoAkunBulanan !== prevDB.saldoAkunBulanan) {
+        const saldoBaru = newDB.saldoAkunBulanan || {};
+        const saldoLama = prevDB.saldoAkunBulanan || {};
+        const touchedBulan = new Set([...Object.keys(saldoBaru), ...Object.keys(saldoLama)]);
+        touchedBulan.forEach(bulan => {
+          if (saldoBaru[bulan] === saldoLama[bulan]) return; // bulan ini tidak berubah, skip
+          if (!saldoBaru[bulan]) {
+            updates[`saldoAkunBulanan/${bulan}`] = null; // bulan ini dihapus (jarang terjadi)
+            return;
+          }
+          Object.entries(saldoBaru[bulan]).forEach(([kode, val]) => {
+            if (saldoLama[bulan]?.[kode] !== val) updates[`saldoAkunBulanan/${bulan}/${kode}`] = val;
+          });
+        });
+      }
       if (Object.keys(updates).length) pushUpdates(updates);
       saveLocalDB(newDB);
       return newDB;
