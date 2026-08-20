@@ -475,8 +475,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // ═══════════════════════════════════════════════════════════════════
 
   // Cari entry jurnal AKTIF (belum void) untuk 1 sumber tertentu.
+  // ✅ FIX (akar masalah siklus tak berhenti — lihat catatan lengkap di
+  // buatEntryPembalik(), akuntansiHelpers.js, dan jurnalAktifSumber() di
+  // NeracaKeuangan.jsx): kecualikan entry PEMBALIK supaya tidak ikut
+  // dibalik ulang secara berantai.
   function jurnalAktifUntukSumber(sumberTipe, sumberId) {
-    return (db.jurnalUmum || []).filter(j => j.sumberTipe === sumberTipe && j.sumberId === sumberId && !j.void);
+    return (db.jurnalUmum || []).filter(j => j.sumberTipe === sumberTipe && j.sumberId === sumberId && !j.void && !j.isPembalik);
   }
   // Batalkan semua jurnal aktif untuk 1 sumber (dipakai sebelum re-post saat
   // edit/approve ulang, dan saat record sumbernya dihapus/ditolak).
