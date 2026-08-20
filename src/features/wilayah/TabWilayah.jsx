@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, Table } from "../../components/ui";
-import { genId, normTxt, sortByNama } from "../../lib/format";
+import { genUniqueId, normTxt, sortByNama } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon } from "../../theme/icons.jsx";
@@ -96,7 +96,17 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
       alert(`Nama wilayah "${form.nama}" sudah ada di data sebelumnya.\n\nData TIDAK tersimpan. Mohon isi ulang dengan nama wilayah yang berbeda.`);
       return;
     }
-    if (modal==="add") addRecord("wilayah", { ...form, id:genId("WIL-",db.wilayah) });
+    // ✅ FIX ID-COLLISION (audit): dulu id wilayah baru = genId("WIL-",
+    // db.wilayah) — nomor urut dihitung dari data LOKAL perangkat ini saja.
+    // Kalau dua orang menambah wilayah baru hampir bersamaan di perangkat
+    // berbeda sebelum sempat saling sync, keduanya bisa menghasilkan id yang
+    // SAMA persis (mis. dua-duanya "WIL-004") — tulisan yang belakangan
+    // sampai ke Firebase akan MENIMPA yang pertama (path per-id), bukan
+    // menambah data baru. Pola persis sama sudah diperbaiki di Rute/Toko/
+    // Kontrol/Pengguna (lihat komentar FIX ID-COLLISION di file-file itu),
+    // tapi Wilayah sempat terlewat. Sekarang pakai genUniqueId() (timestamp
+    // + random, basis-36) yang praktis mustahil bentrok lintas perangkat.
+    if (modal==="add") addRecord("wilayah", { ...form, id:genUniqueId("WIL-") });
     else updateRecord("wilayah", form.id, form);
     setModal(null);
   }
