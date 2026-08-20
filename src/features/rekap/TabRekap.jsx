@@ -942,6 +942,26 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
   // ✅ FIX SINKRONISASI: margin sebelumnya hardcoded *0.7 di tab ini,
   // sekarang ikut config yang sama dengan Tab Bagi Hasil & Dashboard.
   const marginPctRekap = Number(db.bagiHasilConfig?.marginLaba) || 70;
+  // ✅ FIX "Laba Est. masih pakai margin, padahal konfigurasi di Tab Bagi
+  // Hasil pakai HPP" (bug kembar dari yang sudah diperbaiki di Dashboard —
+  // luput di sini karena fix sebelumnya cuma menyentuh Dashboard.jsx):
+  // kartu "Laba Est." & "Laba Bersih Est." di Rekap SELALU menghitung pakai
+  // rumus margin%, tidak peduli metodeHpp yang dipilih user. Sekarang ikuti
+  // metodeHppGlobal dari useAnalytics (sumber sama dengan Dashboard). Total
+  // HPP dihitung dari terjual_${produkId} × hargaModal tiap baris activeData
+  // — field ini sudah tersedia di SEMUA mode (harian/siklus/bulanan/kuartal/
+  // tahunan) lewat sumProduk(), termasuk baris "Penjualan Luar Rute", jadi
+  // tidak perlu query ulang data mentah kontrol per mode.
+  const metodeHppRekap = analytics.metodeHppGlobal === "otomatis" ? "otomatis" : "manual";
+  const totalHppAll = useMemo(() => {
+    if (metodeHppRekap !== "otomatis" || isPerputaran) return 0;
+    return activeData.reduce((s,r) => s + produkAktif.reduce((s2,p) =>
+      s2 + (Number(r[`terjual_${p.id}`])||0) * (Number(p.hargaModal)||0), 0), 0);
+  }, [activeData, produkAktif, metodeHppRekap, isPerputaran]);
+  const labaBersihAll = metodeHppRekap === "otomatis"
+    ? Math.max(totalRevAll - totalHppAll, 0)
+    : totalRevAll * (marginPctRekap/100);
+  const labaLabelRekap = metodeHppRekap === "otomatis" ? "Laba Est. (HPP Riil)" : `Laba Est. (${marginPctRekap}%)`;
   const totalKunjungan = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahToko||r.jumlahKunjungan||0),0);
   const totalBonusAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.totalBonus||0),0);
   const totalTutupAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
@@ -1654,7 +1674,7 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
         <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon={Icon.wallet} color={T.green}
           pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Revenue bisa masih bertambah" />
-        <StatCard label={`Laba Est. (${marginPctRekap}%)`} value={fmtRp(totalRevAll*(marginPctRekap/100))} icon={Icon.rekap} color={T.gold}
+        <StatCard label={labaLabelRekap} value={fmtRp(labaBersihAll)} icon={Icon.rekap} color={T.gold}
           pending={dataStillSyncing} pendingTitle="Dihitung dari Total Revenue yang masih disinkronkan" />
         <StatCard label={mode==="harian"?"Toko":"Kunjungan"} value={totalKunjungan} icon={Icon.toko} color={T.blue}
           pending={dataStillSyncing} />
@@ -1729,7 +1749,7 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
                 </div>
                 <div>
                   <div style={{ fontSize:11, color:T.gray500 }}>Laba Bersih Est.</div>
-                  <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>{fmtRp(totalRevAll*(marginPctRekap/100))}</div>
+                  <div style={{ fontSize:18, fontWeight:800, color:T.gold }}>{fmtRp(labaBersihAll)}</div>
                 </div>
                 <div>
                   <div style={{ fontSize:11, color:T.gray500 }}>Total Kunjungan</div>
