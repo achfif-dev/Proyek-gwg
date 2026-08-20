@@ -173,7 +173,7 @@ export function buatEntryJurnal({ tanggal, sumberTipe, sumberId, keterangan, bar
 export function buatEntryPembalik(entryLama, { keterangan, createdBy } = {}) {
   if (!entryLama?.baris?.length) throw new Error("Entry lama tidak valid untuk dibalik.");
   const barisBalik = entryLama.baris.map(b => ({ akun: b.akun, debit: b.kredit, kredit: b.debit }));
-  return buatEntryJurnal({
+  const entry = buatEntryJurnal({
     // PENTING: pakai tanggal entry LAMA (tanggal transaksi asli), BUKAN
     // tanggal hari ini void dilakukan. Entry pembalik secara ekonomi adalah
     // "penghapus" kejadian di bulan aslinya, bukan kejadian baru di bulan
@@ -189,6 +189,24 @@ export function buatEntryPembalik(entryLama, { keterangan, createdBy } = {}) {
     baris: barisBalik,
     createdBy,
   });
+  // ✅ FIX (audit — ditemukan lewat ekspor data live, kasus Tutup Buku
+  // periode 2026-07 yang "muter" tak berhenti): entry pembalik SENGAJA
+  // mewarisi sumberTipe+sumberId yang SAMA PERSIS dengan entry aslinya
+  // (untuk jejak audit — supaya jelas ini "milik" transaksi mana). TAPI ini
+  // artinya kode manapun yang mengecek "apakah sudah ada jurnal AKTIF untuk
+  // sumberTipe+sumberId ini" (mis. guard anti-dobel-posting Tutup Buku)
+  // tidak bisa membedakan entry pembalik (artinya closure SUDAH DIBATALKAN)
+  // dari entry asli yang masih aktif (artinya closure MASIH BERLAKU) — bagi
+  // pengecekan semacam itu, keduanya sama-sama "non-void dengan sumberTipe/
+  // sumberId yang cocok". Akibatnya: begitu jurnal pembalik dibuat (lewat
+  // Buka Kunci ATAU tombol pembersihan jurnal sisa), guard itu SALAH KIRA
+  // periode ini masih tertutup — jadi terus memblokir, dan setiap percobaan
+  // membersihkan malah bikin pembalik BARU yang kena kesalahan yang sama
+  // lagi (berulang tanpa henti). Sekarang entry pembalik ditandai eksplisit
+  // `isPembalik:true` — kode manapun yang mengecek "closure aktif" harus
+  // mengecualikan entry bertanda ini (lihat sudahAdaJurnalUntuk di
+  // NeracaKeuangan.jsx untuk contoh pemakaiannya).
+  return { ...entry, isPembalik: true };
 }
 
 // ═══════════════════════════════════════════════════════════════════════
