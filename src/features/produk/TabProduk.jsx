@@ -9,6 +9,40 @@ function TabProdukImpl({ db, addRecord, updateRecord, deleteRecord }) {
   const [form, setForm] = useState({ id:"", nama:"", tipe:"", harga:0, aktif:true, bonus:0, hargaModal:0 });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
 
+  function hapusProduk(id) {
+    const p = (db.produk||[]).find(pp=>pp.id===id);
+    const namaProduk = p?.nama || id;
+    // ✅ FIX (audit — risiko kehilangan data historis SENYAP): sebelumnya
+    // tombol Hapus di sini langsung deleteRecord("produk", id) tanpa cek
+    // apa pun. Padahal useAnalytics.js (sumber SEMUA laporan — Dashboard,
+    // Tab Rekap, Tab Bagi Hasil) menghitung totalRev/labaBersih dengan
+    // MENGITERASI db.produk (produk yang MASIH ADA) untuk membaca field
+    // `terjual_${p.id}` di tiap entri Kontrol/Penjualan Luar Rute. Begitu
+    // sebuah produk dihapus permanen, SELURUH riwayat penjualannya —
+    // sejak kapan pun produk itu pernah aktif — otomatis TIDAK TERHITUNG
+    // LAGI di semua laporan, secara retroaktif & permanen, TANPA galat
+    // atau peringatan apa pun (angka cuma "mengecil sendiri" diam-diam).
+    // Produk sudah punya field `aktif` yang justru didesain untuk kasus
+    // ini (non-aktifkan = berhenti muncul di form baru, riwayat tetap
+    // utuh) — tombol Hapus permanen cuma cocok untuk produk yang
+    // BENAR-BENAR belum pernah ada transaksi (salah input, dsb).
+    // Catatan: pengecekan ini hanya menjangkau data kontrol/penjualan luar
+    // rute yang SEDANG termuat (tahun berjalan + tahun live lainnya) —
+    // tahun-tahun yang sudah diarsipkan (lihat archiveKontrolYear di
+    // useDB.js) tidak ikut tercek di sini karena datanya sudah tidak ada
+    // di state aktif.
+    const adaTransaksiKontrol = (db.kontrol||[]).some(k => Number(k[`terjual_${id}`])>0 || Number(k[`stok_${id}`])>0 || Number(k[`bonusInput_${id}`])>0);
+    const adaTransaksiLuar = (db.penjualanLuar||[]).some(pl => Number(pl[`terjual_${id}`])>0);
+    if (adaTransaksiKontrol || adaTransaksiLuar) {
+      alert(`Produk "${namaProduk}" tidak bisa dihapus karena masih punya riwayat transaksi (kontrol/penjualan luar rute) di data yang sedang termuat.\n\nMenghapusnya akan membuat SELURUH riwayat penjualan produk ini hilang dari semua laporan (Total Pendapatan, Laba Bersih, Bagi Hasil, dst) secara retroaktif & permanen — termasuk kemungkinan tahun-tahun lama yang sudah diarsipkan, yang tidak ikut tercek di sini.\n\nGunakan tombol Edit -> matikan "Aktif" untuk menghentikan produk ini muncul di form Kontrol baru, TANPA menghapus riwayat & laporan lama.`);
+      return;
+    }
+    const adaDiToko = (db.toko||[]).some(t => t[`produk_${id}`] || (t.produkIds||[]).includes(id));
+    if (adaDiToko && !confirm(`Produk "${namaProduk}" masih tercatat "dijual" di beberapa Master Toko (walau belum ada riwayat transaksi tercatat). Lanjut hapus?`)) return;
+    if (!confirm(`Hapus produk "${namaProduk}"? Tindakan ini permanen.`)) return;
+    deleteRecord("produk", id);
+  }
+
   // ✅ Urutan tampil produk (dipakai di sini & di grid "Stok, Penjualan &
   // Bonus Produk" pada Tambah/Edit Kontrol Bulanan) — SEBELUMNYA urutan
   // cuma ikut urutan array mentah db.produk (urutan input pertama kali),
@@ -102,7 +136,7 @@ function TabProdukImpl({ db, addRecord, updateRecord, deleteRecord }) {
       </div>
       <Card padding={0}>
         <Table columns={cols} data={produkUrut} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus produk ini?")) deleteRecord("produk",id); }} />
+          onDelete={hapusProduk} />
       </Card>
       {modal && (
         <Modal title={modal==="add"?"Tambah Produk":"Edit Produk"} onClose={()=>setModal(null)}>
