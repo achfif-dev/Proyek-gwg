@@ -141,8 +141,22 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     const tokoIds = [...new Set(expired.map(k=>k.tokoId))];
     tokoIds.forEach(tid => {
       recalcTokoStok(tid, updatedKontrol);
-      const entri = updatedKontrol.find(k=>k.tokoId===tid && expiredIds.has(k.id));
-      if (entri) syncProdukIdsDariStokKontrol(tid, entri);
+      // ✅ FIX (audit): sebelumnya pakai .find() — cuma mengambil SATU entri
+      // expired pertama yang ketemu untuk toko ini. Kalau sebuah toko punya
+      // LEBIH DARI SATU pengajuan Kontrol Bulanan yang expired bersamaan
+      // dalam batch auto-approve yang sama (mis. Admin tidak buka app
+      // berminggu-minggu, beberapa bulan kontrol dari toko yang sama semua
+      // lewat 24 jam sekaligus), ceklis "Produk yang Dijual" di Master Toko
+      // cuma disinkron dari SALAH SATU entri saja — perubahan produk dari
+      // entri expired lainnya untuk toko itu diam-diam terlewat. Sekarang
+      // proses SEMUA entri expired milik toko ini, urut tanggal (sama
+      // seperti urutan kronologis yang dipakai recalcTokoStok), supaya
+      // hasil akhirnya konsisten seperti kalau tiap entri disetujui manual
+      // satu-satu secara berurutan.
+      const entriesForToko = updatedKontrol
+        .filter(k => k.tokoId===tid && expiredIds.has(k.id))
+        .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
+      entriesForToko.forEach(entri => syncProdukIdsDariStokKontrol(tid, entri));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [db.kontrol]);
