@@ -21,6 +21,21 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
     else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
   }
   function deleteSelected() {
+    // ✅ FIX (audit — sama seperti kasus Produk): menghapus Rute yang masih
+    // dipakai Toko tidak akan error, tapi toko-toko itu jadi "nyasar" —
+    // ruteId-nya menunjuk ke rute yang sudah tidak ada. Akibatnya: nama
+    // rute/wilayah toko itu tampil "—" di Master Toko, DAN penjualannya
+    // otomatis hilang dari rekap per-Rute/per-Wilayah (Dashboard, Tab
+    // Rekap) — walau tetap terhitung normal di Total Pendapatan
+    // keseluruhan (useAnalytics tidak butuh rute valid untuk itu). Beda
+    // dari kasus Produk, ini TIDAK menghilangkan data dari laporan utama,
+    // tapi bikin rekap regional pincang tanpa peringatan apa pun.
+    const ruteDipakai = selectedIds.filter(id => (db.toko||[]).some(t=>t.ruteId===id));
+    if (ruteDipakai.length > 0) {
+      const nama = ruteDipakai.map(id => (db.rute||[]).find(r=>r.id===id)?.nama || id).join(", ");
+      alert(`Tidak bisa menghapus ${ruteDipakai.length} rute karena masih dipakai toko: ${nama}.\n\nPindahkan atau hapus toko-toko di rute itu dulu, atau lewati rute ini dari pilihan.`);
+      return;
+    }
     if (!confirm(`Hapus ${selectedIds.length} rute terpilih? Tindakan ini permanen.`)) return;
     selectedIds.forEach(id => deleteRecord("rute", id));
     setSelectedIds([]);
@@ -77,6 +92,7 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
   }
 
   const wilayahOpts = useMemo(() => sortByNama(db.wilayah).map(w=>({ value:w.id, label:w.nama })), [db.wilayah]);
+  const ruteOptsGabung = useMemo(() => sorted.map(r=>({ value:r.id, label:`${r.nama} (${r.wilayahNama})` })), [sorted]);
 
   const cols = [
     { key:"id",          label:"ID",         render:v=><Badge color={T.teal}>{v}</Badge> },
@@ -85,6 +101,74 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
     { key:"jumlahToko",  label:"Toko",       render:v=><span style={{ fontWeight:700, color:T.blue }}>{v}</span> },
     { key:"keterangan",  label:"Keterangan" },
   ];
+
+  function hapusRute(id) {
+    const r = (db.rute||[]).find(x=>x.id===id);
+    const namaRute = r?.nama || id;
+    const tokoTerdampak = (db.toko||[]).filter(t=>t.ruteId===id).length;
+    if (tokoTerdampak > 0) {
+      alert(`Rute "${namaRute}" masih dipakai oleh ${tokoTerdampak} toko. Pindahkan atau hapus toko-toko itu dulu — kalau tidak, penjualan mereka akan diam-diam hilang dari rekap per-Rute/per-Wilayah walau tetap tercatat di Total Pendapatan keseluruhan.`);
+      return;
+    }
+    if (!confirm(`Hapus rute "${namaRute}"?`)) return;
+    deleteRecord("rute", id);
+  }
+
+  const [gabungModal, setGabungModal] = useState(false);
+  const [gabungSumberId, setGabungSumberId] = useState("");
+  const [gabungTujuanId, setGabungTujuanId] = useState("");
+
+  function openGabungRute() {
+    setGabungSumberId(""); setGabungTujuanId("");
+    setGabungModal(true);
+  }
+  // ✅ FITUR: Gabungkan Rute — dipakai kalau ternyata 2 rute yang tadinya
+  // dianggap beda ternyata sama (mis. salah eja/duplikat saat input awal),
+  // atau memang ingin disatukan karena area kerjanya digabung. Beda dari
+  // sekadar Hapus (yang sekarang diblokir kalau rute masih dipakai toko —
+  // lihat hapusRute di bawah): ini memindahkan SEMUA toko & Penjualan Luar
+  // Rute dari rute sumber ke rute tujuan dulu, baru menghapus rute sumber.
+  // Karena entri Kontrol Bulanan TIDAK menyimpan ruteId sendiri (rute-nya
+  // selalu diturunkan dari toko.ruteId saat laporan dibaca — lihat
+  // enrichKontrol di useAnalytics.js), seluruh riwayat kontrol toko yang
+  // dipindah otomatis "ikut" ke rute tujuan di semua laporan tanpa perlu
+  // diedit satu-satu. Penjualan Luar Rute BEDA — menyimpan ruteId/wilayahId
+  // sendiri secara eksplisit (karena tidak terikat toko tertentu), jadi
+  // record-recordnya harus ikut dipindah manual di sini.
+  function submitGabungRute() {
+    if (!gabungSumberId || !gabungTujuanId) return alert("Pilih rute sumber & rute tujuan");
+    if (gabungSumberId === gabungTujuanId) return alert("Rute sumber & tujuan tidak boleh sama");
+    const ruteSumber = (db.rute||[]).find(r=>r.id===gabungSumberId);
+    const ruteTujuan = (db.rute||[]).find(r=>r.id===gabungTujuanId);
+    if (!ruteSumber || !ruteTujuan) return;
+
+    const tokoTerdampak = (db.toko||[]).filter(t=>t.ruteId===gabungSumberId);
+    const luarTerdampak = (db.penjualanLuar||[]).filter(pl=>pl.ruteId===gabungSumberId);
+
+    // Cek toko yang namanya bakal bentrok di rute tujuan setelah digabung —
+    // sekadar peringatan (tidak diblokir), sama seperti pendekatan yang
+    // sudah dipakai di Import Toko untuk kasus duplikat nama.
+    const tokoTujuanNama = new Set((db.toko||[]).filter(t=>t.ruteId===gabungTujuanId).map(t=>normTxt(t.nama)));
+    const dup = tokoTerdampak.filter(t=>tokoTujuanNama.has(normTxt(t.nama)));
+
+    let pesan = `Gabungkan rute "${ruteSumber.nama}" ke "${ruteTujuan.nama}"?\n\n`
+      + `• ${tokoTerdampak.length} toko akan dipindah ke rute tujuan.\n`
+      + (luarTerdampak.length ? `• ${luarTerdampak.length} catatan Penjualan Luar Rute ikut dipindah.\n` : "")
+      + `• Rute "${ruteSumber.nama}" akan DIHAPUS setelah semua data dipindah.\n`
+      + `• Riwayat Kontrol Bulanan & semua laporan otomatis mengikuti (tidak perlu diedit manual).`;
+    if (dup.length > 0) {
+      pesan += `\n\n⚠️ ${dup.length} nama toko bentrok dengan toko yang sudah ada di rute tujuan: ${dup.map(t=>t.nama).join(", ")}. Toko-toko ini tetap akan dipindah (dianggap toko berbeda) — periksa manual sesudahnya kalau perlu digabung juga.`;
+    }
+    if (!confirm(pesan)) return;
+
+    tokoTerdampak.forEach(t => updateRecord("toko", t.id, { ruteId: gabungTujuanId }));
+    // wilayahId ikut disamakan ke wilayah rute tujuan, jaga-jaga kalau rute
+    // sumber & tujuan ternyata beda wilayah (merge lintas wilayah).
+    luarTerdampak.forEach(pl => updateRecord("penjualanLuar", pl.id, { ruteId: gabungTujuanId, wilayahId: ruteTujuan.wilayahId }));
+    deleteRecord("rute", gabungSumberId);
+    setGabungModal(false);
+    alert(`Selesai. ${tokoTerdampak.length} toko${luarTerdampak.length ? ` & ${luarTerdampak.length} penjualan luar rute` : ""} dipindah ke "${ruteTujuan.nama}".`);
+  }
 
   return (
     <div>
@@ -95,6 +179,7 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
         </div>
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
           <ExportMenu data={data} columns={cols} title="Data Rute" filename="rute" />
+          <Btn variant="secondary" onClick={openGabungRute} icon={Icon.shuffle}>Gabungkan Rute</Btn>
           <Btn onClick={openAdd} icon={Icon.add}>Tambah Rute</Btn>
         </div>
       </div>
@@ -109,7 +194,7 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
         onDeleteSelected={deleteSelected} label="rute" />
       <Card padding={0}>
         <Table columns={cols} data={data} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus rute ini?")) deleteRecord("rute",id); }}
+          onDelete={hapusRute}
           selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
       {modal && (
@@ -120,6 +205,21 @@ function TabRuteImpl({ db, addRecord, updateRecord, deleteRecord }) {
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
             <Btn onClick={submit}>{modal==="add"?"Simpan":"Update"}</Btn>
+          </div>
+        </Modal>
+      )}
+      {gabungModal && (
+        <Modal title={<><Icon.shuffle size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Gabungkan Rute</>} onClose={()=>setGabungModal(false)}>
+          <div style={{ fontSize:12, color:T.gray500, marginBottom:12 }}>
+            Semua toko & Penjualan Luar Rute di rute sumber dipindah ke rute tujuan, lalu rute sumber dihapus. Riwayat Kontrol Bulanan otomatis ikut — tidak perlu diedit manual.
+          </div>
+          <SearchableSelect label="Rute Sumber (akan dihapus)" value={gabungSumberId} onChange={setGabungSumberId}
+            options={ruteOptsGabung} required placeholder="Pilih rute yang mau digabungkan..." />
+          <SearchableSelect label="Rute Tujuan (tetap ada)" value={gabungTujuanId} onChange={setGabungTujuanId}
+            options={ruteOptsGabung.filter(o=>o.value!==gabungSumberId)} required placeholder="Pilih rute tujuan..." />
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
+            <Btn variant="secondary" onClick={()=>setGabungModal(false)}>Batal</Btn>
+            <Btn onClick={submitGabungRute}>Gabungkan</Btn>
           </div>
         </Modal>
       )}
