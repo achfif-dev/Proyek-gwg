@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, Table } from "../../components/ui";
+import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, Input, Modal, SearchableSelect, Table } from "../../components/ui";
 import { genUniqueId, normTxt, sortByNama } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
@@ -46,10 +46,66 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
         (db.rute||[]).filter(r => r.wilayahId === dup.id).forEach(r => {
           updateRecord("rute", r.id, { wilayahId: utama.id });
         });
+        // ✅ FIX (audit): Penjualan Luar Rute menyimpan wilayahId-nya SENDIRI
+        // secara langsung (tidak selalu lewat rute — field ruteId di sana
+        // opsional), jadi tidak ikut ter-alihkan otomatis lewat pemindahan
+        // rute di atas. Sebelumnya record-record ini dibiarkan menunjuk ke
+        // wilayah duplikat yang baru saja dihapus — diam-diam "nyasar" dan
+        // hilang dari rekap per-Wilayah setelahnya.
+        (db.penjualanLuar||[]).filter(pl => pl.wilayahId === dup.id).forEach(pl => {
+          updateRecord("penjualanLuar", pl.id, { wilayahId: utama.id });
+        });
         deleteRecord("wilayah", dup.id);
       });
     });
     alert("Wilayah duplikat berhasil digabungkan.");
+  }
+
+  const [gabungModal, setGabungModal] = useState(false);
+  const [gabungSumberId, setGabungSumberId] = useState("");
+  const [gabungTujuanId, setGabungTujuanId] = useState("");
+
+  function openGabungWilayah() {
+    setGabungSumberId(""); setGabungTujuanId("");
+    setGabungModal(true);
+  }
+  // ✅ FITUR: Gabungkan Wilayah (manual, nama BOLEH beda) — beda dari
+  // mergeDuplikat() di atas yang cuma otomatis-mendeteksi nama PERSIS sama.
+  // Dipakai kalau dua wilayah dengan nama berbeda memang ingin disatukan
+  // (mis. reorganisasi area kerja). Memindahkan semua Rute & Penjualan Luar
+  // Rute dari wilayah sumber ke tujuan dulu, baru menghapus wilayah sumber
+  // — toko ikut otomatis karena wilayah toko selalu diturunkan dari
+  // rute.wilayahId, tidak perlu disentuh terpisah.
+  function submitGabungWilayah() {
+    if (!gabungSumberId || !gabungTujuanId) return alert("Pilih wilayah sumber & wilayah tujuan");
+    if (gabungSumberId === gabungTujuanId) return alert("Wilayah sumber & tujuan tidak boleh sama");
+    const wilSumber = (db.wilayah||[]).find(w=>w.id===gabungSumberId);
+    const wilTujuan = (db.wilayah||[]).find(w=>w.id===gabungTujuanId);
+    if (!wilSumber || !wilTujuan) return;
+
+    const ruteTerdampak = (db.rute||[]).filter(r=>r.wilayahId===gabungSumberId);
+    const luarTerdampak = (db.penjualanLuar||[]).filter(pl=>pl.wilayahId===gabungSumberId);
+
+    // Cek nama rute yang bakal bentrok di wilayah tujuan setelah digabung —
+    // sekadar peringatan (tidak diblokir), sama seperti pendekatan yang
+    // sudah dipakai di Gabungkan Rute untuk kasus duplikat nama toko.
+    const ruteTujuanNama = new Set((db.rute||[]).filter(r=>r.wilayahId===gabungTujuanId).map(r=>normTxt(r.nama)));
+    const dup = ruteTerdampak.filter(r=>ruteTujuanNama.has(normTxt(r.nama)));
+
+    let pesan = `Gabungkan wilayah "${wilSumber.nama}" ke "${wilTujuan.nama}"?\n\n`
+      + `• ${ruteTerdampak.length} rute (beserta seluruh toko di dalamnya) akan dipindah ke wilayah tujuan.\n`
+      + (luarTerdampak.length ? `• ${luarTerdampak.length} catatan Penjualan Luar Rute ikut dipindah.\n` : "")
+      + `• Wilayah "${wilSumber.nama}" akan DIHAPUS setelah semua data dipindah.`;
+    if (dup.length > 0) {
+      pesan += `\n\n⚠️ ${dup.length} nama rute bentrok dengan rute yang sudah ada di wilayah tujuan: ${dup.map(r=>r.nama).join(", ")}. Rute-rute ini tetap akan dipindah (dianggap rute berbeda) — periksa manual sesudahnya kalau perlu digabung juga (pakai tombol Gabungkan Rute).`;
+    }
+    if (!confirm(pesan)) return;
+
+    ruteTerdampak.forEach(r => updateRecord("rute", r.id, { wilayahId: gabungTujuanId }));
+    luarTerdampak.forEach(pl => updateRecord("penjualanLuar", pl.id, { wilayahId: gabungTujuanId }));
+    deleteRecord("wilayah", gabungSumberId);
+    setGabungModal(false);
+    alert(`Selesai. ${ruteTerdampak.length} rute${luarTerdampak.length ? ` & ${luarTerdampak.length} penjualan luar rute` : ""} dipindah ke "${wilTujuan.nama}".`);
   }
 
   function toggleSelect(id) {
@@ -60,6 +116,16 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
     else setSelectedIds(prev => [...new Set([...prev, ...rows.map(r=>r.id)])]);
   }
   function deleteSelected() {
+    // ✅ FIX (audit — sama seperti kasus Rute/Produk): wilayah yang masih
+    // dipakai Rute (dan lewat rute itu, Toko) kalau dihapus akan bikin
+    // rute-rute itu "nyasar" — penjualan tokonya diam-diam hilang dari
+    // rekap per-Wilayah walau tetap terhitung di Total Pendapatan.
+    const wilayahDipakai = selectedIds.filter(id => (db.rute||[]).some(r=>r.wilayahId===id));
+    if (wilayahDipakai.length > 0) {
+      const nama = wilayahDipakai.map(id => (db.wilayah||[]).find(w=>w.id===id)?.nama || id).join(", ");
+      alert(`Tidak bisa menghapus ${wilayahDipakai.length} wilayah karena masih dipakai rute: ${nama}.\n\nPindahkan atau hapus rute-rute di wilayah itu dulu, atau lewati wilayah ini dari pilihan.`);
+      return;
+    }
     if (!confirm(`Hapus ${selectedIds.length} wilayah terpilih? Tindakan ini permanen.`)) return;
     selectedIds.forEach(id => deleteRecord("wilayah", id));
     setSelectedIds([]);
@@ -68,6 +134,7 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
   // Urutkan Master Wilayah berdasarkan abjad nama wilayah, otomatis
   // mengikutkan data baru kapan pun ditambahkan.
   const sorted = useMemo(() => sortByNama(db.wilayah), [db.wilayah]);
+  const wilayahOptsGabung = useMemo(() => sorted.map(w=>({ value:w.id, label:w.nama })), [sorted]);
 
   const data = useMemo(() => sorted.filter(w =>
     !filter.q || w.nama.toLowerCase().includes(filter.q.toLowerCase())
@@ -123,6 +190,18 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
     { key:"jumlahToko",label:"Toko",       render: v=><Badge color={T.green}>{v} toko</Badge> },
   ];
 
+  function hapusWilayah(id) {
+    const w = (db.wilayah||[]).find(x=>x.id===id);
+    const namaWilayah = w?.nama || id;
+    const ruteTerdampak = (db.rute||[]).filter(r=>r.wilayahId===id).length;
+    if (ruteTerdampak > 0) {
+      alert(`Wilayah "${namaWilayah}" masih dipakai oleh ${ruteTerdampak} rute. Pindahkan atau hapus rute-rute itu dulu — kalau tidak, penjualan toko di rute tersebut akan diam-diam hilang dari rekap per-Wilayah walau tetap tercatat di Total Pendapatan keseluruhan.`);
+      return;
+    }
+    if (!confirm(`Hapus wilayah "${namaWilayah}"?`)) return;
+    deleteRecord("wilayah", id);
+  }
+
   return (
     <div>
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
@@ -137,6 +216,7 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
               Gabungkan {totalDup} Duplikat
             </Btn>
           )}
+          <Btn variant="secondary" onClick={openGabungWilayah} icon={Icon.shuffle}>Gabungkan Wilayah</Btn>
           <Btn onClick={openAdd} icon={Icon.add}>Tambah Wilayah</Btn>
         </div>
       </div>
@@ -157,7 +237,7 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
         onDeleteSelected={deleteSelected} label="wilayah" />
       <Card padding={0}>
         <Table columns={cols} data={enriched} onEdit={openEdit}
-          onDelete={id=>{ if(confirm("Hapus wilayah ini?")) deleteRecord("wilayah",id); }}
+          onDelete={hapusWilayah}
           selectedIds={selectedIds} onToggleSelect={toggleSelect} onToggleSelectAll={toggleSelectAll} />
       </Card>
       {modal && (
@@ -167,6 +247,21 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
             <Btn onClick={submit}>{modal==="add"?"Simpan":"Update"}</Btn>
+          </div>
+        </Modal>
+      )}
+      {gabungModal && (
+        <Modal title={<><Icon.shuffle size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Gabungkan Wilayah</>} onClose={()=>setGabungModal(false)}>
+          <div style={{ fontSize:12, color:T.gray500, marginBottom:12 }}>
+            Semua rute (beserta toko di dalamnya) & Penjualan Luar Rute di wilayah sumber dipindah ke wilayah tujuan, lalu wilayah sumber dihapus.
+          </div>
+          <SearchableSelect label="Wilayah Sumber (akan dihapus)" value={gabungSumberId} onChange={setGabungSumberId}
+            options={wilayahOptsGabung} required placeholder="Pilih wilayah yang mau digabungkan..." />
+          <SearchableSelect label="Wilayah Tujuan (tetap ada)" value={gabungTujuanId} onChange={setGabungTujuanId}
+            options={wilayahOptsGabung.filter(o=>o.value!==gabungSumberId)} required placeholder="Pilih wilayah tujuan..." />
+          <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
+            <Btn variant="secondary" onClick={()=>setGabungModal(false)}>Batal</Btn>
+            <Btn onClick={submitGabungWilayah}>Gabungkan</Btn>
           </div>
         </Modal>
       )}
