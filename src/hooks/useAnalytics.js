@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { naturalCompare } from "../lib/format";
-import { hitungHppPeriode } from "../lib/neracaHelpers";
+import { hitungHppPeriode, periodeBounds, hitungJumlahBulanPeriode, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode } from "../lib/neracaHelpers";
 
 // ─────────────────────────────────────────────────────────────────────────
 // ⚡ OPTIMISASI PERFORMA (setelah laporan "input kontrol masih terasa stuck"
@@ -151,9 +151,52 @@ export function useAnalytics(db) {
     // ikuti metodeHpp yang sama seperti Tab Bagi Hasil, pakai helper
     // hitungHppPeriode yang sama juga (Laba Kotor Riil = pendapatan - HPP).
     const metodeHppGlobal = db.bagiHasilConfig?.metodeHpp === "otomatis" ? "otomatis" : "manual";
-    const labaBersih = metodeHppGlobal === "otomatis"
-      ? Math.max(hitungHppPeriode({ rows: enrichKontrol, luarRows: enrichLuarRute }, produkArr).labaKotorRiil, 0)
-      : totalRev * (marginPctGlobal/100);
+
+    // ✅ FIX PARITAS RUMUS (audit lanjutan): setelah fix di atas, labaBersih
+    // di Dashboard/Rekap SUDAH ikut metodeHpp yang benar, tapi rumusnya
+    // sendiri MASIH beda dari Tab Bagi Hasil (yang jadi acuan pembagian uang
+    // ke tiap pihak) — di sini cuma "Pendapatan (- HPP) × sisanya", tanpa
+    // pernah mengurangi Beban Usaha, Amortisasi Aset, atau Dana Cadangan
+    // sama sekali. Akibatnya "Laba Bersih Estimasi" di Dashboard SELALU
+    // lebih besar dari angka riil yang benar-benar dibagi di Tab Bagi Hasil.
+    //
+    // Sekarang dipakai rumus yang SAMA PERSIS seperti `akuntansi` di
+    // TabBagiHasil.jsx, di-scope YTD (Year-To-Date, 1 Jan tahun berjalan s/d
+    // hari ini) — bukan periode custom seperti di Tab Bagi Hasil, karena
+    // totalRev di sini memang scope-nya "akumulasi tahun berjalan" (lihat
+    // KONTROL_LIVE_YEARS di useDB.js: hanya tahun ini yang live-sync
+    // default). Beban Usaha bulanan & Amortisasi di-scale sesuai jumlah
+    // bulan yang sudah lewat tahun ini (jumlahBulanYtd), persis logika
+    // proration yang sama dipakai TabBagiHasil untuk mode "Tahunan".
+    // Catatan: kalau admin secara manual memuat tahun-tahun lain juga (lihat
+    // menu Backup & Restore → Muat Tahun Lain), kontrolArr bisa memuat lebih
+    // dari 1 tahun sekaligus — asumsi "YTD tahun berjalan" di sini jadi
+    // kurang presisi untuk kasus itu (edge case, bukan penggunaan default).
+    const todayYmd = new Date().toISOString().slice(0,10);
+    const boundsYtd = periodeBounds("tahunan", null, String(new Date().getFullYear()), null, todayYmd);
+    boundsYtd.end = todayYmd; // potong di hari ini, bukan 31 Des (belum lewat)
+    const jumlahBulanYtd = hitungJumlahBulanPeriode(boundsYtd);
+    const bebanUsahaListGlobal = Array.isArray(db.bagiHasilConfig?.bebanUsaha)
+      ? db.bagiHasilConfig.bebanUsaha : migrasiBebanUsahaLama(db.bagiHasilConfig);
+    const bebanUsahaTotalYtd = bebanUsahaListGlobal.reduce((s,b) => {
+      const frekuensi = b.frekuensi === "sekali" ? "sekali" : "bulanan";
+      const multiplier = frekuensi === "sekali" ? 1 : jumlahBulanYtd;
+      return s + (Number(b.nominal)||0) * multiplier;
+    }, 0);
+    const biayaAmortisasiYtd = hitungAmortisasiPeriode(db.asetAmortisasi||[], boundsYtd).total;
+    const totalBiayaYtd = bebanUsahaTotalYtd + biayaAmortisasiYtd;
+
+    let labaKotorGlobal, labaSebelumCadanganGlobal;
+    if (metodeHppGlobal === "otomatis") {
+      labaKotorGlobal = totalRev - hitungHppPeriode({ rows: enrichKontrol, luarRows: enrichLuarRute }, produkArr).totalHpp;
+      labaSebelumCadanganGlobal = Math.max(labaKotorGlobal - totalBiayaYtd, 0);
+    } else {
+      labaKotorGlobal = totalRev - totalBiayaYtd;
+      labaSebelumCadanganGlobal = Math.max(labaKotorGlobal * (marginPctGlobal/100), 0);
+    }
+    const terjualTotalYtd = enrichKontrol.reduce((s,k) => s+k.totalTerjual, 0) + enrichLuarRute.reduce((s,k)=>s+k.totalTerjual, 0);
+    const danaCadanganYtd = hitungDanaCadanganPeriode(terjualTotalYtd, db.bagiHasilConfig?.danaCadangan);
+    const labaBersih = Math.max(labaSebelumCadanganGlobal - danaCadanganYtd, 0);
 
     // Jumlah toko per rute & per wilayah — dihitung 1x scan toko (bukan
     // filter toko berulang per wilayah seperti sebelumnya).
