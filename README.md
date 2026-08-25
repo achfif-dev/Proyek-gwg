@@ -1,4 +1,4 @@
-GWG Super App — Sistem Manajemen Konsinyasi (White Label)
+# GWG Super App — Sistem Manajemen Konsinyasi (White Label)
 
 **Sistem Manajemen Konsinyasi** untuk mengelola wilayah, rute, toko, produk, kontrol kunjungan bulanan, stok, laporan, dan bagi hasil — dalam satu aplikasi web yang bisa diakses dari HP maupun komputer, bisa diinstall seperti aplikasi native, dan tetap berfungsi walau sinyal lemah/offline.
 
