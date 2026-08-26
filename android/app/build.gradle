@@ -7,8 +7,13 @@ android {
         applicationId "com.gwg.superapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        // ✅ Bisa dioverride dari CI (`-PversionCode=... -PversionName=...`)
+        // supaya tiap build release di GitHub Actions otomatis dapat nomor
+        // versi yang naik (pakai GITHUB_RUN_NUMBER), tanpa perlu edit file
+        // ini manual tiap kali mau rilis. Kalau tidak dioverride (build
+        // lokal/debug biasa), tetap jatuh ke nilai default di bawah.
+        versionCode project.hasProperty('versionCode') ? (project.versionCode as Integer) : 1
+        versionName project.hasProperty('versionName') ? project.versionName : "1.0"
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
         aaptOptions {
              // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
@@ -23,12 +28,28 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // ✅ Signing untuk build RELEASE (APK/AAB yang bisa dipasang/dirilis,
+        // beda dari debug yang cuma untuk testing). Nilai-nilainya SENGAJA
+        // tidak di-hardcode di sini (jangan pernah commit keystore/password
+        // asli ke repo) — semua diambil dari environment variable yang
+        // disuntikkan oleh workflow GitHub Actions dari GitHub Secrets
+        // (lihat .github/workflows/release-build.yml). Kalau env var belum
+        // di-set (mis. build lokal biasa tanpa niat rilis), fallback ke
+        // string kosong supaya Gradle tidak error saat sync — build release
+        // sungguhan cuma akan berjalan di CI yang sudah punya secret-nya.
+        release {
+            storeFile file(System.getenv("RELEASE_KEYSTORE_PATH") ?: "release.keystore")
+            storePassword System.getenv("RELEASE_KEYSTORE_PASSWORD") ?: ""
+            keyAlias System.getenv("RELEASE_KEY_ALIAS") ?: ""
+            keyPassword System.getenv("RELEASE_KEY_PASSWORD") ?: ""
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
+            signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
         }
