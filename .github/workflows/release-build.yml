@@ -1,0 +1,124 @@
+name: Build Signed Release APK/AAB
+
+# Dipicu manual dari tab Actions ("Run workflow"). Butuh 4 secret sudah
+# tersimpan lebih dulu (lihat workflow "Generate Release Keystore").
+# Hasil akhirnya APK + AAB yang SUDAH DITANDATANGANI (siap diinstal
+# langsung / diupload ke Play Console), beda dari build debug biasa
+# yang cuma untuk testing dan tidak bisa dipakai untuk rilis ke user.
+on:
+  workflow_dispatch:
+    inputs:
+      versionName:
+        description: "Nomor versi yang tampil ke user (mis. 1.1.0). Kosongkan untuk pakai default di build.gradle."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  build-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cek 4 secret keystore sudah ada
+        run: |
+          missing=0
+          [ -z "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" ] && echo "❌ RELEASE_KEYSTORE_BASE64 belum di-set" && missing=1
+          [ -z "${{ secrets.RELEASE_KEYSTORE_PASSWORD }}" ] && echo "❌ RELEASE_KEYSTORE_PASSWORD belum di-set" && missing=1
+          [ -z "${{ secrets.RELEASE_KEY_ALIAS }}" ] && echo "❌ RELEASE_KEY_ALIAS belum di-set" && missing=1
+          [ -z "${{ secrets.RELEASE_KEY_PASSWORD }}" ] && echo "❌ RELEASE_KEY_PASSWORD belum di-set" && missing=1
+          if [ "$missing" = "1" ]; then
+            echo
+            echo "Jalankan dulu workflow \"Generate Release Keystore\", lalu simpan"
+            echo "4 secret di atas lewat Settings → Secrets and variables → Actions."
+            exit 1
+          fi
+
+      - name: Checkout kode
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java (dibutuhkan Gradle/Android)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies npm
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build web app (Vite)
+        run: npm run build
+
+      - name: Tambahkan platform Android (Capacitor)
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          else
+            npx cap sync android
+          fi
+
+      - name: Sinkronkan aset web ke Android
+        run: npx cap sync android
+
+      - name: Decode keystore release dari secret
+        working-directory: android/app
+        run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
+
+      - name: Build APK release (signed)
+        working-directory: android
+        env:
+          RELEASE_KEYSTORE_PATH: release.keystore
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          EXTRA_ARGS=""
+          if [ -n "${{ github.event.inputs.versionName }}" ]; then
+            EXTRA_ARGS="-PversionName=${{ github.event.inputs.versionName }}"
+          fi
+          ./gradlew assembleRelease -PversionCode=${{ github.run_number }} $EXTRA_ARGS
+
+      - name: Build AAB release (signed) — untuk upload ke Play Console
+        working-directory: android
+        env:
+          RELEASE_KEYSTORE_PATH: release.keystore
+          RELEASE_KEYSTORE_PASSWORD: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          EXTRA_ARGS=""
+          if [ -n "${{ github.event.inputs.versionName }}" ]; then
+            EXTRA_ARGS="-PversionName=${{ github.event.inputs.versionName }}"
+          fi
+          ./gradlew bundleRelease -PversionCode=${{ github.run_number }} $EXTRA_ARGS
+
+      - name: Hapus keystore dari workspace (jangan sampai ikut ke artifact)
+        if: always()
+        working-directory: android/app
+        run: rm -f release.keystore
+
+      - name: Upload APK release sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gwg-superapp-release-apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Upload AAB release sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gwg-superapp-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
