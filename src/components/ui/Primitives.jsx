@@ -133,6 +133,13 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
               color:selected.extraBadge.color, background:selected.extraBadge.bg,
               border:`1px solid ${selected.extraBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{selected.extraBadge.label}</span>
           )}
+          {/* Badge riwayat "Pernah Bermasalah" — selalu tampil kalau ada, terlepas dari
+              status sudahDikontrol/extraBadge di atas (bukan badge yang saling meniadakan) */}
+          {selected?.secondaryBadge && (
+            <span title={selected.secondaryBadge.title||""} style={{ flexShrink:0, fontSize:10, fontWeight:700,
+              color:selected.secondaryBadge.color, background:selected.secondaryBadge.bg,
+              border:`1px solid ${selected.secondaryBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{selected.secondaryBadge.label}</span>
+          )}
         </span>
         <span style={{ color:T.gray400, fontSize:11, flexShrink:0 }}>{open ? "▲" : "▼"}</span>
       </div>
@@ -156,18 +163,27 @@ export function SearchableSelect({ label, value, onChange, options, required, pl
                 onMouseEnter={e=>e.currentTarget.style.background=T.gray50}
                 onMouseLeave={e=>e.currentTarget.style.background = o.value===value ? T.greenLt : T.white}>
                 <span style={{ minWidth:0, wordBreak:"break-word" }}>{o.label}</span>
-                {/* ✅ Badge: toko ini sudah ada entri kontrol pada tanggal yang sedang dipilih di form */}
-                {o.sudahDikontrol && (
-                  <span title="Sudah dikontrol pada tanggal ini" style={{ flexShrink:0, fontSize:10, fontWeight:700,
-                    color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap", display:"inline-flex", alignItems:"center", gap:2 }}><Icon.check size={9} strokeWidth={2.5}/>Sudah</span>
-                )}
-                {/* Badge kedua (generik) — hanya tampil kalau badge "Sudah" di atas tidak aktif,
-                    supaya tiap toko maksimal 1 badge saja di daftar (tidak berantakan) */}
-                {!o.sudahDikontrol && o.extraBadge && (
-                  <span title={o.extraBadge.title||""} style={{ flexShrink:0, fontSize:10, fontWeight:700,
-                    color:o.extraBadge.color, background:o.extraBadge.bg,
-                    border:`1px solid ${o.extraBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{o.extraBadge.label}</span>
-                )}
+                <span style={{ display:"flex", alignItems:"center", gap:4, flexShrink:0, flexWrap:"wrap", justifyContent:"flex-end" }}>
+                  {/* ✅ Badge: toko ini sudah ada entri kontrol pada tanggal yang sedang dipilih di form */}
+                  {o.sudahDikontrol && (
+                    <span title="Sudah dikontrol pada tanggal ini" style={{ flexShrink:0, fontSize:10, fontWeight:700,
+                      color:T.green, background:T.greenLt, border:`1px solid ${T.green}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap", display:"inline-flex", alignItems:"center", gap:2 }}><Icon.check size={9} strokeWidth={2.5}/>Sudah</span>
+                  )}
+                  {/* Badge kedua (generik) — hanya tampil kalau badge "Sudah" di atas tidak aktif,
+                      supaya tiap toko maksimal 1 badge siklus-berjalan saja (tidak berantakan) */}
+                  {!o.sudahDikontrol && o.extraBadge && (
+                    <span title={o.extraBadge.title||""} style={{ flexShrink:0, fontSize:10, fontWeight:700,
+                      color:o.extraBadge.color, background:o.extraBadge.bg,
+                      border:`1px solid ${o.extraBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{o.extraBadge.label}</span>
+                  )}
+                  {/* Badge riwayat "Pernah Bermasalah" — selalu tampil kalau ada, berdampingan
+                      dengan badge "Sudah"/extraBadge di atas, bukan menggantikannya */}
+                  {o.secondaryBadge && (
+                    <span title={o.secondaryBadge.title||""} style={{ flexShrink:0, fontSize:10, fontWeight:700,
+                      color:o.secondaryBadge.color, background:o.secondaryBadge.bg,
+                      border:`1px solid ${o.secondaryBadge.color}55`, borderRadius:99, padding:"1px 6px", whiteSpace:"nowrap" }}>{o.secondaryBadge.label}</span>
+                  )}
+                </span>
               </div>
             ))}
             {hiddenCount > 0 && (
