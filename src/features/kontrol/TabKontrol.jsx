@@ -1708,7 +1708,19 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
           }
         }
       }
-      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol, extraBadge };
+      // ✅ Badge "Pernah Bermasalah" — independen dari extraBadge di atas (yang
+      // fokus ke siklus berjalan): ini menandai toko yang di RIWAYAT kontrolnya
+      // (kapan pun, siklus mana pun) pernah punya entri berstatus "masalah"
+      // (Bermasalah), supaya petugas tetap waspada meski toko itu sudah
+      // "Sudah"/berhasil dikontrol di siklus berjalan. Makanya ditampilkan
+      // berdampingan, bukan menggantikan sudahDikontrol/extraBadge.
+      const pernahBermasalah = kontrolToko.some(k =>
+        k.catatanStatus === "masalah" && !(modal==="edit" && k.id===form.id)
+      );
+      const secondaryBadge = pernahBermasalah
+        ? { label: "Pernah Bermasalah", title: "Toko ini pernah tercatat berstatus Bermasalah pada kontrol sebelumnya", color: CATATAN_STATUS.masalah.color, bg: CATATAN_STATUS.masalah.bg }
+        : null;
+      return { value:t.id, label: `${t.nama}${statusBadge}${t.kode?` (${t.kode})` :""}`, sudahDikontrol, extraBadge, secondaryBadge };
     });
   }, [db.toko, db.rute, kontrolByTokoMap, ruteByIdForModal, modalFilter, form.tanggal, form.id, modal, isSalesRestricted, salesWilayahId, siklusRangePerWilayah]);
 
