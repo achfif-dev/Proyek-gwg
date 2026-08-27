@@ -77,6 +77,25 @@ jobs:
         working-directory: android/app
         run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
 
+      - name: Verifikasi keystore & password (debug, sebelum build APK)
+        working-directory: android/app
+        run: |
+          echo "Ukuran file release.keystore setelah decode: $(wc -c < release.keystore) bytes"
+          echo "SHA-256 file release.keystore: $(sha256sum release.keystore | cut -d' ' -f1)"
+          echo
+          echo "Mencoba baca alias dari keystore pakai RELEASE_KEYSTORE_PASSWORD +"
+          echo "RELEASE_KEY_ALIAS + RELEASE_KEY_PASSWORD yang tersimpan di secret..."
+          echo "(kalau salah satu dari 3 nilai ini tidak cocok, step ini GAGAL di"
+          echo "sini dengan pesan yang jelas — jauh lebih cepat & lebih jelas"
+          echo "daripada nunggu build APK 2 menit dulu baru gagal.)"
+          keytool -list -v \
+            -keystore release.keystore \
+            -alias "${{ secrets.RELEASE_KEY_ALIAS }}" \
+            -storepass "${{ secrets.RELEASE_KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.RELEASE_KEY_PASSWORD }}" \
+            | grep -E "Alias name|Entry type|SHA256:|Valid from"
+          echo "✅ RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, dan RELEASE_KEY_PASSWORD cocok dengan keystore — lanjut build."
+
       - name: Build APK release (signed)
         working-directory: android
         env:
