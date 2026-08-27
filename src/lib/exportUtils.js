@@ -385,7 +385,7 @@ export async function exportPDF(data, columns, title, filename) {
   <div class="footer">
     <span>${BRAND_NAME} · Super App</span>
     <span>${title} · ${now}</span>
-    <span>GWG-${new Date().getFullYear()}</span>
+    <span>${(BRAND_NAME||"App").replace(/\s+/g,"").slice(0,12)}-${new Date().getFullYear()}</span>
   </div>
   <script>setTimeout(()=>window.print(),400)<\/script>
   </body></html>`;
