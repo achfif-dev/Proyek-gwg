@@ -106,7 +106,7 @@ jobs:
               echo "RELEASE_KEY_ALIAS tidak cocok dengan keystore yang di-generate."
               exit 1
             }
-          echo "$OUTPUT" | grep -E "Alias name|Entry type|SHA256:|Valid from" || {
+          echo "$OUTPUT" | grep -E "Alias name|Entry type|SHA1:|SHA256:|Valid from" | tee -a "$GITHUB_STEP_SUMMARY" || {
             echo "⚠️ keytool jalan tapi tidak ada alias yang cocok. Output lengkap:"
             echo "$OUTPUT"
             exit 1
