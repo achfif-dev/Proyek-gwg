@@ -17,6 +17,48 @@ jobs:
       - name: Checkout kode
         uses: actions/checkout@v4
 
+      - name: Terapkan branding white-label ke project Android (dari .env)
+        run: |
+          set -e
+          OLD_ID="com.gwg.superapp"
+          APP_ID=$(grep -m1 '^VITE_APP_ID=' .env | cut -d '=' -f2- || true)
+          SHORT_NAME=$(grep -m1 '^VITE_APP_SHORT_NAME=' .env | cut -d '=' -f2- || true)
+          APP_ID=${APP_ID:-$OLD_ID}
+          SHORT_NAME=${SHORT_NAME:-"GWG App"}
+
+          echo "App ID target : $APP_ID"
+          echo "Nama app target: $SHORT_NAME"
+          echo "APP_ID=$APP_ID" >> "$GITHUB_ENV"
+
+          # 1) capacitor.config.json
+          sed -i "s/\"appId\": \"$OLD_ID\"/\"appId\": \"$APP_ID\"/" capacitor.config.json
+          sed -i "s/\"appName\": \"GWG Super App\"/\"appName\": \"$SHORT_NAME\"/" capacitor.config.json
+
+          # 2) android/app/build.gradle (namespace & applicationId)
+          sed -i "s/namespace \"$OLD_ID\"/namespace \"$APP_ID\"/" android/app/build.gradle
+          sed -i "s/applicationId \"$OLD_ID\"/applicationId \"$APP_ID\"/" android/app/build.gradle
+
+          # 3) strings.xml
+          STRINGS=android/app/src/main/res/values/strings.xml
+          sed -i "s#<string name=\"app_name\">GWG Super App</string>#<string name=\"app_name\">$SHORT_NAME</string>#" "$STRINGS"
+          sed -i "s#<string name=\"title_activity_main\">GWG Super App</string>#<string name=\"title_activity_main\">$SHORT_NAME</string>#" "$STRINGS"
+          sed -i "s#<string name=\"package_name\">$OLD_ID</string>#<string name=\"package_name\">$APP_ID</string>#" "$STRINGS"
+          sed -i "s#<string name=\"custom_url_scheme\">$OLD_ID</string>#<string name=\"custom_url_scheme\">$APP_ID</string>#" "$STRINGS"
+
+          # 4) Pindahkan MainActivity.java ke folder paket baru (kalau appId berubah)
+          if [ "$APP_ID" != "$OLD_ID" ]; then
+            OLD_PATH="android/app/src/main/java/$(echo "$OLD_ID" | tr '.' '/')"
+            NEW_PATH="android/app/src/main/java/$(echo "$APP_ID" | tr '.' '/')"
+            mkdir -p "$NEW_PATH"
+            mv "$OLD_PATH/MainActivity.java" "$NEW_PATH/MainActivity.java"
+            sed -i "s/package $OLD_ID;/package $APP_ID;/" "$NEW_PATH/MainActivity.java"
+            find android/app/src/main/java -type d -empty -delete
+            echo "✅ Package Android diganti dari $OLD_ID ke $APP_ID"
+          else
+            echo "ℹ️ VITE_APP_ID sama dengan default GWG — tidak ada perubahan package."
+          fi
+
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -76,7 +118,7 @@ jobs:
         run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
-          git add android
+          git add android capacitor.config.json
           git diff --cached --quiet || git commit -m "chore: sync android/ platform files [skip ci]"
           git push || true
 
@@ -95,7 +137,7 @@ jobs:
           script: |
             adb install -r android/app/build/outputs/apk/debug/app-debug.apk
             adb logcat -c
-            adb shell am start -n com.gwg.superapp/.MainActivity
+            adb shell am start -n $APP_ID/.MainActivity
             # Sebelumnya cuma 20 detik — dari log run terakhir, WebView baru SELESAI
             # cold-start (load native library) di detik ke-18, jadi capture berhenti
             # sebelum sempat kelihatan app-nya berhasil render atau justru macet.
