@@ -514,7 +514,7 @@ export default function GWGSuperApp() {
         const looksLikeRawDb = parsed && typeof parsed === "object" &&
           ["wilayah","rute","toko","produk","kontrol","pengguna"].some(k => Array.isArray(parsed[k]));
         if (!looksLikeSnapshot && !looksLikeRawDb) {
-          setRestoreFileError("File tidak dikenali sebagai backup GWG SuperApp yang valid (format JSON tidak sesuai).");
+          setRestoreFileError(`File tidak dikenali sebagai backup ${loadAppConfig().brand.appName || "App"} yang valid (format JSON tidak sesuai).`);
           return;
         }
         const snapshot = looksLikeSnapshot
@@ -556,7 +556,7 @@ export default function GWGSuperApp() {
       const fileData = await gdriveUploadJSON(
         filename,
         { ts, reason: "gdrive-manual", data: db },
-        `GWG SuperApp backup - ${ts}`
+        `${loadAppConfig().brand.appName || "App"} backup - ${ts}`
       );
       const viewLink = fileData.webViewLink || `https://drive.google.com/file/d/${fileData.id}/view`;
       setGDriveMsg({
