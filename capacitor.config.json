@@ -1,6 +1,6 @@
 {
   "appId": "com.gwg.superapp",
-  "appName": "GWG Super App",
+  "appName": "GWG App",
   "webDir": "dist",
   "bundledWebRuntime": false,
   "server": {
