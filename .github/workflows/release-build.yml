@@ -83,17 +83,34 @@ jobs:
           echo "Ukuran file release.keystore setelah decode: $(wc -c < release.keystore) bytes"
           echo "SHA-256 file release.keystore: $(sha256sum release.keystore | cut -d' ' -f1)"
           echo
-          echo "Mencoba baca alias dari keystore pakai RELEASE_KEYSTORE_PASSWORD +"
-          echo "RELEASE_KEY_ALIAS + RELEASE_KEY_PASSWORD yang tersimpan di secret..."
-          echo "(kalau salah satu dari 3 nilai ini tidak cocok, step ini GAGAL di"
-          echo "sini dengan pesan yang jelas — jauh lebih cepat & lebih jelas"
-          echo "daripada nunggu build APK 2 menit dulu baru gagal.)"
-          keytool -list -v \
+          echo "Cek 1/2: RELEASE_KEYSTORE_PASSWORD dan RELEASE_KEY_PASSWORD HARUS SAMA persis"
+          echo "(keystore format PKCS12 tidak mendukung keduanya beda — kalau beda,"
+          echo "keytool cuma bakal diam-diam pakai salah satu, dan build APK nanti"
+          echo "gagal baca key walau kelihatannya semua secret \"benar\")."
+          if [ "${{ secrets.RELEASE_KEYSTORE_PASSWORD }}" != "${{ secrets.RELEASE_KEY_PASSWORD }}" ]; then
+            echo "❌ RELEASE_KEYSTORE_PASSWORD dan RELEASE_KEY_PASSWORD BEDA. Update salah"
+            echo "   satu secret itu supaya isinya SAMA PERSIS, lalu jalankan ulang."
+            exit 1
+          fi
+          echo "✅ Keduanya sama."
+          echo
+          echo "Cek 2/2: mencoba baca alias dari keystore pakai password & alias di atas..."
+          OUTPUT=$(keytool -list -v \
             -keystore release.keystore \
             -alias "${{ secrets.RELEASE_KEY_ALIAS }}" \
-            -storepass "${{ secrets.RELEASE_KEYSTORE_PASSWORD }}" \
-            -keypass "${{ secrets.RELEASE_KEY_PASSWORD }}" \
-            | grep -E "Alias name|Entry type|SHA256:|Valid from"
+            -storepass "${{ secrets.RELEASE_KEYSTORE_PASSWORD }}" 2>&1) || {
+              echo "❌ keytool gagal membaca keystore ini. Pesan aslinya:"
+              echo "$OUTPUT"
+              echo
+              echo "Kemungkinan RELEASE_KEYSTORE_BASE64, RELEASE_KEYSTORE_PASSWORD, atau"
+              echo "RELEASE_KEY_ALIAS tidak cocok dengan keystore yang di-generate."
+              exit 1
+            }
+          echo "$OUTPUT" | grep -E "Alias name|Entry type|SHA256:|Valid from" || {
+            echo "⚠️ keytool jalan tapi tidak ada alias yang cocok. Output lengkap:"
+            echo "$OUTPUT"
+            exit 1
+          }
           echo "✅ RELEASE_KEYSTORE_PASSWORD, RELEASE_KEY_ALIAS, dan RELEASE_KEY_PASSWORD cocok dengan keystore — lanjut build."
 
       - name: Build APK release (signed)
