@@ -3,6 +3,7 @@ import { firebaseDB } from "../firebase/init";
 import { FIREBASE_CONFIGURED } from "../firebase/config";
 import { idbGet, idbSet, queueWrite, queueRemove, queueGetAll, queueCount, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
+import { loadAppConfig } from "../config/appConfig";
 import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
 import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/akuntansiHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
@@ -1381,7 +1382,7 @@ export function useDB(user) {
       const fileData = await gdriveUploadJSON(
         `gwg_arsip_jurnal_${year}.json`,
         { year, archivedAt, recordCount, data: yearData },
-        `GWG SuperApp - Arsip Jurnal Umum (Akuntansi) tahun ${year}`
+        `${loadAppConfig().brand.appName || "App"} - Arsip Jurnal Umum (Akuntansi) tahun ${year}`
       );
       if (!fileData?.id) {
         return { ok: false, message: "Upload arsip jurnal tampak gagal (tidak dapat file ID) — data ASLI di database tidak diubah, aman untuk dicoba lagi." };
@@ -1461,7 +1462,7 @@ export function useDB(user) {
       const fileData = await gdriveUploadJSON(
         `gwg_arsip_kontrol_${year}.json`,
         { year, archivedAt, recordCount, data: yearData },
-        `GWG SuperApp - Arsip Kontrol Bulanan tahun ${year}`
+        `${loadAppConfig().brand.appName || "App"} - Arsip Kontrol Bulanan tahun ${year}`
       );
       if (!fileData?.id) {
         return { ok: false, message: "Upload arsip tampak gagal (tidak dapat file ID) — data ASLI di database tidak diubah, aman untuk dicoba lagi." };
