@@ -3,6 +3,7 @@ import { Btn, Card, Modal, StatCard } from "../../components/ui";
 import { Dashboard } from "../../features/dashboard/Dashboard";
 import { useAnalytics } from "../../hooks/useAnalytics";
 import { exportExcel } from "../../lib/exportUtils";
+import { loadAppConfig } from "../../config/appConfig";
 import { fmt, fmtRp, genUniqueId } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
@@ -328,8 +329,9 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
       })),
       { keterangan:"TOTAL DIBAGI", nilai: fmtRp(akuntansi.totalDibagi) },
     ];
+    const brandName = loadAppConfig().brand.companyName || "App";
     exportExcel(rows, [{key:"keterangan",label:"Keterangan"},{key:"nilai",label:"Nilai"}],
-      "Laporan Bagi Hasil GWG", `bagi_hasil_${filterBulan||filterTahun}`);
+      `Laporan Bagi Hasil ${brandName}`, `bagi_hasil_${filterBulan||filterTahun}`);
   }
 
   const PERIODE_LABELS = {

@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Btn, Card, StatCard } from "../../components/ui";
 import { exportExcel } from "../../lib/exportUtils";
+import { loadAppConfig } from "../../config/appConfig";
 import { fmtRp } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
@@ -64,8 +65,9 @@ export function LaporanPajak({ akuntansi, revPeriode, periodeMode, PERIODE_LABEL
       { keterangan: "", nilai: "" },
       { keterangan: "Catatan", nilai: "Simulasi ini adalah alat bantu hitung, BUKAN pengganti pelaporan resmi. Pelaporan wajib tetap dilakukan lewat Coretax DJP (pajak.go.id)." },
     ];
+    const brandName = loadAppConfig().brand.companyName || "App";
     exportExcel(rows, [{ key: "keterangan", label: "Keterangan" }, { key: "nilai", label: "Nilai" }],
-      "Simulasi Laporan Pajak GWG", `laporan_pajak_${filterBulan || filterTahun}`);
+      `Simulasi Laporan Pajak ${brandName}`, `laporan_pajak_${filterBulan || filterTahun}`);
   }
 
   return (
