@@ -4,7 +4,7 @@ import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
-import { SIKLUS_GAP_DAYS, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
+import { computeSiklusSegmentsPerWilayah, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
 import { isPeriodeTerkunci, bulanKeyOf } from "../../lib/neracaHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { bangunBarisJurnalKontrol, bangunBarisJurnalPenjualanLuar } from "../../lib/akuntansiHelpers";
@@ -641,30 +641,21 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // pertama sehingga harus diulang, maupun sebab lain (dobel input, dsb).
   // Berbeda dengan siklusRangePerWilayah di bawah (yang cuma menghitung
   // siklus TERAKHIR untuk badge modal), di sini SELURUH histori tanggal
-  // kontrol per wilayah dipecah jadi beberapa siklus (algoritma & konstanta
-  // sama: SIKLUS_GAP_DAYS), supaya kunjungan berulang di siklus-siklus lama
-  // pun tetap terdeteksi, bukan cuma yang sedang berjalan.
-  const siklusSegmentsPerWilayah = useMemo(() => {
-    const byWilayah = {};
-    enriched.forEach(k => {
-      if (!k.wilayahId || !k.tanggal) return;
-      (byWilayah[k.wilayahId] ||= new Set()).add(k.tanggal);
-    });
-    const map = {};
-    Object.entries(byWilayah).forEach(([wilayahId, dateSet]) => {
-      const dates = [...dateSet].sort();
-      const segments = [];
-      let segStart = dates[0], segEnd = dates[0];
-      for (let i = 1; i < dates.length; i++) {
-        const diffDays = (new Date(dates[i]) - new Date(segEnd)) / 86400000;
-        if (diffDays > SIKLUS_GAP_DAYS) { segments.push({ start: segStart, end: segEnd }); segStart = dates[i]; }
-        segEnd = dates[i];
-      }
-      segments.push({ start: segStart, end: segEnd });
-      map[wilayahId] = segments;
-    });
-    return map;
-  }, [enriched]);
+  // kontrol per wilayah dipecah jadi beberapa siklus, supaya kunjungan
+  // berulang di siklus-siklus lama pun tetap terdeteksi, bukan cuma yang
+  // sedang berjalan.
+  // ⚠️ FIX BUG: sebelumnya di sini ada salinan sendiri dari algoritma
+  // pemecah siklus (murni jeda tanggal), BUKAN benar-benar memakai
+  // computeSiklusSegmentsPerWilayah dari dataHelpers.js seperti diklaim
+  // komentar lama — jadi walau fungsi bersama itu sudah diperbaiki (lihat
+  // komentar di sana: deteksi toko-diulang untuk wilayah rute pendek),
+  // salinan di sini tetap memakai versi lama yang lebih lemah, membuat
+  // "Kunjungan Berulang" di tab Kontrol bisa tidak sinkron dengan "Siklus
+  // Wilayah" di tab Rekap. Sekarang benar-benar memanggil fungsi bersama.
+  const siklusSegmentsPerWilayah = useMemo(
+    () => computeSiklusSegmentsPerWilayah(enriched),
+    [enriched]
+  );
 
   // ✅ Tanggal MULAI siklus (putaran) kontrol yang SEDANG BERJALAN per
   // wilayah — diambil dari segmen TERAKHIR di siklusSegmentsPerWilayah.
@@ -1656,38 +1647,44 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     }).map(r=>({ value:r.id, label:r.nama }));
   }, [db.rute, db.wilayah, modalFilter.wilayahId, isSalesRestricted, salesWilayahId]);
 
-  // ✅ Rentang siklus per wilayah — pakai algoritma & konstanta yang SAMA
-  // dengan "Siklus Wilayah" di Rekap (lib/dataHelpers.js → SIKLUS_GAP_DAYS):
-  // mundur dari tanggal kontrol terbaru di wilayah itu, selama jeda antar
-  // tanggal berurutan tidak lebih dari SIKLUS_GAP_DAYS hari. Periode kontrol
-  // TIDAK selalu pas 1 bulan kalender — bisa maju-mundur tanggalnya, jadi
-  // definisinya harus ikut yang dipakai Rekap, bukan sekadar potong "YYYY-MM".
-  // Tanggal yang sedang diisi di form (form.tanggal) ikut dianggap bagian
-  // siklus berjalan walau belum tersimpan, supaya badge langsung bereaksi
-  // begitu tanggal diisi/diganti.
+  // ✅ Rentang siklus per wilayah — pakai algoritma bersama yang SAMA
+  // dengan "Siklus Wilayah" di Rekap (lib/dataHelpers.js →
+  // computeSiklusSegmentsPerWilayah): ambil segmen TERAKHIR (siklus yang
+  // sedang berjalan) untuk wilayah itu. Periode kontrol TIDAK selalu pas 1
+  // bulan kalender — bisa maju-mundur tanggalnya, jadi definisinya harus
+  // ikut yang dipakai Rekap, bukan sekadar potong "YYYY-MM". Tanggal yang
+  // sedang diisi di form (form.tanggal) ikut disertakan sebagai entri
+  // "draft" sebelum dihitung, supaya badge langsung bereaksi begitu
+  // tanggal diisi/diganti walau belum tersimpan.
+  // ⚠️ FIX BUG: sebelumnya di sini ADA salinan sendiri dari algoritma
+  // pemecah siklus (mundur dari tanggal terakhir, murni berdasar jeda
+  // tanggal) — punya kelemahan yang sama dengan bug lama di
+  // computeSiklusSegmentsPerWilayah: untuk wilayah rute PENDEK (siklus
+  // berikutnya mulai lagi kurang dari sebulan tanpa jeda panjang), badge
+  // "siklus berjalan" ini bisa salah mundur MELEWATI batas siklus
+  // sebelumnya (karena jeda tanggalnya memang selalu rapat), ikut
+  // menganggap kunjungan dari putaran SEBELUMNYA sebagai bagian siklus
+  // yang sedang berjalan. Sekarang memakai fungsi bersama yang sudah
+  // dilengkapi deteksi toko-diulang, supaya batas siklusnya konsisten.
   const siklusRangePerWilayah = useMemo(() => {
-    const byWilayah = {};
-    enriched.forEach(k => {
-      if (!k.wilayahId || !k.tanggal) return;
-      (byWilayah[k.wilayahId] ||= new Set()).add(k.tanggal);
-    });
+    let list = enriched;
     if (form.tanggal) {
       const tokoTerpilih = (db.toko||[]).find(t => t.id === form.tokoId);
       const ruteTerpilih = tokoTerpilih ? (db.rute||[]).find(r=>r.id===tokoTerpilih.ruteId) : null;
       const wilayahAnchor = ruteTerpilih?.wilayahId || modalFilter.wilayahId;
-      if (wilayahAnchor) (byWilayah[wilayahAnchor] ||= new Set()).add(form.tanggal);
-    }
-    const map = {};
-    Object.entries(byWilayah).forEach(([wilayahId, dateSet]) => {
-      const dates = [...dateSet].sort();
-      let end = dates[dates.length-1];
-      let start = end;
-      for (let i = dates.length-2; i >= 0; i--) {
-        const diffDays = (new Date(start) - new Date(dates[i])) / 86400000;
-        if (diffDays > SIKLUS_GAP_DAYS) break;
-        start = dates[i];
+      if (wilayahAnchor) {
+        // tokoId draft dibuat unik ("__draft__" fallback) supaya kalau
+        // tokoId belum dipilih, entri draft ini tidak salah terhitung
+        // sebagai "toko diulang" terhadap kunjungan toko lain yang
+        // kebetulan juga belum punya tokoId (harusnya tidak mungkin,
+        // tapi tetap dijaga).
+        list = [...enriched, { wilayahId: wilayahAnchor, tanggal: form.tanggal, tokoId: form.tokoId || "__draft__" }];
       }
-      map[wilayahId] = { start, end };
+    }
+    const segMap = computeSiklusSegmentsPerWilayah(list);
+    const map = {};
+    Object.entries(segMap).forEach(([wilayahId, segs]) => {
+      if (segs.length) map[wilayahId] = segs[segs.length - 1];
     });
     return map;
   }, [enriched, form.tanggal, form.tokoId, db.toko, db.rute, modalFilter.wilayahId]);
