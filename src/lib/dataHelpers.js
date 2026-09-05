@@ -84,15 +84,24 @@ export function computeSiklusSegments(dates) {
 // SALAH dianggap 1 siklus raksasa — tidak pernah terpecah jadi "Siklus
 // 1/2/3 (terbaru)" di panel filter Rekap.
 //
-// Fix: selain jeda tanggal, batas siklus SEKARANG juga dideteksi dari
-// TOKO YANG DIKUNJUNGI ULANG. Sambil memindai kunjungan 1 wilayah terurut
-// tanggal, begitu sebuah toko MUNCUL LAGI di tanggal yang BERBEDA dari
-// kemunculan sebelumnya (dalam siklus yang sedang berjalan) — itu tandanya
-// putaran sebelumnya sudah selesai (toko itu sudah kebagian giliran) dan
-// putaran baru sudah dimulai, terlepas dari seberapa rapat tanggalnya.
-// Kunjungan dobel di TANGGAL YANG SAMA (mis. sengaja diinput 2x sehari)
-// TIDAK dihitung sebagai "ulang" — tidak memaksa split di sini (itu tetap
-// ditangani terpisah sebagai "Kunjungan Berulang" oleh TabKontrol.jsx).
+// Fix (v1, SALAH): sempat dicoba menganggap toko yang MUNCUL LAGI di
+// tanggal APAPUN yang berbeda sebagai penanda putaran baru. Ternyata ini
+// keliru untuk kasus "kunjungan susulan" — toko yang tutup saat rute
+// lewat, lalu dikontrol lagi ±1-3 hari setelah rute itu selesai — itu
+// MASIH bagian siklus yang sama, bukan siklus baru, padahal toko yang
+// sama muncul di tanggal berbeda.
+//
+// Fix (v2, DIPAKAI): bedakan "kunjungan susulan" vs "toko sudah masuk
+// putaran berikutnya" dari SEBERAPA LAMA jeda sejak toko itu SENDIRI
+// (bukan tanggal wilayah secara umum) terakhir dikunjungi. Kunjungan
+// susulan jaraknya cuma beberapa hari (kecil) — masih dalam toleransi
+// SIKLUS_GAP_DAYS yang sama dipakai untuk jeda tanggal biasa. Toko yang
+// betul-betul masuk putaran baru jaraknya kira-kira selama 1 putaran
+// penuh (berminggu-minggu) — jauh melebihi SIKLUS_GAP_DAYS. Jadi dipakai
+// AMBANG YANG SAMA (SIKLUS_GAP_DAYS) untuk kedua jenis jeda ini: toko
+// dianggap "masuk putaran baru" HANYA kalau jeda sejak toko itu SENDIRI
+// terakhir dikunjungi (bukan cuma beda tanggal) sudah > SIKLUS_GAP_DAYS
+// hari. Kunjungan dobel/susulan dalam rentang itu tetap 1 siklus yang sama.
 export function computeSiklusSegmentsPerWilayah(kontrolList) {
   const byWilayah = {};
   (kontrolList || []).forEach(k => {
@@ -111,8 +120,14 @@ export function computeSiklusSegmentsPerWilayah(kontrolList) {
       const cur = sorted[i];
       const diffDays = (new Date(cur.tanggal) - new Date(segEnd)) / 86400000;
       const tanggalTerakhirTokoIni = lastSeen.get(cur.tokoId);
-      const tokoDiulang = tanggalTerakhirTokoIni !== undefined && tanggalTerakhirTokoIni !== cur.tanggal;
-      if (diffDays > SIKLUS_GAP_DAYS || tokoDiulang) {
+      const jedaTokoIniHari = tanggalTerakhirTokoIni !== undefined
+        ? (new Date(cur.tanggal) - new Date(tanggalTerakhirTokoIni)) / 86400000
+        : null;
+      // Toko dianggap masuk PUTARAN BARU (bukan sekadar kunjungan susulan
+      // untuk toko yang sempat tutup) hanya kalau jeda sejak toko INI
+      // SENDIRI terakhir dikunjungi sudah melebihi SIKLUS_GAP_DAYS hari.
+      const tokoMasukPutaranBaru = jedaTokoIniHari !== null && jedaTokoIniHari > SIKLUS_GAP_DAYS;
+      if (diffDays > SIKLUS_GAP_DAYS || tokoMasukPutaranBaru) {
         segments.push({ start: segStart, end: segEnd });
         segStart = cur.tanggal;
         lastSeen = new Map();
