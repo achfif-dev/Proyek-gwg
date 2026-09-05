@@ -653,8 +653,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // "Kunjungan Berulang" di tab Kontrol bisa tidak sinkron dengan "Siklus
   // Wilayah" di tab Rekap. Sekarang benar-benar memanggil fungsi bersama.
   const siklusSegmentsPerWilayah = useMemo(
-    () => computeSiklusSegmentsPerWilayah(enriched),
-    [enriched]
+    () => computeSiklusSegmentsPerWilayah(enriched, db.rute),
+    [enriched, db.rute]
   );
 
   // ✅ Tanggal MULAI siklus (putaran) kontrol yang SEDANG BERJALAN per
@@ -1681,7 +1681,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         list = [...enriched, { wilayahId: wilayahAnchor, tanggal: form.tanggal, tokoId: form.tokoId || "__draft__" }];
       }
     }
-    const segMap = computeSiklusSegmentsPerWilayah(list);
+    const segMap = computeSiklusSegmentsPerWilayah(list, db.rute);
     const map = {};
     Object.entries(segMap).forEach(([wilayahId, segs]) => {
       if (segs.length) map[wilayahId] = segs[segs.length - 1];
