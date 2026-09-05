@@ -91,9 +91,16 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
   // konstanta SIKLUS_GAP_DAYS). Dihitung untuk SEMUA wilayah (bukan cuma
   // yang lagi dipilih) supaya begitu sebuah wilayah ditambahkan ke
   // filterSiklusWilayahs, daftar siklusnya langsung tersedia.
+  // ✅ db.rute dikirim sebagai acuan jumlah rute PER WILAYAH (dari Master
+  // Rute) — dipakai computeSiklusSegmentsPerWilayah untuk tahu kapan
+  // "rute terakhir" suatu wilayah sudah kebagian giliran (putaran lengkap),
+  // supaya kunjungan susulan (toko tutup, dikontrol lagi 1-3 hari
+  // kemudian) tetap dianggap 1 siklus, sementara toko yang benar-benar
+  // masuk siklus berikutnya (jeda >1 minggu sejak rute terakhir selesai)
+  // tetap terdeteksi sebagai siklus baru.
   const siklusSegmentsPerWilayahAll = useMemo(
-    () => computeSiklusSegmentsPerWilayah(enrichKontrol),
-    [enrichKontrol]
+    () => computeSiklusSegmentsPerWilayah(enrichKontrol, db.rute),
+    [enrichKontrol, db.rute]
   );
 
   // Auto-isi rentang tanggal siklus TERBARU (segmen paling akhir/terkini)
