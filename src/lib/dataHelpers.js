@@ -62,24 +62,66 @@ export function computeSiklusSegments(dates) {
 }
 
 // ✅ Sama seperti computeSiklusSegments, tapi langsung dari daftar entri
-// kontrol (butuh field .wilayahId & .tanggal), dikelompokkan PER WILAYAH.
-// Dipakai bersama oleh TabKontrol.jsx (badge "Belum Kontrol"/"Kunjungan
-// Berulang" di siklus berjalan) dan TabRekap.jsx (filter "Siklus Wilayah" —
-// termasuk saat MENGGABUNGKAN >1 wilayah, supaya tiap wilayah bisa memilih
-// SIKLUS KE BERAPA yang mau diikutkan sendiri-sendiri, bukan dipaksa 1
-// rentang tanggal global yang bisa salah "menyedot" siklus lain dari
-// wilayah yang putarannya lebih pendek/cepat daripada wilayah lain yang
-// digabung bersamanya). Hasil: { [wilayahId]: [{start,end}, ...] } terurut
-// kronologis per wilayah.
+// kontrol (butuh field .wilayahId, .tanggal, .tokoId), dikelompokkan PER
+// WILAYAH. Dipakai bersama oleh TabKontrol.jsx (badge "Belum Kontrol"/
+// "Kunjungan Berulang" di siklus berjalan) dan TabRekap.jsx (filter "Siklus
+// Wilayah" — termasuk saat MENGGABUNGKAN >1 wilayah, supaya tiap wilayah
+// bisa memilih SIKLUS KE BERAPA yang mau diikutkan sendiri-sendiri, bukan
+// dipaksa 1 rentang tanggal global yang bisa salah "menyedot" siklus lain
+// dari wilayah yang putarannya lebih pendek/cepat daripada wilayah lain
+// yang digabung bersamanya). Hasil: { [wilayahId]: [{start,end}, ...] }
+// terurut kronologis per wilayah.
+//
+// ⚠️ FIX BUG: sebelumnya fungsi ini cuma memecah berdasar JEDA TANGGAL
+// (delegasi murni ke computeSiklusSegments) — cukup akurat untuk wilayah
+// yang rute-nya lama (>SIKLUS_GAP_DAYS hari untuk habis 1 putaran) dan
+// biasanya ADA jeda alami antar putaran. TAPI untuk wilayah dengan rute
+// PENDEK — bisa dihabiskan (semua toko dikunjungi 1x) dalam waktu KURANG
+// dari sebulan, lalu sales langsung lanjut ke putaran berikutnya tanpa
+// jeda panjang — kumpulan TANGGAL kunjungannya jadi rapat terus-menerus
+// (selisih antar tanggal berurutan selalu ≤ SIKLUS_GAP_DAYS hari) walau
+// sebenarnya sudah masuk putaran ke-2/ke-3. Murni dari jeda tanggal, ini
+// SALAH dianggap 1 siklus raksasa — tidak pernah terpecah jadi "Siklus
+// 1/2/3 (terbaru)" di panel filter Rekap.
+//
+// Fix: selain jeda tanggal, batas siklus SEKARANG juga dideteksi dari
+// TOKO YANG DIKUNJUNGI ULANG. Sambil memindai kunjungan 1 wilayah terurut
+// tanggal, begitu sebuah toko MUNCUL LAGI di tanggal yang BERBEDA dari
+// kemunculan sebelumnya (dalam siklus yang sedang berjalan) — itu tandanya
+// putaran sebelumnya sudah selesai (toko itu sudah kebagian giliran) dan
+// putaran baru sudah dimulai, terlepas dari seberapa rapat tanggalnya.
+// Kunjungan dobel di TANGGAL YANG SAMA (mis. sengaja diinput 2x sehari)
+// TIDAK dihitung sebagai "ulang" — tidak memaksa split di sini (itu tetap
+// ditangani terpisah sebagai "Kunjungan Berulang" oleh TabKontrol.jsx).
 export function computeSiklusSegmentsPerWilayah(kontrolList) {
   const byWilayah = {};
   (kontrolList || []).forEach(k => {
-    if (!k.wilayahId || !k.tanggal) return;
-    (byWilayah[k.wilayahId] ||= new Set()).add(k.tanggal);
+    if (!k.wilayahId || !k.tanggal || !k.tokoId) return;
+    (byWilayah[k.wilayahId] ||= []).push(k);
   });
   const map = {};
-  Object.entries(byWilayah).forEach(([wilayahId, dateSet]) => {
-    map[wilayahId] = computeSiklusSegments([...dateSet]);
+  Object.entries(byWilayah).forEach(([wilayahId, entriesForWilayah]) => {
+    const sorted = [...entriesForWilayah].sort((a, b) =>
+      a.tanggal < b.tanggal ? -1 : a.tanggal > b.tanggal ? 1 : 0);
+    const segments = [];
+    let segStart = sorted[0].tanggal, segEnd = sorted[0].tanggal;
+    // tokoId -> tanggal terakhir toko itu terlihat DALAM segmen berjalan
+    let lastSeen = new Map([[sorted[0].tokoId, sorted[0].tanggal]]);
+    for (let i = 1; i < sorted.length; i++) {
+      const cur = sorted[i];
+      const diffDays = (new Date(cur.tanggal) - new Date(segEnd)) / 86400000;
+      const tanggalTerakhirTokoIni = lastSeen.get(cur.tokoId);
+      const tokoDiulang = tanggalTerakhirTokoIni !== undefined && tanggalTerakhirTokoIni !== cur.tanggal;
+      if (diffDays > SIKLUS_GAP_DAYS || tokoDiulang) {
+        segments.push({ start: segStart, end: segEnd });
+        segStart = cur.tanggal;
+        lastSeen = new Map();
+      }
+      lastSeen.set(cur.tokoId, cur.tanggal);
+      segEnd = cur.tanggal;
+    }
+    segments.push({ start: segStart, end: segEnd });
+    map[wilayahId] = segments;
   });
   return map;
 }
