@@ -1,0 +1,19 @@
+{
+  "name": "posapp-functions",
+  "description": "Cloud Functions backend: lisensi aplikasi & payment gateway QRIS (Midtrans) untuk POS App",
+  "engines": {
+    "node": "20"
+  },
+  "main": "index.js",
+  "scripts": {
+    "issue-license": "node scripts/issue-license.js",
+    "generate-keypair": "node scripts/generate-license-keypair.js",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.1.0",
+    "firebase-functions": "^5.0.0"
+  },
+  "private": true
+}

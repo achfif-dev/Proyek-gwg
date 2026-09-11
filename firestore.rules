@@ -1,0 +1,72 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Ringkasan omzet harian per cabang (Fase 4 - Sinkronisasi Cloud dasar). Hanya client yang
+    // sudah sign-in anonim (app ini) yang boleh baca/tulis — lihat FIREBASE_SETUP.md.
+    //
+    // TEMUAN KEAMANAN (audit ulang): dulu cuma "request.auth != null" (SEMUA pengguna app ini
+    // dianggap setara, tanpa kepemilikan) — siapa pun bisa menimpa omzet cabang lain kalau tahu/
+    // menebak outletId-nya. Sekarang setiap docId dikunci ke ownerUid pengirim pertama, sama
+    // seperti pola di outlet_catalog di bawah.
+    match /outlet_summaries/{docId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      allow delete: if false;
+    }
+
+    // Katalog produk/stok per cabang (fitur "Cek Stok Semua Cabang", read-only lintas cabang).
+    // Ditulis oleh app cabang pemilik datanya sendiri (lewat OutletCatalogSyncWorker), dibaca
+    // oleh admin cabang lain lewat OutletCatalogSyncRepository. Tidak ada data finansial/pribadi
+    // di sini (hanya nama produk, SKU, stok, harga jual).
+    //
+    // TEMUAN KEAMANAN (audit ulang): versi sebelumnya cuma mengecek "request.auth != null" —
+    // artinya SIAPA PUN pengguna app ini (semua sign-in anonim yang sama modelnya) bisa menimpa
+    // outletId cabang MANA PUN, bukan cuma miliknya sendiri, kalau kebetulan tahu/menebak
+    // outletId itu. Sekarang setiap outletId dikunci ke ownerUid saat pertama kali dibuat
+    // (`create`), dan HANYA ownerUid yang sama yang boleh menulis lagi ke situ (`update`) atau
+    // ke subkoleksi `products` di dalamnya (dicek lewat get() ke dokumen induk).
+    match /outlet_catalog/{outletId} {
+      allow read: if request.auth != null;
+      allow create: if request.auth != null && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if request.auth != null && resource.data.ownerUid == request.auth.uid;
+      allow delete: if false;
+      match /products/{sku} {
+        allow read: if request.auth != null;
+        allow write: if request.auth != null &&
+          get(/databases/$(database)/documents/outlet_catalog/$(outletId)).data.ownerUid == request.auth.uid;
+      }
+    }
+
+    // Status pembayaran QRIS Otomatis (Midtrans) — dibaca REALTIME oleh app kasir untuk deteksi
+    // "Lunas" otomatis. HANYA BOLEH DIBACA, tidak boleh ditulis dari client sama sekali: yang
+    // menulis status pembayaran WAJIB lewat Cloud Function createQrisCharge (status awal) dan
+    // midtransNotification (webhook, pakai Admin SDK yang otomatis melewati rules ini) — kalau
+    // client bisa menulis, siapa pun bisa memalsukan status "SETTLED" tanpa benar-benar membayar.
+    // TEMUAN KEAMANAN (audit ulang): sebelumnya "allow read: if true" -- bisa dibaca (termasuk
+    // di-list seluruh koleksinya) oleh siapa pun tanpa sign-in sama sekali, beda dari koleksi
+    // lain di file ini yang minimal mensyaratkan request.auth != null. Order ID + status lunas/
+    // belum lintas SEMUA toko jadi bisa dibaca publik. App ini sudah sign-in anonim sebelum
+    // memanggil createQrisCharge (lihat CloudSyncRepository/PaymentGatewayRepository), jadi
+    // mensyaratkan auth di sini tidak mengubah perilaku normal app, hanya menutup akses publik.
+    match /payment_status/{orderId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    // Lisensi aplikasi & kredensial payment gateway toko — RAHASIA PENUH. Tidak boleh
+    // dibaca/ditulis langsung oleh client sama sekali dalam kondisi apa pun. Satu-satunya jalan
+    // masuk/keluar adalah Cloud Functions (activateLicense, checkLicenseStatus,
+    // saveGatewayCredentials, createQrisCharge) yang jalan dengan Admin SDK dan otomatis
+    // melewati rules ini. Kalau baris "allow read, write: if false" ini dihapus/dilonggarkan,
+    // siapa pun yang tahu App ID Firebase publik bisa membaca Server Key Midtrans semua toko
+    // atau membuat lisensi palsu untuk diri sendiri.
+    match /licenses/{licenseKey} {
+      allow read, write: if false;
+    }
+    match /gateway_credentials/{outletId} {
+      allow read, write: if false;
+    }
+  }
+}
