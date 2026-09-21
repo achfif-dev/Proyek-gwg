@@ -51,31 +51,86 @@ export async function idbGet(key) {
   });
 }
 // ── Antrean tulis offline (durable) ─────────────────────────────────────
+// Setiap entri: { path, value, ts, v } — `ts` menentukan URUTAN kirim (selalu
+// naik, tidak pernah kembar walau dua perubahan terjadi di milidetik yang
+// sama), `v` = "nomor versi" unik entri itu. Nomor versi dipakai untuk
+// hapus-bersyarat: entri di antrean hanya dihapus kalau versinya MASIH SAMA
+// dengan yang baru saja terkirim. Kalau selama pengiriman (sinyal lemah =
+// bisa lama) user mengedit path yang sama lagi, versi barunya tidak ikut
+// terhapus.
+//
+// Entri yang DITOLAK security rules tidak lagi dibuang: ditandai `denied`
+// (tetap tersimpan di IndexedDB, tidak ikut dikirim ulang otomatis) sampai
+// user memilih Kirim Ulang / Buang / Simpan cadangan.
+let _lastTs = 0;
+let _seq = 0;
+function nextTs() { const n = Date.now(); _lastTs = n > _lastTs ? n : _lastTs + 1; return _lastTs; }
+const versiOf = (e) => (e ? (e.v ?? e.ts) : undefined); // entri lama (sebelum patch) belum punya `v`
+
+// Mengembalikan true kalau perubahan BENAR-BENAR tersimpan di IndexedDB.
 export async function queueWrite(path, value) {
+  const ts = nextTs(); // dipatok SINKRON saat dipanggil → urutan antrean = urutan pemanggilan
+  const v = `${ts}-${++_seq}`;
   const db = await openIDB();
-  if (!db) return;
+  if (!db) return false;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
-      tx.objectStore(IDB_QUEUE_STORE).put({ path, value, ts: Date.now() });
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-    } catch { resolve(); }
+      tx.objectStore(IDB_QUEUE_STORE).put({ path, value, ts, v });
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+    } catch { resolve(false); }
   });
 }
-export async function queueRemove(path) {
+
+// Hapus entri HANYA jika versinya masih sama dengan `entry` (yang baru terkirim).
+export async function queueRemoveIfSame(entry) {
   const db = await openIDB();
-  if (!db) return;
+  if (!db || !entry) return false;
   return new Promise((resolve) => {
     try {
       const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
-      tx.objectStore(IDB_QUEUE_STORE).delete(path);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => resolve();
-    } catch { resolve(); }
+      const store = tx.objectStore(IDB_QUEUE_STORE);
+      const req = store.get(entry.path);
+      let removed = false;
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (cur && !cur.denied && versiOf(cur) === versiOf(entry)) { store.delete(entry.path); removed = true; }
+      };
+      tx.oncomplete = () => resolve(removed);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+    } catch { resolve(false); }
   });
 }
-export async function queueGetAll() {
+
+// Tandai entri sebagai DITOLAK (bukan dihapus). Hanya berlaku jika versinya
+// masih sama — kalau sudah digantikan perubahan yang lebih baru, biarkan yang baru.
+export async function queueMarkDenied(entry, message) {
+  const db = await openIDB();
+  if (!db || !entry) return false;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      const store = tx.objectStore(IDB_QUEUE_STORE);
+      const req = store.get(entry.path);
+      let marked = false;
+      req.onsuccess = () => {
+        const cur = req.result;
+        if (cur && versiOf(cur) === versiOf(entry)) {
+          store.put({ ...cur, denied: true, deniedAt: Date.now(), deniedMessage: String(message || "Permission denied") });
+          marked = true;
+        }
+      };
+      tx.oncomplete = () => resolve(marked);
+      tx.onerror = () => resolve(false);
+      tx.onabort = () => resolve(false);
+    } catch { resolve(false); }
+  });
+}
+
+async function queueGetRaw() {
   const db = await openIDB();
   if (!db) return [];
   return new Promise((resolve) => {
@@ -87,17 +142,98 @@ export async function queueGetAll() {
     } catch { resolve([]); }
   });
 }
+
+// Entri yang MASIH menunggu dikirim (tidak termasuk yang sudah ditolak).
+export async function queueGetAll() {
+  return (await queueGetRaw()).filter(e => !e.denied);
+}
+// Entri yang ditolak rules dan disimpan menunggu keputusan user.
+export async function queueGetDenied() {
+  return (await queueGetRaw()).filter(e => e.denied).sort((a, b) => (a.ts || 0) - (b.ts || 0));
+}
 export async function queueCount() {
+  return (await queueGetAll()).length;
+}
+// Kembalikan SEMUA entri ditolak ke antrean (urutan asli `ts` dipertahankan
+// supaya ketergantungan antar-koleksi, mis. toko sebelum kontrol, tetap benar).
+export async function queueRetryDenied() {
   const db = await openIDB();
   if (!db) return 0;
   return new Promise((resolve) => {
     try {
-      const tx = db.transaction(IDB_QUEUE_STORE, "readonly");
-      const req = tx.objectStore(IDB_QUEUE_STORE).count();
-      req.onsuccess = () => resolve(req.result || 0);
-      req.onerror = () => resolve(0);
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      const store = tx.objectStore(IDB_QUEUE_STORE);
+      const req = store.getAll();
+      let n = 0;
+      req.onsuccess = () => {
+        (req.result || []).filter(e => e.denied).forEach(e => {
+          const { denied, deniedAt, deniedMessage, ...bersih } = e;
+          store.put(bersih); n++;
+        });
+      };
+      tx.oncomplete = () => resolve(n);
+      tx.onerror = () => resolve(0);
+      tx.onabort = () => resolve(0);
     } catch { resolve(0); }
   });
+}
+// Buang PERMANEN semua entri yang ditolak.
+export async function queueDiscardDenied() {
+  const db = await openIDB();
+  if (!db) return 0;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      const store = tx.objectStore(IDB_QUEUE_STORE);
+      const req = store.getAll();
+      let n = 0;
+      req.onsuccess = () => {
+        (req.result || []).filter(e => e.denied).forEach(e => { store.delete(e.path); n++; });
+      };
+      tx.oncomplete = () => resolve(n);
+      tx.onerror = () => resolve(0);
+      tx.onabort = () => resolve(0);
+    } catch { resolve(0); }
+  });
+}
+
+export function isPermissionDenied(e) {
+  return String(e?.code || e?.message || "").toUpperCase().includes("PERMISSION_DENIED");
+}
+
+// Kirim antrean satu per satu, berurutan menurut `ts`. `send(path, value)`
+// harus melempar error kalau gagal.
+//  • sukses            → hapus-bersyarat (aman terhadap edit baru di path yang sama)
+//  • PERMISSION_DENIED → tandai `denied` (TIDAK dihapus), lanjut ke entri berikutnya
+//  • error lain        → berhenti (kemungkinan offline), sisa antrean dicoba lagi nanti
+// Entri baru yang masuk selama pengiriman langsung diproses di putaran berikutnya.
+export async function drainQueue(send, { onDenied } = {}) {
+  const hasil = { sent: 0, denied: 0, stopped: false, error: null };
+  const sudah = new Set();
+  for (let putaran = 0; putaran < 25; putaran++) {
+    const entries = (await queueGetAll())
+      .filter(e => !sudah.has(`${e.path}|${versiOf(e)}`))
+      .sort((a, b) => ((a.ts || 0) - (b.ts || 0)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    if (!entries.length) break;
+    for (const entry of entries) {
+      sudah.add(`${entry.path}|${versiOf(entry)}`);
+      try {
+        await send(entry.path, entry.value);
+        await queueRemoveIfSame(entry);
+        hasil.sent++;
+      } catch (e) {
+        if (isPermissionDenied(e)) {
+          const pesan = e?.message || "Permission denied";
+          const ditandai = await queueMarkDenied(entry, pesan);
+          if (ditandai) { hasil.denied++; if (onDenied) onDenied(entry, pesan); }
+          continue;
+        }
+        hasil.stopped = true; hasil.error = e;
+        return hasil;
+      }
+    }
+  }
+  return hasil;
 }
 // ── Penyimpanan lokal, dipecah 2 jalur berdasarkan ukuran tabel ──────────
 // Sebelumnya SETIAP panggilan saveLocalDB() men-JSON.stringify SELURUH
