@@ -2,11 +2,11 @@ import React, { useState } from "react";
 import { Badge, Btn, Card, ExportMenu, Input, Modal, Table } from "../../components/ui";
 import { SUPER_ADMIN_CANONICAL_ID, SUPER_ADMIN_EMAIL, isSuperAdminEmail } from "../../config/superAdmin";
 import { Dashboard } from "../../features/dashboard/Dashboard";
-import { genUniqueId } from "../../lib/format";
+import { encodeEmailKey } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 
-function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers }) {
+function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers, pindahIdPengguna }) {
   // Set email (huruf kecil) yang punya minimal satu sesi aktif — dipakai
   // untuk badge "🟢 Online" per baris pengguna di tabel bawah.
   const activeEmailSet = new Set((activeUsers||[]).map(a => a.email?.toLowerCase()).filter(Boolean));
@@ -52,7 +52,7 @@ function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergenc
     setForm({ ...row });
     setModal("edit");
   }
-  function submit() {
+  async function submit() {
     if (!form.nama || !form.email) return alert("Nama & Email wajib diisi");
     const emailBaru = form.email.trim().toLowerCase();
 
@@ -82,9 +82,47 @@ function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergenc
         return alert("Tidak bisa mengubah role Admin terakhir. Tambahkan Admin lain dahulu sebelum menurunkan role ini.");
       }
     }
-    if (modal==="add") addRecord("pengguna", { ...form, id:genUniqueId("U") });
-    else updateRecord("pengguna", form.id, form);
+    // ✅ FIX: ID baris pengguna WAJIB "U_" + kunci email (sama dengan yang
+    // dipakai auto-register). Security rules mencari role lewat ID ini —
+    // sebelumnya form ini memakai ID acak sehingga pengguna yang ditambah
+    // manual TIDAK PERNAH ditemukan rules dan ditolak untuk semua akses.
+    const idBenar = "U_" + encodeEmailKey(emailBaru);
+    const dataBaris = { ...form, email: emailBaru };
+    if (modal === "add") {
+      addRecord("pengguna", { ...dataBaris, id: idBenar });
+    } else if (form.id === idBenar) {
+      updateRecord("pengguna", form.id, dataBaris);
+    } else {
+      // Email diubah, atau baris lama ber-ID acak → pindahkan ke ID yang benar.
+      if (!pindahIdPengguna) return alert("Fitur pemindahan ID belum tersedia.");
+      const hasil = await pindahIdPengguna(form.id, { id: idBenar, nama: dataBaris.nama, email: emailBaru, role: dataBaris.role, wilayahId: dataBaris.wilayahId ?? "" });
+      if (!hasil.ok) return alert("Gagal menyimpan: " + hasil.message);
+    }
     setModal(null);
+  }
+
+  // Baris lama yang dibuat lewat form versi sebelumnya (ID acak) → tidak
+  // punya akses server. `perluDiperbaiki` = belum ada baris ber-ID benar
+  // untuk email itu; `duplikatLama` = sudah ada, jadi baris lama ini sisa
+  // duplikat (hapus manual lewat tombol hapus setelah dicek).
+  const idBenarDari = (email) => "U_" + encodeEmailKey((email || "").trim().toLowerCase());
+  const semuaId = new Set((db.pengguna||[]).map(p => p.id));
+  const barisIdLama = (db.pengguna||[]).filter(p => p.email && p.id !== idBenarDari(p.email));
+  const perluDiperbaiki = barisIdLama.filter(p => !semuaId.has(idBenarDari(p.email)));
+  const duplikatLama = barisIdLama.filter(p => semuaId.has(idBenarDari(p.email)));
+  const [memperbaiki, setMemperbaiki] = useState(false);
+  async function perbaikiIdLama() {
+    if (!pindahIdPengguna) return;
+    if (!window.confirm(`Perbaiki ID untuk ${perluDiperbaiki.length} pengguna? Nama, email, role, dan wilayah tidak berubah — hanya ID-nya dipindah supaya akun bisa mengakses server.`)) return;
+    setMemperbaiki(true);
+    let berhasil = 0; const gagal = [];
+    for (const row of perluDiperbaiki) {
+      const emailNorm = row.email.trim().toLowerCase();
+      const hasil = await pindahIdPengguna(row.id, { id: idBenarDari(emailNorm), nama: row.nama, email: emailNorm, role: row.role, wilayahId: row.wilayahId ?? "" });
+      if (hasil.ok) berhasil++; else gagal.push(`${row.email}: ${hasil.message}`);
+    }
+    setMemperbaiki(false);
+    alert(`Selesai: ${berhasil} berhasil${gagal.length ? `, ${gagal.length} gagal:\n` + gagal.join("\n") : "."}`);
   }
   function hapusPengguna(id) {
     const row = (db.pengguna||[]).find(p => p.id === id);
@@ -158,6 +196,26 @@ function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergenc
             pengelola sistem/developer aplikasi ini — perbaikan untuk kondisi ini perlu dilakukan
             langsung lewat Firebase Console, bukan lewat aplikasi.
           </div>
+        </div>
+      )}
+      {(perluDiperbaiki.length > 0 || duplikatLama.length > 0) && (
+        <div style={{ background:"#FFFBEB", border:"1.5px solid #F59E0B", borderRadius:10, padding:"12px 16px",
+          marginBottom:16, fontSize:13, color:"#92400E", lineHeight:1.6 }}>
+          {perluDiperbaiki.length > 0 && (
+            <div style={{ display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+              <div style={{ flex:1, minWidth:220 }}>
+                <b>{perluDiperbaiki.length} pengguna memakai ID lama</b> (dibuat lewat "Tambah Pengguna" versi sebelumnya):
+                {" "}{perluDiperbaiki.map(p => p.email).join(", ")}. Akun ini <b>tidak punya akses ke server</b> sampai ID-nya diperbaiki.
+              </div>
+              <Btn size="sm" onClick={perbaikiIdLama} disabled={memperbaiki}>{memperbaiki ? "Memperbaiki…" : "Perbaiki ID"}</Btn>
+            </div>
+          )}
+          {duplikatLama.length > 0 && (
+            <div style={{ marginTop: perluDiperbaiki.length > 0 ? 8 : 0 }}>
+              {duplikatLama.length} baris lama duplikat dari akun yang sudah ber-ID benar ({duplikatLama.map(p => p.email).join(", ")}).
+              Periksa lalu hapus baris berID lama-nya secara manual.
+            </div>
+          )}
         </div>
       )}
       <div style={{ background:T.blueLt, border:`1px solid #BFDBFE`, borderRadius:10, padding:"10px 14px",
