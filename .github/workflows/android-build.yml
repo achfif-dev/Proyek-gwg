@@ -72,6 +72,11 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Default action v3 memasang paket 'tools' yang sudah dihapus Google
+          # → sdkmanager gagal "Failed to find package 'tools'" (exit code 1).
+          # Cukup 'platform-tools'; cmdline-tools/sdkmanager tetap dipasang otomatis.
+          packages: platform-tools
 
       - name: Install dependencies npm
         run: |
