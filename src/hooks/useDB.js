@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import { firebaseDB } from "../firebase/init";
-import { FIREBASE_CONFIGURED } from "../firebase/config";
-import { idbGet, idbSet, queueWrite, queueRemove, queueGetAll, queueCount, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
+import { firebaseDB, firebaseAuth } from "../firebase/init";
+import { FIREBASE_CONFIGURED, FIREBASE_CONFIG } from "../firebase/config";
+import { idbGet, idbSet, queueWrite, queueGetDenied, queueCount, queueRetryDenied, queueDiscardDenied, drainQueue, isPermissionDenied, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
 import { loadAppConfig } from "../config/appConfig";
 import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
@@ -9,6 +9,7 @@ import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/
 import { isSuperAdminEmail } from "../config/superAdmin";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "../lib/googleDrive";
 import { downloadJSON } from "../lib/fileSave";
+import { ambilSnapshotServer, simpanBackupCloud, jalankanReset, jalankanRestore, snapshotKosong } from "../lib/backupRestore";
 
 export function useDB(user) {
   const [db, setDB] = useState(() => {
@@ -602,53 +603,88 @@ export function useDB(user) {
   // masih offline), langsung berhenti — sisanya dicoba lagi di kesempatan
   // berikutnya (event 'online' berikutnya / retry berkala), supaya tidak
   // spam percobaan yang pasti gagal saat memang belum ada sinyal.
+  const flushAgainRef = useRef(false);
   const flushWriteQueue = useCallback(async () => {
-    if (!firebaseDB || !basePathRef.current || flushingRef.current) return;
+    if (!firebaseDB || !basePathRef.current) return;
+    // Sedang mengirim → jangan tumpuk, tapi CATAT bahwa ada perubahan baru
+    // supaya begitu putaran ini selesai langsung diproses (bukan menunggu
+    // interval 30 detik).
+    if (flushingRef.current) { flushAgainRef.current = true; return; }
     flushingRef.current = true;
     try {
       const { db: rtdb, ref, set } = firebaseDB;
-      // ✅ FIX (audit): IndexedDB getAll() mengembalikan entri terurut
-      // ALFABETIS berdasarkan `path` (primary key object store), BUKAN
-      // urutan sebenarnya saat perubahan itu terjadi. Ini berbahaya untuk
-      // urutan yang punya KETERGANTUNGAN antar-koleksi — contoh nyata: Sales
-      // offline mendaftarkan toko baru ("toko/...") lalu langsung mencatat
-      // kontrol/penyesuaian pertamanya ("kontrol/...", "penyesuaian/...").
-      // Rules mensyaratkan toko-nya SUDAH ADA di server saat kontrol/
-      // penyesuaian baru dibuat (untuk cek kecocokan wilayah) — tapi
-      // alfabetis, "kontrol"/"penyesuaian" (k, p) terkirim SEBELUM "toko"
-      // (t), jadi ditolak permanen oleh rules walau toko-nya sendiri
-      // berhasil terdaftar belakangan. Sekarang antrean diurutkan dulu
-      // berdasarkan `ts` (waktu sebenarnya perubahan itu di-queue) supaya
-      // urutan pengiriman ke Firebase sama persis dengan urutan Sales
-      // melakukannya di lapangan.
-      const entries = (await queueGetAll()).sort((a, b) => (a.ts||0) - (b.ts||0));
-      for (const { path, value } of entries) {
+      // Urutan kirim = urutan `ts` (waktu perubahan di-queue), bukan
+      // alfabetis — penting untuk ketergantungan antar-koleksi (toko harus
+      // sudah ada di server sebelum kontrol/penyesuaiannya). Lihat drainQueue.
+      //
+      // PERMISSION_DENIED bisa SEMENTARA (token login kedaluwarsa). Karena itu,
+      // penolakan pertama pada putaran ini dicoba SEKALI LAGI setelah token
+      // diperbarui, baru dianggap benar-benar ditolak.
+      let tokenSudahDiperbarui = false;
+      const kirim = async (path, value) => {
+        const target = ref(rtdb, `gwg_data/shared/${path}`);
         try {
-          await set(ref(rtdb, `gwg_data/shared/${path}`), value);
-          await queueRemove(path);
+          await set(target, value);
         } catch (e) {
-          // ✅ FIX: bedakan "ditolak security rules" (PERMANEN, tidak akan
-          // pernah berhasil walau dicoba ulang) dari "kemungkinan masih
-          // offline" (SEMENTARA, wajar dicoba lagi nanti). Sebelumnya
-          // keduanya diperlakukan sama, jadi penolakan rules jadi nyangkut
-          // selamanya di antrean tanpa pernah kelihatan oleh pengguna.
-          const kode = String(e?.code || e?.message || "").toUpperCase();
-          const ditolakRules = kode.includes("PERMISSION_DENIED");
-          if (ditolakRules) {
-            console.error("Ditolak security rules (permanen, tidak dicoba ulang):", path, e);
-            await queueRemove(path); // hentikan percobaan ulang yang sia-sia
-            setWriteDenied(prev => [...prev, { path, message: e?.message || "Permission denied", at: Date.now() }]);
-            continue; // lanjut proses sisa antrean — bukan berhenti total
-          }
-          console.warn("Sinkron tertunda (kemungkinan masih offline):", path, e);
-          break; // hentikan, coba lagi nanti begitu online/retry berikutnya
+          if (!isPermissionDenied(e) || tokenSudahDiperbarui) throw e;
+          tokenSudahDiperbarui = true;
+          try { await firebaseAuth?.auth?.currentUser?.getIdToken(true); } catch { throw e; }
+          await set(target, value);
         }
-      }
+      };
+      do {
+        flushAgainRef.current = false;
+        const hasil = await drainQueue(kirim, {
+          // ✅ FIX: perubahan yang ditolak rules TIDAK lagi dibuang dari
+          // antrean. Ia ditandai `denied` dan disimpan permanen di
+          // IndexedDB sampai user memilih Kirim Ulang / Buang / Simpan
+          // cadangan (lihat retryDenied/discardDenied/exportDenied).
+          onDenied: (entry, message) => {
+            console.error("Ditolak security rules (disimpan, tidak dibuang):", entry.path, message);
+            setWriteDenied(prev => [...prev.filter(x => x.path !== entry.path), { path: entry.path, message, at: Date.now() }]);
+          },
+        });
+        if (hasil.stopped) {
+          console.warn("Sinkron tertunda (kemungkinan masih offline):", hasil.error);
+          break; // coba lagi nanti begitu online/retry berikutnya
+        }
+      } while (flushAgainRef.current);
     } finally {
       flushingRef.current = false;
       refreshPendingCount();
     }
   }, [refreshPendingCount]);
+
+  // Perubahan yang ditolak rules di sesi SEBELUMNYA tetap tampil di banner
+  // begitu user login lagi (state writeDenied sendiri hanya di memori).
+  useEffect(() => {
+    if (!user) return;
+    let batal = false;
+    queueGetDenied().then(rows => {
+      if (batal || !rows.length) return;
+      setWriteDenied(prev => {
+        const sudah = new Set(prev.map(x => x.path));
+        return [...prev, ...rows.filter(r => !sudah.has(r.path)).map(r => ({ path: r.path, message: r.deniedMessage || "Permission denied", at: r.deniedAt || r.ts }))];
+      });
+    });
+    return () => { batal = true; };
+  }, [user]);
+
+  // Kirim ulang semua perubahan yang ditolak (mis. setelah rules diperbaiki
+  // atau Admin memberi izin), buang permanen, atau ekspor sebagai cadangan.
+  const retryDenied = useCallback(async () => {
+    const n = await queueRetryDenied();
+    setWriteDenied([]);
+    refreshPendingCount();
+    flushWriteQueue();
+    return n;
+  }, [flushWriteQueue, refreshPendingCount]);
+  const discardDenied = useCallback(async () => {
+    const n = await queueDiscardDenied();
+    setWriteDenied([]);
+    return n;
+  }, []);
+  const exportDenied = useCallback(async () => queueGetDenied(), []);
 
   // Coba flush antrean: (1) begitu user login & Firebase siap — menyapu
   // sisa antrean dari sesi sebelumnya yang mungkin belum sempat terkirim;
@@ -676,7 +712,22 @@ export function useDB(user) {
   // koneksi kembali, walau app sempat ditutup/HP mati di antaranya.
   const pushUpdates = useCallback((updates) => {
     const entries = Object.entries(updates).map(([path, value]) => [path, value === undefined ? null : value]);
-    Promise.all(entries.map(([path, value]) => queueWrite(path, value))).then(refreshPendingCount);
+    Promise.all(entries.map(([path, value]) => queueWrite(path, value))).then((tersimpan) => {
+      refreshPendingCount();
+      // ✅ FIX: kalau IndexedDB tidak tersedia (mis. private mode), queueWrite
+      // gagal dan antrean kosong → sebelumnya perubahan TIDAK PERNAH dikirim
+      // ke Firebase sama sekali. Kirim langsung sebagai upaya terbaik.
+      if (tersimpan.some(ok => !ok) && firebaseDB && basePathRef.current) {
+        const { db: rtdb, ref, set } = firebaseDB;
+        entries.forEach(([path, value], i) => {
+          if (tersimpan[i]) return;
+          set(ref(rtdb, `gwg_data/shared/${path}`), value).catch(e => {
+            if (isPermissionDenied(e)) setWriteDenied(prev => [...prev, { path, message: e?.message || "Permission denied", at: Date.now() }]);
+            else console.warn("Kirim langsung gagal (IndexedDB tidak tersedia):", path, e);
+          });
+        });
+      }
+    });
     if (!user || !firebaseDB || !basePathRef.current) return;
     flushWriteQueue();
   }, [user, flushWriteQueue, refreshPendingCount]);
@@ -952,6 +1003,28 @@ export function useDB(user) {
     });
   }, [pushUpdates, markLocalWrite]);
 
+  // Pindahkan baris pengguna ke ID yang BENAR ("U_" + kunci email). Security
+  // rules mencari role pengguna lewat ID itu; baris berID acak (dibuat lewat
+  // form Tambah Pengguna versi lama) tidak pernah ditemukan → akun tsb tidak
+  // punya akses server sama sekali. Sengaja BUKAN lewat deleteRecord() karena
+  // itu memasukkan email ke daftar blokir (deletedUsers). Ditulis langsung &
+  // berurutan: baris baru dulu, baru baris lama dihapus.
+  const pindahIdPengguna = useCallback(async (idLama, barisBaru) => {
+    if (!firebaseDB || !basePathRef.current) {
+      return { ok: false, message: "Belum terhubung ke server. Coba lagi saat online." };
+    }
+    const { db: rtdb, ref, set } = firebaseDB;
+    try {
+      await set(ref(rtdb, `gwg_data/shared/pengguna/${barisBaru.id}`), barisBaru);
+      if (idLama && idLama !== barisBaru.id) {
+        await set(ref(rtdb, `gwg_data/shared/pengguna/${idLama}`), null);
+      }
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, message: e?.message || String(e) };
+    }
+  }, []);
+
   const updateStokToko = useCallback((tokoId, produkId, jumlah) => {
     markLocalWrite("toko", tokoId);
     setDB(prevDB => {
@@ -968,37 +1041,6 @@ export function useDB(user) {
     });
   }, [pushUpdates, markLocalWrite]);
 
-  const resetDB = useCallback(() => {
-    // PENGAMAN TAMBAHAN: selalu backup snapshot SEBELUM data dihapus, supaya
-    // kalau reset ternyata tidak disengaja, masih ada cara memulihkannya
-    // lewat menu "Riwayat Backup" (lihat backupNow/listBackups/restoreBackup
-    // di bawah).
-    backupNow(db, { reason: "sebelum-reset" });
-    setDB(DB_EMPTY);
-    saveLocalDB(DB_EMPTY);
-    flushLocalDBNow(); // pastikan tidak ada penulisan lama (debounced) yang menimpa balik setelah ini
-    // Reset menghapus SETIAP path tabel secara eksplisit (bukan menulis satu
-    // blob kosong ke root), supaya konsisten dengan skema per-path di atas.
-    const updates = {};
-    LIST_TABLES.forEach(key => { updates[key] = null; });
-    updates.stokAwal = null;
-    updates.bagiHasilConfig = null;
-    updates.daftarAkun = null;
-    updates.saldoAkunBulanan = null;
-    // index tahun kontrol — ikut dibersihkan saat reset. CATATAN: ini butuh
-    // rule kontrolYearsIndex/$tahun yang mengizinkan Admin/Manajer MENGHAPUS
-    // (bukan cuma set `true`) — kalau rules pernah dikembalikan ke versi
-    // lama, baris ini akan gagal per-path (lihat flushWriteQueue) dan
-    // tersangkut di banner "writeDenied", bukan bikin reset gagal total.
-    updates.kontrolYearsIndex = null;
-    pushUpdates(updates);
-    // Reset juga state lokal partisi-tahun supaya UI tidak menampilkan
-    // tahun-tahun "sudah dimuat" dari sesi sebelum reset.
-    kontrolByYearRef.current = {};
-    setLoadedKontrolYears([]);
-    setAvailableKontrolYears([]);
-    jurnalByYearRef.current = {};
-  }, [pushUpdates, db]);
 
   // ───────────────────────────────────────────────────────────────────────
   // BACKUP OTOMATIS & MANUAL
@@ -1015,78 +1057,115 @@ export function useDB(user) {
   // jauh sebelum data penjualan asli sendiri mendekati batas itu. 5 hari
   // masih cukup untuk jaga-jaga kalau ada kesalahan input/impor yang baru
   // ketahuan beberapa hari kemudian, dan mengurangi separuh pengganda
-  // ukuran backup (lihat juga: jurnalUmum sekarang dikecualikan dari
-  // snapshot backup sama sekali — lihat catatan di backupNow()).
+  // ukuran backup (lihat catatan di backupNow() soal jurnalUmum).
   const MAX_BACKUPS = 5;
+  const HARIAN_TERMASUK_JURNAL = true;
 
-  const backupNow = useCallback(async (dbToBackup, { reason = "manual" } = {}) => {
-    const nowIso = new Date().toISOString();
-    // ⚠️ OPTIMASI UKURAN RTDB: "jurnalUmum" sengaja DIKECUALIKAN dari
-    // snapshot backup. Tabel ini tumbuh terus (belum ada arsip — lihat
-    // archiveJurnalTahun()) dan tanpa pengecualian ini, setiap byte
-    // pertumbuhannya dikalikan ~(MAX_BACKUPS+1)x karena disalin penuh ke
-    // tiap backup harian. `daftarAkun`/`saldoAkunBulanan` tetap disertakan
-    // karena kecil (config/snapshot ringkas, bukan log transaksi).
-    // Restore dari backup TIDAK LAGI mengubah jurnalUmum — lihat guard di
-    // restoreBackup(). Untuk memulihkan jurnal, gunakan arsip Drive per
-    // tahun (archiveJurnalTahun/restoreJurnalTahunDariArsip) kalau sudah
-    // pernah diarsipkan, atau terima bahwa jurnal tahun berjalan tidak
-    // ter-cover oleh mekanisme backup harian ini.
-    const { jurnalUmum: _jurnalUmumDikecualikan, ...dbRingkas } = dbToBackup || {};
-    const snapshot = { ts: nowIso, reason, data: dbRingkas, jurnalUmumDikecualikan: true };
-    const dateKey = nowIso.slice(0, 10); // YYYY-MM-DD
-
-    // 1) Salinan lokal — selalu jalan, bahkan tanpa login/Firebase.
-    try { localStorage.setItem(`gwg_backup_${dateKey}`, JSON.stringify(snapshot)); } catch {}
-
-    // 2) Salinan cloud — supaya bisa dipulihkan dari perangkat lain juga.
-    // Status keberhasilannya dikembalikan (cloudOk/cloudError), BUKAN cuma
-    // di-console.warn diam-diam, supaya tombol di UI bisa menampilkan pesan
-    // sukses/gagal yang sesungguhnya ke pengguna — sebelumnya tombol "Simpan
-    // Snapshot ke Cloud" tidak memberi konfirmasi apa pun walau gagal.
-    let cloudOk = false, cloudError = null;
-    if (!user) {
-      cloudError = "Belum login — backup cloud butuh akun Google aktif.";
-    } else if (!firebaseDB) {
-      cloudError = "Firebase belum aktif (aplikasi berjalan di Mode Lokal).";
-    } else {
+  // Objek API Firebase minimal untuk modul lib/backupRestore.js.
+  const fbApi = () => {
+    const { db: rtdb, ref, set, get } = firebaseDB;
+    // Daftar NAMA kunci anak tanpa mengunduh isinya (REST ?shallow=true).
+    // Dipakai untuk memangkas backup lama tanpa mengunduh semua snapshot.
+    // Gagal/tidak tersedia → null, pemanggil jatuh ke get() biasa.
+    const shallowKeys = async (p) => {
       try {
-        const { db: rtdb, ref, set, get } = firebaseDB;
-        await set(ref(rtdb, `gwg_data/_backups/${dateKey}`), snapshot);
-        cloudOk = true;
-        const listSnap = await get(ref(rtdb, `gwg_data/_backups`));
-        const all = listSnap.val();
-        if (all) {
-          const keys = Object.keys(all).sort(); // format YYYY-MM-DD bisa diurutkan sebagai string
-          const excess = keys.length - MAX_BACKUPS;
-          if (excess > 0) {
-            await Promise.all(keys.slice(0, excess).map(k => set(ref(rtdb, `gwg_data/_backups/${k}`), null)));
-          }
-        }
+        const base = FIREBASE_CONFIG?.databaseURL;
+        const token = await firebaseAuth?.auth?.currentUser?.getIdToken();
+        if (!base || !token) return null;
+        const r = await fetch(`${base.replace(/\/$/, "")}/${p}.json?shallow=true&auth=${encodeURIComponent(token)}`);
+        if (!r.ok) return null;
+        const j = await r.json();
+        return j && typeof j === "object" ? Object.keys(j) : [];
+      } catch { return null; }
+    };
+    return { rtdb, ref, set, get, shallowKeys };
+  };
+
+  // ✅ FIX (audit): snapshot cloud sekarang diambil dari SERVER, bukan dari
+  // state React. Sebelumnya snapshot dibuat dari `db` di memori — yang bisa
+  // PARSIAL (tabel besar dianggap "selesai dimuat" setelah jeda 900 ms) dan
+  // hanya berisi tahun kontrol yang sedang live, lalu MENIMPA backup hari itu.
+  // Sekarang: semua tahun kontrol, dan kalau satu pembacaan gagal seluruh
+  // backup dibatalkan (tidak pernah menulis backup parsial).
+  //
+  // SEMUA jenis backup (harian, manual, pengaman reset/restore, ekspor penuh)
+  // kini menyertakan jurnalUmum. Sebelumnya jurnal dikecualikan dari backup
+  // harian demi kuota RTDB; tapi jurnal adalah data akuntansi yang TIDAK bisa
+  // dibangun ulang dari data lain. Pemangkasan backup lama sekarang tidak lagi
+  // mengunduh semua snapshot (lihat shallowKeys), jadi biayanya hanya storage
+  // (~MAX_BACKUPS × ukuran database). Kalau suatu saat database sudah besar,
+  // ubah HARIAN_TERMASUK_JURNAL ke false.
+  const backupNow = useCallback(async (dbToBackup, { reason = "manual", termasukJurnal, sufiks } = {}) => {
+    const nowIso = new Date().toISOString();
+    const dateKey = nowIso.slice(0, 10); // YYYY-MM-DD
+    const key = sufiks ? `${dateKey}-${sufiks}` : dateKey;
+    const sertakanJurnal = termasukJurnal ?? (reason === "auto-harian" ? HARIAN_TERMASUK_JURNAL : true);
+
+    if (user && firebaseDB && basePathRef.current) {
+      let data;
+      try {
+        data = await ambilSnapshotServer(fbApi(), { termasukJurnal: sertakanJurnal });
       } catch (e) {
-        console.warn("Backup ke cloud gagal (salinan lokal tetap tersimpan):", e);
-        cloudError = e.message;
+        return { snapshot: null, cloudOk: false, cloudError: `Gagal membaca data dari server: ${e?.message || e}` };
+      }
+      if (reason === "auto-harian" && snapshotKosong(data)) {
+        return { snapshot: null, cloudOk: false, cloudError: "Database masih kosong — backup dilewati." };
+      }
+      const snapshot = { ts: nowIso, reason, versi: 2, data, jurnalUmumDikecualikan: !sertakanJurnal };
+      try {
+        await simpanBackupCloud(fbApi(), snapshot, key, MAX_BACKUPS);
+        return { snapshot, cloudOk: true, cloudError: null };
+      } catch (e) {
+        console.warn("Backup ke cloud gagal:", e);
+        return { snapshot, cloudOk: false, cloudError: e?.message || String(e) };
       }
     }
-    return { snapshot, cloudOk, cloudError };
 
+    // Mode lokal / belum login: salinan lokal dari state, seperti sebelumnya.
+    const { jurnalUmum: _jurnalUmum, ...dbRingkas } = dbToBackup || {};
+    const snapshot = { ts: nowIso, reason, data: sertakanJurnal ? (dbToBackup || {}) : dbRingkas, jurnalUmumDikecualikan: !sertakanJurnal };
+    try { localStorage.setItem(`gwg_backup_${key}`, JSON.stringify(snapshot)); } catch {}
+    return {
+      snapshot, cloudOk: false,
+      cloudError: !user ? "Belum login — backup cloud butuh akun Google aktif." : "Firebase belum aktif (aplikasi berjalan di Mode Lokal).",
+    };
   }, [user]);
 
-  // Auto-backup 1x per hari per perangkat. Dipasang lewat efek terpisah agar
-  // berjalan sendiri tanpa perlu dipanggil manual dari komponen UI, dan baru
-  // jalan setelah cloudLoaded supaya tidak membackup data kosong/parsial yang
-  // belum selesai sinkron dari Firebase.
-  useEffect(() => {
-    if (!cloudLoaded) return;
-    if (!db || (db.pengguna || []).length === 0) return; // belum ada data nyata, lewati
+  // Ekspor penuh untuk diunduh sebagai file: semua tahun kontrol + jurnalUmum,
+  // langsung dari server.
+  const eksporPenuh = useCallback(async () => {
+    if (!(user && firebaseDB && basePathRef.current)) return { ok: false, message: "Butuh login dan koneksi ke server." };
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const data = await ambilSnapshotServer(fbApi(), { termasukJurnal: true });
+      return { ok: true, snapshot: { ts: new Date().toISOString(), reason: "ekspor-penuh", versi: 2, data, jurnalUmumDikecualikan: false } };
+    } catch (e) {
+      return { ok: false, message: e?.message || String(e) };
+    }
+  }, [user]);
+
+  // Auto-backup 1x per hari per perangkat — hanya Admin/Manajer (yang boleh
+  // menulis _backups). Snapshot diambil dari server sehingga tidak bergantung
+  // pada state yang mungkin belum selesai dimuat. Penanda "sudah backup hari
+  // ini" baru ditulis SETELAH sukses (sebelumnya ditulis sebelum hasil
+  // diketahui, jadi kegagalan tidak pernah dicoba ulang di hari yang sama).
+  const autoBackupBerjalanRef = useRef(false);
+  const bolehBackupCloud = useMemo(() => {
+    if (!user?.email) return false;
+    const me = (db.pengguna || []).find(p => p.id === "U_" + encodeEmailKey(user.email.toLowerCase()));
+    return me?.role === "Admin" || me?.role === "Manajer";
+  }, [user, db.pengguna]);
+  useEffect(() => {
+    if (!cloudLoaded || !bolehBackupCloud || autoBackupBerjalanRef.current) return;
+    let today;
+    try {
+      today = new Date().toISOString().slice(0, 10);
       if (localStorage.getItem("gwg_last_autobackup") === today) return;
-      backupNow(db, { reason: "auto-harian" });
-      localStorage.setItem("gwg_last_autobackup", today);
-    } catch {}
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cloudLoaded, db, backupNow]);
+    } catch { return; }
+    autoBackupBerjalanRef.current = true;
+    backupNow(null, { reason: "auto-harian" })
+      .then(r => { if (r?.cloudOk) { try { localStorage.setItem("gwg_last_autobackup", today); } catch {} } })
+      .finally(() => { autoBackupBerjalanRef.current = false; });
+  }, [cloudLoaded, bolehBackupCloud, backupNow]);
 
   // Daftar backup yang tersedia di cloud, untuk ditampilkan di menu Admin.
   const listBackups = useCallback(async () => {
@@ -1096,7 +1175,7 @@ export function useDB(user) {
       const snap = await get(ref(rtdb, `gwg_data/_backups`));
       const all = snap.val() || {};
       return Object.entries(all)
-        .map(([key, val]) => ({ key, ts: val?.ts, reason: val?.reason, data: val?.data }))
+        .map(([key, val]) => ({ key, ts: val?.ts, reason: val?.reason, data: val?.data, jurnalUmumDikecualikan: val?.jurnalUmumDikecualikan }))
         .sort((a, b) => b.key.localeCompare(a.key));
     } catch (e) {
       console.warn("Gagal memuat daftar backup:", e);
@@ -1104,181 +1183,102 @@ export function useDB(user) {
     }
   }, []);
 
-  // Restore dari satu snapshot backup — menulis ulang SEMUA tabel secara
-  // eksplisit (beda dengan save() yang hanya mengirim yang berubah), supaya
-  // hasil restore benar-benar identik dengan snapshot yang dipilih.
-  //
-  // PENTING (bugfix): versi lama fungsi ini menulis "kontrol" lewat
-  // pushUpdates() sama seperti tabel kecil lainnya — sebagai SATU blob flat
-  // di root path "kontrol". Padahal listener pembaca kontrol HANYA membaca
-  // path "kontrol/{tahun}/{id}" (dipartisi per tahun). Akibatnya data
-  // kontrol/penjualan hasil restore tertulis ke Firebase, tapi di path yang
-  // tidak pernah dibaca ulang oleh aplikasi → terlihat "hilang" setelah
-  // refresh/login ulang. Sekarang "kontrol" ditulis terpisah, dipartisi per
-  // tahun, SAMA PERSIS seperti save()/addRecord().
-  //
-  // Selain itu, semua penulisan sekarang di-await dan errornya dikumpulkan
-  // lalu dikembalikan ke pemanggil (bukan cuma console.warn diam-diam),
-  // supaya kalau tabel besar (toko/kontrol) gagal tertulis karena koneksi
-  // terputus, ADMIN DIBERI TAHU — bukan mengira restore sudah berhasil.
-  const restoreBackup = useCallback(async (snapshotData) => {
-    // Backup buatan versi baru (lihat backupNow()) sengaja tidak menyertakan
-    // "jurnalUmum" — kalau kita naif memakai DB_EMPTY.jurnalUmum ([]) di
-    // sini, restore akan MENGHAPUS seluruh jurnal aktif tanpa peringatan.
-    // Kalau key-nya memang tidak ada di snapshot, pertahankan jurnalUmum
-    // yang sedang berjalan di state saat ini (tidak disentuh oleh restore).
-    // Backup LAMA (dari sebelum patch ini) tetap menyertakan jurnalUmum
-    // apa adanya dan tetap direstore seperti biasa.
-    const jurnalUmumBelumAdaDiSnapshot = !Object.prototype.hasOwnProperty.call(snapshotData || {}, "jurnalUmum");
-    const restored = { ...DB_EMPTY, ...snapshotData };
-    if (jurnalUmumBelumAdaDiSnapshot) restored.jurnalUmum = db.jurnalUmum;
+  // Restore dari satu snapshot backup. Semua penulisan PER RECORD (lihat
+  // lib/backupRestore.js) sesuai level izin di security rules — versi lama
+  // menulis di root `kontrol`/`jurnalUmum` dan level {tahun}, yang selalu
+  // ditolak, sehingga data kontrol tidak pernah benar-benar pulih.
+  //  • Tabel "pengguna" TIDAK ikut dipulihkan (bisa mengunci Admin sekarang).
+  //  • Sebelum menulis: antrean lokal dikirim dulu dan dibuat backup pengaman
+  //    kondisi saat ini (kunci terpisah "-sebelum-restore"). Kalau salah satu
+  //    gagal, restore dibatalkan dan data tidak berubah.
+  //  • Hanya tahun kontrol yang ADA di snapshot yang direkonsiliasi.
+  const restoreBackup = useCallback(async (snapshotData, opsi = {}) => {
+    const jurnalDisertakan = opsi.jurnalDisertakan ?? Object.prototype.hasOwnProperty.call(snapshotData || {}, "jurnalUmum");
+    const online = !!(firebaseDB && user && basePathRef.current);
+
+    if (online) {
+      await flushWriteQueue();
+      const tertunda = await queueCount();
+      if (tertunda > 0) {
+        return { ok: false, failed: ["antrean"], message: `Restore DIBATALKAN: masih ada ${tertunda} perubahan yang belum terkirim ke server. Sambungkan internet, tunggu sinkron selesai, lalu ulangi. Data tidak diubah.` };
+      }
+      const pengaman = await backupNow(null, { reason: "sebelum-restore", termasukJurnal: jurnalDisertakan, sufiks: "sebelum-restore" });
+      if (!pengaman.cloudOk) {
+        return { ok: false, failed: ["backup-pengaman"], message: `Restore DIBATALKAN: backup pengaman kondisi saat ini gagal (${pengaman.cloudError}). Data tidak diubah.` };
+      }
+    }
+
+    const restored = { ...DB_EMPTY, ...snapshotData, pengguna: db.pengguna };
+    if (!jurnalDisertakan) restored.jurnalUmum = db.jurnalUmum;
     setDB(restored);
     saveLocalDB(restored);
-    flushLocalDBNow(); // sama seperti resetDB — hindari race dengan write lama yang masih ditunda debounce
+    flushLocalDBNow(); // hindari race dengan write lama yang masih ditunda debounce
 
-    const failed = [];
-
-    if (firebaseDB) {
-      const { db: rtdb, ref, set } = firebaseDB;
-      const writeTable = async (key, value) => {
-        try { await set(ref(rtdb, `gwg_data/shared/${key}`), value); }
-        catch (e) { console.warn(`Gagal restore tabel "${key}":`, e); failed.push(key); }
-      };
-      // ✅ FIX "GAGAL disimpan — tidak ada izin" saat Restore Backup (bug
-      // sama dengan save()/tutup buku di atas): "pengguna", "penyesuaian",
-      // "penarikanToko", "penjualanLuar", "kasTransaksi", "asetAmortisasi",
-      // "stockOpname", "hutangPiutang", dan "gudangTransaksi" rules-nya
-      // HANYA memberi .write di level `{table}/{id}`, TIDAK di root
-      // tabelnya — writeTable(key, arrToMap(...)) di atas menulis blob ke
-      // root dan SELALU ditolak PERMISSION_DENIED untuk tabel-tabel itu.
-      // "saldoAkunBulanan" sama, tapi levelnya `{bulan}/{kode}`. Sekarang
-      // ditulis PER RECORD (dan record lama yang tidak ada lagi di
-      // snapshot dihapus satu-satu juga, bukan set(null) di root) supaya
-      // path yang ditulis selalu cocok dengan level permission tersempit.
-      const writeTablePerRecord = async (key, arr) => {
-        try {
-          const idBaru = new Set((arr || []).map(r => r.id));
-          const idLama = (db[key] || []).map(r => r.id).filter(id => !idBaru.has(id));
-          await Promise.all([
-            ...(arr || []).map(rec => set(ref(rtdb, `gwg_data/shared/${key}/${rec.id}`), rec)),
-            ...idLama.map(id => set(ref(rtdb, `gwg_data/shared/${key}/${id}`), null)),
-          ]);
-        } catch (e) { console.warn(`Gagal restore tabel "${key}":`, e); failed.push(key); }
-      };
-      const writeSaldoAkunBulanan = async (saldoMap) => {
-        try {
-          const bulanBaru = saldoMap || {};
-          const bulanLama = db.saldoAkunBulanan || {};
-          const semuaBulan = new Set([...Object.keys(bulanBaru), ...Object.keys(bulanLama)]);
-          const jobs = [];
-          semuaBulan.forEach(bulan => {
-            const kodeBaru = bulanBaru[bulan] || {};
-            const kodeLama = bulanLama[bulan] || {};
-            new Set([...Object.keys(kodeBaru), ...Object.keys(kodeLama)]).forEach(kode => {
-              jobs.push(set(ref(rtdb, `gwg_data/shared/saldoAkunBulanan/${bulan}/${kode}`), kodeBaru[kode] ?? null));
-            });
-          });
-          await Promise.all(jobs);
-        } catch (e) { console.warn('Gagal restore tabel "saldoAkunBulanan":', e); failed.push("saldoAkunBulanan"); }
-      };
-      await Promise.all([
-        writeTable("wilayah", arrToMap(restored.wilayah)),
-        writeTable("rute", arrToMap(restored.rute)),
-        writeTable("toko", arrToMap(restored.toko)),
-        writeTable("produk", arrToMap(restored.produk)),
-        writeTablePerRecord("pengguna", restored.pengguna),
-        writeTablePerRecord("penyesuaian", restored.penyesuaian),
-        writeTablePerRecord("penarikanToko", restored.penarikanToko),
-        writeTablePerRecord("penjualanLuar", restored.penjualanLuar),
-        // ✅ Tabel yang sebelumnya TIDAK di-restore sama sekali ke cloud
-        // walau ikut di-backup (data lokal terlihat "sudah dipulihkan",
-        // tapi diam-diam hilang lagi setelah reload/dari device lain).
-        writeTablePerRecord("kasTransaksi", restored.kasTransaksi),
-        writeTablePerRecord("asetAmortisasi", restored.asetAmortisasi),
-        writeTablePerRecord("stockOpname", restored.stockOpname),
-        writeTablePerRecord("hutangPiutang", restored.hutangPiutang),
-        writeTablePerRecord("distribusiLog", restored.distribusiLog),
-        writeTablePerRecord("tutupBuku", restored.tutupBuku),
-        writeTablePerRecord("gudangTransaksi", restored.gudangTransaksi),
-        writeTable("stokAwal", restored.stokAwal || {}),
-        writeTable("bagiHasilConfig", restored.bagiHasilConfig ?? null),
-        writeTable("daftarAkun", restored.daftarAkun || {}),
-        writeSaldoAkunBulanan(restored.saldoAkunBulanan),
-      ]);
-
-      // "jurnalUmum" — partisi per tahun, sama pola persis dengan "kontrol"
-      // di bawah (field `.tanggal` lewat kontrolYearOf()). Kalau backup ini
-      // tidak menyertakan jurnalUmum (backup baru pasca-optimasi ukuran
-      // RTDB), JANGAN sentuh path RTDB-nya sama sekali — jurnal aktif yang
-      // sekarang tetap seperti apa adanya.
-      if (!jurnalUmumBelumAdaDiSnapshot) {
-        try {
-          await set(ref(rtdb, `gwg_data/shared/jurnalUmum`), null);
-          const jurnalByYear = {};
-          (restored.jurnalUmum || []).forEach(rec => {
-            const y = kontrolYearOf(rec);
-            (jurnalByYear[y] = jurnalByYear[y] || {})[rec.id] = rec;
-          });
-          for (const [year, recs] of Object.entries(jurnalByYear)) {
-            await set(ref(rtdb, `gwg_data/shared/jurnalUmum/${year}`), recs);
-          }
-        } catch (e) {
-          console.warn('Gagal restore tabel "jurnalUmum":', e);
-          failed.push("jurnalUmum");
-        }
+    if (online) {
+      const hasil = await jalankanRestore(fbApi(), snapshotData, { jurnalDisertakan });
+      // Tahun-tahun kontrol yang baru dipulihkan harus resmi "termuat" supaya
+      // tidak hilang dari layar saat recompute berikutnya.
+      (hasil.tahunKontrol || []).forEach(year => loadKontrolYear(year));
+      if (!hasil.ok) {
+        const daftar = [...new Set(hasil.gagal.map(g => g.nama))];
+        return { ok: false, failed: daftar, message: `Sebagian data GAGAL dipulihkan: ${daftar.join(", ")}. Penyebab pertama: ${hasil.gagal[0].pesan}. Muat ulang aplikasi untuk melihat kondisi data yang sebenarnya di server, lalu coba lagi. Kondisi sebelum restore tersimpan di backup "...-sebelum-restore".` };
       }
+      return { ok: true };
+    }
 
-      // "kontrol" — bersihkan dulu node lama (termasuk sisa blob flat dari
-      // restore versi lama, kalau ada) SEBELUM menulis partisi baru, supaya
-      // tidak ada data ganda/nyasar tercampur di root "kontrol".
-      try {
-        await set(ref(rtdb, `gwg_data/shared/kontrol`), null);
-        const kontrolByYear = {};
-        (restored.kontrol || []).forEach(rec => {
-          const y = kontrolYearOf(rec);
-          (kontrolByYear[y] = kontrolByYear[y] || {})[rec.id] = rec;
-        });
-        for (const [year, recs] of Object.entries(kontrolByYear)) {
-          await set(ref(rtdb, `gwg_data/shared/kontrol/${year}`), recs);
-          await set(ref(rtdb, `gwg_data/shared/kontrolYearsIndex/${year}`), true);
-        }
-        // ✅ FIX SINKRONISASI: sebelumnya, tahun-tahun kontrol dari backup
-        // yang BUKAN tahun live (mis. tahun-tahun lama) hanya sempat tampil
-        // sekilas lewat setDB(restored) di atas — begitu event Firebase apa
-        // pun terjadi pada tahun yang sedang live (termasuk tulisan restore
-        // ini sendiri ke tahun berjalan), recomputeKontrolArr() otomatis
-        // terpicu dan membangun ulang db.kontrol HANYA dari kontrolByYearRef
-        // (tahun-tahun yang benar-benar ter-listen) — diam-diam MEMBUANG
-        // tahun-tahun lama yang baru saja dipulihkan dari tampilan (datanya
-        // tetap aman di Firebase, cuma hilang dari layar tanpa peringatan).
-        // Memanggil loadKontrolYear() untuk setiap tahun di backup membuat
-        // tahun-tahun itu resmi "termuat" (listener aktif + ikut di-merge),
-        // sehingga tidak hilang lagi setelah recompute berikutnya.
-        Object.keys(kontrolByYear).forEach(year => loadKontrolYear(year));
-      } catch (e) {
-        console.warn('Gagal restore tabel "kontrol":', e);
-        failed.push("kontrol");
-      }
-    } else {
-      // Mode lokal tanpa Firebase: antrean ini baru benar-benar dikirim ke
-      // Firebase NANTI kalau/ketika Firebase tersedia (lihat flushWriteQueue)
-      // — jadi tetap harus per-record (bukan blob per tabel) supaya path-nya
-      // sudah cocok dari awal dengan level permission yang berlaku nanti,
-      // sama seperti cabang firebaseDB di atas.
-      const updates = {};
-      LIST_TABLES.forEach(key => {
-        (restored[key] || []).forEach(rec => { updates[`${key}/${rec.id}`] = rec; });
+    // Mode lokal tanpa Firebase: antrean per-record (dikirim NANTI saat Firebase tersedia).
+    const updates = {};
+    LIST_TABLES.forEach(key => {
+      if (key === "pengguna") return;
+      (restored[key] || []).forEach(rec => {
+        const p = (key === "kontrol" || key === "jurnalUmum") ? `${key}/${kontrolYearOf(rec)}/${rec.id}` : `${key}/${rec.id}`;
+        updates[p] = rec;
       });
-      updates.stokAwal = restored.stokAwal || {};
-      updates.bagiHasilConfig = restored.bagiHasilConfig ?? null;
-      pushUpdates(updates);
-    }
-
-    if (failed.length > 0) {
-      return { ok: false, failed, message: `Sebagian data GAGAL disimpan ke cloud (kemungkinan koneksi terputus): ${failed.join(", ")}. Coba ulangi restore dengan koneksi lebih stabil — jangan tutup halaman saat proses berjalan.` };
-    }
+    });
+    updates.stokAwal = restored.stokAwal || {};
+    updates.bagiHasilConfig = restored.bagiHasilConfig ?? null;
+    pushUpdates(updates);
     return { ok: true };
-  }, [pushUpdates, loadKontrolYear, db.jurnalUmum]);
+  }, [user, flushWriteQueue, backupNow, pushUpdates, loadKontrolYear, db.pengguna, db.jurnalUmum]);
+
+  // ✅ FIX (audit): Reset versi lama menulis null di ROOT tabel — ditolak rules
+  // untuk kontrol/penyesuaian/jurnalUmum/dst — sehingga hanya master data
+  // (toko/wilayah/rute/produk) yang terhapus dan kontrol jadi yatim. Sekarang:
+  //  1. antrean lokal dikirim dulu (supaya tidak menulis balik data lama),
+  //  2. backup pengaman LENGKAP (termasuk jurnal) dibuat dan HARUS berhasil,
+  //  3. data transaksi dihapus per record, baru master data; kalau ada tahap
+  //     yang gagal, proses berhenti tanpa menyentuh master data,
+  //  4. tabel "pengguna" tidak ikut dihapus.
+  const resetDB = useCallback(async () => {
+    const bersihkanLokal = () => {
+      const kosong = { ...DB_EMPTY, pengguna: db.pengguna };
+      setDB(kosong);
+      saveLocalDB(kosong);
+      flushLocalDBNow();
+      kontrolByYearRef.current = {};
+      setLoadedKontrolYears([]);
+      setAvailableKontrolYears([]);
+      jurnalByYearRef.current = {};
+    };
+    if (!(firebaseDB && user && basePathRef.current)) { bersihkanLokal(); return { ok: true, lokal: true }; }
+
+    await flushWriteQueue();
+    const tertunda = await queueCount();
+    if (tertunda > 0) {
+      return { ok: false, message: `Reset DIBATALKAN: masih ada ${tertunda} perubahan yang belum terkirim ke server. Sambungkan internet dan tunggu sinkron selesai dulu. Tidak ada data yang dihapus.` };
+    }
+    const pengaman = await backupNow(null, { reason: "sebelum-reset", termasukJurnal: true, sufiks: "sebelum-reset" });
+    if (!pengaman.cloudOk) {
+      return { ok: false, message: `Reset DIBATALKAN: backup pengaman gagal (${pengaman.cloudError}). Tidak ada data yang dihapus.` };
+    }
+    const hasil = await jalankanReset(fbApi());
+    if (!hasil.ok) {
+      const g = hasil.gagal[0];
+      return { ok: false, message: `Reset BERHENTI di tahap "${hasil.tahap}" (${hasil.gagal.length} path gagal, contoh: ${g.path} — ${g.pesan}). Master data tidak dihapus supaya tidak ada data yatim. Backup pengaman ada di menu Backup & Restore (kunci "...-sebelum-reset").` };
+    }
+    bersihkanLokal();
+    return { ok: true, dihapus: hasil.dihapus };
+  }, [user, db.pengguna, flushWriteQueue, backupNow]);
 
   // ─────────────────────────────────────────────
   //  ARSIP TAHUN LAMA (Google Drive) — hemat kuota Realtime Database
@@ -1743,7 +1743,7 @@ export function useDB(user) {
     return { ok: true };
   }, [db, save]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
 }
 
 
