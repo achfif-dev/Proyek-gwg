@@ -16,7 +16,7 @@ import { usePresence } from "./hooks/usePresence";
 import { useDB } from "./hooks/useDB";
 import { useAnalytics } from "./hooks/useAnalytics";
 import { encodeEmailKey, decodeEmailKey, kontrolYearOf, autoUpgradeBaruToAktif } from "./lib/dataHelpers";
-import { downloadJSON } from "./lib/fileSave";
+import { downloadJSON, saveOrShareBlob } from "./lib/fileSave";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "./lib/googleDrive";
 import { exportExcel, autoColumns } from "./lib/exportUtils";
 import { fmt, fmtRp, genUniqueId } from "./lib/format";
@@ -252,6 +252,10 @@ export default function GWGSuperApp() {
   const [resetConfirmText, setResetConfirmText] = useState("");
   const [resetStep, setResetStep] = useState(1); // 1 = alasan, 2 = konfirmasi ketik
   const [resetAlasan, setResetAlasan] = useState("");
+  const [resetting, setResetting] = useState(false); // true selama Reset berjalan (cegah klik ganda)
+  const [eksporLoading, setEksporLoading] = useState(false);
+  const [eksporTick, setEksporTick] = useState(0); // memicu hitung ulang "hari sejak ekspor penuh terakhir"
+  const [eksporBannerTutup, setEksporBannerTutup] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [backupList, setBackupList] = useState([]);
   const [backupLoading, setBackupLoading] = useState(false);
@@ -361,7 +365,7 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
   const analytics = useAnalytics(db);
 
   // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
@@ -770,6 +774,33 @@ export default function GWGSuperApp() {
   const save         = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawSave(...args); }, [isViewer, tolakViewer, rawSave]);
   const resetDB       = useCallback((...args) => { if (isViewer) return tolakViewer(); return rawResetDB(...args); }, [isViewer, tolakViewer, rawResetDB]);
 
+  // ✅ BARU: Ekspor penuh — semua tahun kontrol + jurnalUmum + seluruh tabel,
+  // dibaca LANGSUNG dari server (bukan dari state layar), lalu diunduh/dibagikan
+  // sebagai file .json. File ini bisa dipulihkan lewat "Pulihkan dari File Backup".
+  // Waktu ekspor terakhir dicatat di perangkat ini untuk pengingat mingguan.
+  const lakukanEksporPenuh = useCallback(async () => {
+    if (eksporLoading) return;
+    setEksporLoading(true);
+    try {
+      const r = await eksporPenuh();
+      if (!r?.ok) { alert("Ekspor penuh GAGAL: " + (r?.message || "tidak diketahui") + "\n\nPastikan online dan sudah login."); return; }
+      const nama = `gwg_ekspor_penuh_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`;
+      await saveOrShareBlob(new Blob([JSON.stringify(r.snapshot)], { type: "application/json" }), nama);
+      try { localStorage.setItem("gwg_last_full_export", String(Date.now())); } catch {}
+      setEksporTick(t => t + 1);
+    } catch (e) {
+      alert("Ekspor penuh gagal disimpan: " + (e?.message || e));
+    } finally {
+      setEksporLoading(false);
+    }
+  }, [eksporPenuh, eksporLoading]);
+  const hariSejakEksporPenuh = useMemo(() => {
+    try {
+      const t = Number(localStorage.getItem("gwg_last_full_export"));
+      return t ? Math.floor((Date.now() - t) / 86400000) : null; // null = belum pernah di perangkat ini
+    } catch { return null; }
+  }, [eksporTick]);
+
   // Jaga-jaga: jika tab yang aktif sekarang tidak boleh diakses oleh role
   // pengguna saat ini (misal role baru saja diturunkan oleh Admin, atau
   // pengguna Sales mencoba membuka URL/state tab terlarang), alihkan ke Dashboard.
@@ -866,6 +897,7 @@ export default function GWGSuperApp() {
           }
         },
       },
+      { label: "Ekspor Penuh (semua tahun + jurnal)", icon: Icon.download, onClick: () => lakukanEksporPenuh() },
       { label: "Backup & Restore", icon: Icon.save, onClick: openBackupModal },
       {
         label: "Reset Database",
@@ -1081,6 +1113,19 @@ export default function GWGSuperApp() {
             belakangan setelah bingung kenapa "tidak sinkron". Tombol "Muat
             Ulang" sengaja full page reload (bukan sekadar re-fetch state)
             supaya tampilan pasti kembali 100% sesuai data asli di server. */}
+        {isAdmin && cloudLoaded && !eksporBannerTutup && (hariSejakEksporPenuh === null || hariSejakEksporPenuh >= 7) && (
+          <div style={{ background:"#FFFBEB", border:"1.5px solid #F59E0B", borderRadius:12, padding:"12px 16px",
+            marginBottom:16, display:"flex", alignItems:"center", gap:12, flexWrap:"wrap" }}>
+            <div style={{ flex:1, minWidth:200, fontSize:13, color:"#92400E", lineHeight:1.6 }}>
+              <b>Ekspor penuh {hariSejakEksporPenuh === null ? "belum pernah dilakukan di perangkat ini" : `terakhir ${hariSejakEksporPenuh} hari lalu`}.</b>{" "}
+              Backup otomatis harian hanya 5 hari terakhir; ekspor penuh (semua tahun + jurnal) simpan ke Google Drive/perangkat sebagai cadangan mandiri.
+            </div>
+            <div style={{ display:"flex", gap:8 }}>
+              <Btn size="sm" disabled={eksporLoading} onClick={lakukanEksporPenuh}>{eksporLoading ? "Membaca…" : "Ekspor Sekarang"}</Btn>
+              <Btn size="sm" variant="secondary" onClick={()=>setEksporBannerTutup(true)}>Nanti</Btn>
+            </div>
+          </div>
+        )}
         {writeDenied && writeDenied.length > 0 && (
           <div style={{ background:"#FEF2F2", border:"2px solid #DC2626", borderRadius:12,
             padding:"14px 18px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:12,
@@ -1088,18 +1133,27 @@ export default function GWGSuperApp() {
             <span style={{ color:"#DC2626", flexShrink:0 }}><Icon.ban size={22} strokeWidth={2} /></span>
             <div style={{ flex:1, minWidth:200 }}>
               <div style={{ fontWeight:800, fontSize:14, color:"#DC2626", marginBottom:4 }}>
-                {writeDenied.length} perubahan GAGAL disimpan — tidak ada izin
+                {writeDenied.length} perubahan DITOLAK server — tidak ada izin
               </div>
               <div style={{ fontSize:12.5, color:"#7F1D1D", lineHeight:1.6 }}>
-                Firebase menolak perubahan ini (bukan soal koneksi). Tampilan di layar Anda
-                <b> mungkin masih menunjukkan hasil yang "seolah berhasil"</b> padahal sebenarnya
-                belum tersimpan — data asli di server tidak berubah. Klik "Muat Ulang" untuk
-                mengembalikan tampilan sesuai data yang sebenarnya, lalu coba lagi atau hubungi Admin
-                kalau seharusnya Anda punya izin untuk ini.
+                Server menolak perubahan ini (bukan soal koneksi), jadi datanya <b>belum tersimpan di server</b>,
+                walau layar Anda mungkin masih menampilkannya. Perubahan ini <b>tetap aman tersimpan di perangkat ini</b> dan
+                tidak akan hilang sendiri. Pilih: <b>Kirim Ulang</b> (mis. setelah Admin memberi izin),
+                <b> Simpan Cadangan</b> (file JSON), atau <b>Buang</b> kalau memang tidak diperlukan.
               </div>
             </div>
-            <div style={{ display:"flex", gap:8, flexShrink:0 }}>
-              <Btn size="sm" variant="danger" icon={Icon.refresh} onClick={()=>window.location.reload()}>Muat Ulang</Btn>
+            <div style={{ display:"flex", gap:8, flexShrink:0, flexWrap:"wrap" }}>
+              <Btn size="sm" variant="danger" icon={Icon.refresh} onClick={async ()=>{ await retryDenied(); }}>Kirim Ulang</Btn>
+              <Btn size="sm" variant="secondary" onClick={async ()=>{
+                const rows = await exportDenied();
+                await downloadJSON(`perubahan-ditolak-${new Date().toISOString().slice(0,10)}.json`, rows);
+              }}>Simpan Cadangan</Btn>
+              <Btn size="sm" variant="secondary" onClick={async ()=>{
+                if (window.confirm(`Buang ${writeDenied.length} perubahan yang ditolak? Ini tidak bisa dibatalkan. Halaman akan dimuat ulang supaya tampilan kembali sesuai data di server.`)) {
+                  await discardDenied();
+                  window.location.reload();
+                }
+              }}>Buang</Btn>
               <Btn size="sm" variant="secondary" onClick={clearWriteDenied}>Tutup</Btn>
             </div>
           </div>
@@ -1170,7 +1224,7 @@ export default function GWGSuperApp() {
           )}
           {canAccessTab("pengguna", { isAdmin, isManajer }) && (
             <div style={{ display: activeTab==="pengguna" ? "block" : "none" }}>
-              <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} />
+              <TabPengguna  db={db} addRecord={addRecord} updateRecord={updateRecord} deleteRecord={deleteRecord} isEmergencyAdmin={isEmergencyAdmin} listDeletedUsers={listDeletedUsers} restoreDeletedUser={restoreDeletedUser} activeUsers={visibleActiveUsers} pindahIdPengguna={pindahIdPengguna} />
             </div>
           )}
         </Suspense>
@@ -1187,6 +1241,9 @@ export default function GWGSuperApp() {
             <div style={{ display:"flex", gap:10, marginBottom:20, flexWrap:"wrap" }}>
               <Btn icon={Icon.download} onClick={() => downloadJSON(`gwg_backup_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.json`, { ts:new Date().toISOString(), reason:"manual-download", data:db })}>
                 Unduh Backup Sekarang (.json)
+              </Btn>
+              <Btn icon={eksporLoading ? Icon.refresh : Icon.download} disabled={eksporLoading} onClick={lakukanEksporPenuh}>
+                {eksporLoading ? "Membaca dari server..." : "Ekspor Penuh (semua tahun + jurnal)"}
               </Btn>
               <Btn variant="secondary" disabled={backupLoading} icon={backupLoading ? Icon.refresh : Icon.cloud} onClick={async () => {
                 setBackupLoading(true);
@@ -1626,9 +1683,11 @@ export default function GWGSuperApp() {
                 <div style={{ fontSize:13, color:T.gray400, marginBottom:16, textAlign:"left",
                   background:T.redLt, border:`1px solid #FCA5A5`, borderRadius:8, padding:"12px 14px" }}>
                   <b style={{ color:T.red, display:"inline-flex", alignItems:"center", gap:5 }}><Icon.warning size={14} strokeWidth={2}/> Peringatan Keras:</b> Tindakan ini akan menghapus
-                  <b> seluruh data</b> (toko, rute, wilayah, produk, kontrol, pengguna)
+                  <b> seluruh data</b> (toko, rute, wilayah, produk, kontrol, jurnal, kas, dan tabel transaksi lain;
+                  daftar <b>pengguna tidak ikut dihapus</b>)
                   {user && <span> termasuk <b>data cloud Firebase</b></span>} secara <b>permanen</b> dan
-                  tidak dapat dibatalkan. Sistem akan membuat backup otomatis sebelum reset.
+                  tidak dapat dibatalkan. Sistem membuat backup lengkap (termasuk jurnal) lebih dulu — kalau backup itu gagal,
+                  reset dibatalkan dan tidak ada yang dihapus.
                 </div>
                 <div style={{ textAlign:"left", marginBottom:14 }}>
                   <div style={{ fontSize:12, fontWeight:600, color:T.gray600, marginBottom:5 }}>
@@ -1688,21 +1747,27 @@ export default function GWGSuperApp() {
                   <Btn
                     variant="danger"
                     icon={Icon.danger}
-                    disabled={resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN"}
-                    onClick={()=>{
-                      if (!isAdmin || resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN") return;
-                      resetDB();
+                    disabled={resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN" || resetting}
+                    onClick={async ()=>{
+                      if (!isAdmin || resetConfirmText.trim().toUpperCase() !== "HAPUS PERMANEN" || resetting) return;
+                      setResetting(true);
+                      const hasil = await resetDB();
+                      setResetting(false);
+                      // Reset sekarang async & bisa DIBATALKAN/BERHENTI (backup pengaman gagal,
+                      // antrean belum terkirim, atau ada path yang ditolak). Tampilkan alasannya
+                      // dan biarkan modal terbuka — jangan pura-pura berhasil.
+                      if (!hasil?.ok) { alert("Reset tidak selesai:\n\n" + (hasil?.message || "tidak diketahui")); return; }
                       setShowReset(false);
                       setResetConfirmText("");
                       setResetStep(1);
                       setResetAlasan("");
                     }}
                   >
-                    Ya, Reset Permanen Sekarang
+                    {resetting ? "Menghapus..." : "Ya, Reset Permanen Sekarang"}
                   </Btn>
                 </div>
                 <div style={{ marginTop:12, fontSize:11, color:T.gray400 }}>
-                  Backup otomatis akan dibuat sebelum data dihapus.
+                  Backup pengaman lengkap dibuat dulu; reset dibatalkan kalau backup itu gagal.
                 </div>
               </div>
             )}
