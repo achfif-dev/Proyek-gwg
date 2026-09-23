@@ -14,8 +14,26 @@ jobs:
   build-apk:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout kode
+            - name: Checkout kode
         uses: actions/checkout@v4
+
+      - name: Buat file .env dari GitHub Secrets (tidak pernah di-commit)
+        run: |
+          cat > .env << 'EOF'
+          VITE_APP_TITLE=${{ secrets.VITE_APP_TITLE }}
+          VITE_APP_SHORT_NAME=${{ secrets.VITE_APP_SHORT_NAME }}
+          VITE_APP_DESCRIPTION=${{ secrets.VITE_APP_DESCRIPTION }}
+          VITE_APP_ID=${{ secrets.VITE_APP_ID }}
+          VITE_THEME_COLOR=${{ secrets.VITE_THEME_COLOR }}
+          VITE_FIREBASE_API_KEY=${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN=${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_DATABASE_URL=${{ secrets.VITE_FIREBASE_DATABASE_URL }}
+          VITE_FIREBASE_PROJECT_ID=${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET=${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID=${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID=${{ secrets.VITE_FIREBASE_APP_ID }}
+          VITE_SUPER_ADMIN_EMAIL=${{ secrets.VITE_SUPER_ADMIN_EMAIL }}
+          EOF
 
       - name: Terapkan branding white-label ke project Android (dari .env)
         run: |
