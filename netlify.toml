@@ -1,6 +1,11 @@
 [build]
   command = "npm run build"
   publish = "dist"
+  # Lewati build (hemat kuota deploy gratis) kalau commit ini CUMA mengubah
+  # file .md (dokumentasi) — tidak ada perubahan kode yang butuh build baru.
+  # git diff --quiet: exit 0 (tidak ada beda) = Netlify SKIP build;
+  # exit 1 (ada beda di luar .md) = Netlify tetap build seperti biasa.
+  ignore = "git diff --quiet HEAD^ HEAD -- . ':!*.md'"
 
 [[redirects]]
   from = "/*"

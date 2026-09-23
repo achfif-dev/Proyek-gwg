@@ -132,7 +132,12 @@ Ada **dua skenario** tergantung siapa yang memakai aplikasi ini — pilih sesuai
 
 ### 5.A Untuk Instance GWG yang Sudah Berjalan
 
-Kalau Anda mengelola instance **Generasi Wangi Group** yang sudah aktif (repo `main`), **tidak perlu melakukan apa pun** — file `.env` di repo sudah berisi kredensial Firebase & branding GWG, jadi build & deploy berjalan seperti biasa tanpa setup tambahan. Langsung lanjut ke bagian *Login Pertama Kali* di bawah.
+Kalau Anda mengelola instance **Generasi Wangi Group** yang sudah aktif (repo `main`), kredensial **tidak lagi disimpan sebagai file `.env` di repo** (demi keamanan — repo ini publik). Nilainya sekarang tersimpan sebagai **GitHub Secrets** dan dibaca otomatis oleh workflow GitHub Actions saat build APK.
+
+- **Build lewat GitHub Actions (APK)** — tidak perlu setup apa pun, selama 13 Secrets `VITE_*` sudah tersimpan di Settings → Secrets and variables → Actions (lihat [§15.B](#b-membuat-file-apk-otomatis-lewat-github-actions)).
+- **Build lewat Netlify/Vercel (versi web/PWA)** — karena `.env` tidak lagi di-commit, Netlify/Vercel **tidak otomatis tahu** kredensial ini. Nilai yang sama (13 variabel) harus diisi manual sekali di dashboard masing-masing (Site settings → Environment variables). Lihat [§14](#14-build-production--deploy).
+
+Kalau kedua tempat itu sudah diisi, langsung lanjut ke bagian *Login Pertama Kali* di bawah — tidak ada langkah tambahan lain.
 
 ### 5.B Untuk Perusahaan Lain: Setup White Label (Tanpa Edit Kode)
 
@@ -141,20 +146,13 @@ Aplikasi ini bisa dipakai perusahaan konsinyasi lain dengan identitas & database
 **Langkah 1 — Deploy dulu apa adanya**
 Deploy repo ini ke Netlify/Vercel seperti biasa (lihat [§14](#14-build-production--deploy)) — **tidak perlu ubah apa pun dulu**, cukup hubungkan repo dan biarkan proses build berjalan dengan nilai bawaan.
 
-**Langkah 2 — Kosongkan kredensial Firebase bawaan**
-Supaya Setup Wizard otomatis muncul (bukan langsung memakai database GWG), buka file `.env` di root project, lalu **kosongkan** (jangan hapus barisnya, cukup kosongkan nilainya) baris-baris `VITE_FIREBASE_*`:
-```bash
-VITE_FIREBASE_API_KEY=
-VITE_FIREBASE_AUTH_DOMAIN=
-VITE_FIREBASE_DATABASE_URL=
-VITE_FIREBASE_PROJECT_ID=
-VITE_FIREBASE_STORAGE_BUCKET=
-VITE_FIREBASE_MESSAGING_SENDER_ID=
-VITE_FIREBASE_APP_ID=
-```
-Boleh juga sekalian isi `VITE_APP_NAME`, `VITE_APP_TITLE`, dll di `.env` yang sama supaya judul tab browser & nama APK ikut benar sejak awal (opsional — bisa juga diatur belakangan lewat wizard, lihat Langkah 4).
+**Langkah 2 — Pastikan kredensial Firebase bawaan GWG TIDAK ikut terpakai**
+File `.env` sudah tidak ada di repo ini (sengaja, demi keamanan — lihat `.env.example` untuk daftar variabel yang dikenali). Supaya Setup Wizard otomatis muncul (bukan diam-diam memakai database GWG), cukup **jangan isi** variabel `VITE_FIREBASE_*` di tempat Anda build:
 
-Commit & push perubahan ini — Netlify/Vercel akan otomatis build ulang.
+- **Deploy via Netlify/Vercel**: jangan tambahkan Environment Variables `VITE_FIREBASE_*` sama sekali di dashboard (Site settings → Environment variables) — biarkan kosong/tidak diisi.
+- **Build via GitHub Actions (fork repo sendiri)**: jangan isi Secrets `VITE_FIREBASE_*` di Settings → Secrets and variables → Actions.
+
+Boleh isi variabel branding (`VITE_APP_TITLE`, `VITE_APP_SHORT_NAME`, dll) lebih dulu supaya judul tab browser & nama APK ikut benar sejak awal (opsional — bisa juga diatur belakangan lewat wizard, lihat Langkah 4). Daftar lengkap 13 variabel yang dikenali ada di `.env.example`.
 
 **Langkah 3 — Buat project Firebase sendiri**
 1. Buka [Firebase Console](https://console.firebase.google.com) → **Buat project baru** (gratis).
@@ -174,7 +172,7 @@ Aplikasi akan reload otomatis dan langsung memakai identitas & database baru ter
 > 💡 Setup Wizard yang sama juga bisa dibuka kapan saja lewat menu **☰ → ⚙️ Setup Aplikasi (White Label)** (khusus Admin yang sudah login) kalau suatu saat ingin mengubah branding/Firebase/Super Admin instance yang sudah jalan. Buka **Panduan Setup White Label** (`PANDUAN-SETUP-WHITE-LABEL.md`) di root repo untuk versi lebih lengkap + FAQ.
 
 **Langkah 5 (opsional) — Build APK dengan identitas sendiri**
-Kalau ingin APK Android dengan nama & Package ID sendiri (bukan `com.gwg.superapp`), isi juga `VITE_APP_ID` dan `VITE_APP_NAME` di `.env` sebelum push — GitHub Actions (`.github/workflows/android-build.yml`) otomatis membaca nilai ini saat build APK. Lihat [§15](#15-install-sebagai-aplikasi-pwa--membuat-apk-android).
+Kalau ingin APK Android dengan nama & Package ID sendiri (bukan `com.gwg.superapp`), isi juga Secrets `VITE_APP_ID` dan `VITE_APP_SHORT_NAME` di GitHub (Settings → Secrets and variables → Actions) sebelum menjalankan workflow build — `android-build.yml`/`release-build.yml` otomatis membaca nilai ini lewat step "Buat file .env dari GitHub Secrets". Lihat [§15](#15-install-sebagai-aplikasi-pwa--membuat-apk-android).
 
 ### C. Login Pertama Kali
 1. Buka aplikasi, klik **"Masuk dengan Google"**.
@@ -450,15 +448,21 @@ Data yang diarsipkan **tidak pernah hilang** — hanya dipindah tempat penyimpan
 # 1. Clone atau download repo ini, lalu masuk ke foldernya
 cd Proyek-gwg-main
 
-# 2. Install semua dependency
+# 2. Salin template .env (file .env asli TIDAK di-commit ke repo — lihat §18)
+cp .env.example .env
+# lalu isi manual nilai VITE_FIREBASE_* di .env kalau mau coba Mode Cloud;
+# boleh dibiarkan kosong untuk Mode Lokal
+
+# 3. Install semua dependency
 npm install
 
-# 3. Jalankan development server
+# 4. Jalankan development server
 npm run dev
 ```
 Aplikasi akan terbuka otomatis di `http://localhost:5173` (atau port lain jika 5173 terpakai). Perubahan kode langsung ter-reload otomatis (hot reload).
 
 > 💡 Kalau kredensial Firebase di `.env` belum diisi (dan Setup Wizard belum dijalankan), aplikasi tetap bisa dijalankan & dicoba dalam **Mode Lokal** tanpa perlu setup Firebase dulu.
+> ⚠️ File `.env` lokal Anda **jangan pernah** di-`git add`/commit — sudah masuk `.gitignore`, tapi tetap berhati-hati kalau menyalin/upload project secara manual.
 
 ---
 
@@ -497,6 +501,15 @@ Project ini sudah menyertakan `netlify.toml` dengan konfigurasi build otomatis:
 ### C. Deploy ke Vercel (alternatif)
 Project ini juga menyertakan `vercel.json` sehingga bisa langsung di-import ke [Vercel](https://vercel.com) dengan cara yang sama (hubungkan repo GitHub, build command `npm run build`, output directory `dist`).
 
+### D. Wajib: isi Environment Variables di dashboard Netlify/Vercel
+Karena `.env` **tidak di-commit** ke repo (lihat [§18](#18-catatan-keamanan)), Netlify/Vercel tidak otomatis tahu kredensial Firebase & branding Anda — build akan tetap sukses tapi aplikasinya jadi Mode Lokal (Firebase kosong) kalau langkah ini dilewati.
+
+1. Buka dashboard situs Anda → **Site settings → Environment variables** (Netlify) atau **Settings → Environment Variables** (Vercel).
+2. Tambahkan ke-13 variabel yang sama seperti di `.env.example`: `VITE_APP_TITLE`, `VITE_APP_SHORT_NAME`, `VITE_APP_DESCRIPTION`, `VITE_APP_ID`, `VITE_THEME_COLOR`, `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_DATABASE_URL`, `VITE_FIREBASE_PROJECT_ID`, `VITE_FIREBASE_STORAGE_BUCKET`, `VITE_FIREBASE_MESSAGING_SENDER_ID`, `VITE_FIREBASE_APP_ID`, `VITE_SUPER_ADMIN_EMAIL`.
+3. Trigger ulang deploy (redeploy) supaya nilai barunya ikut ke-build.
+
+> 💡 Kalau memang mau instance ini tetap Mode Lokal / biar Setup Wizard yang mengisi Firebase (skenario [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode)), lewati langkah ini dengan sengaja — itu memang caranya.
+
 ---
 
 ## 15. Install sebagai Aplikasi (PWA) & Membuat APK Android
@@ -510,16 +523,25 @@ Karena project ini sudah dikonfigurasi sebagai **PWA** lengkap (manifest + servi
 Setelah diinstall, aplikasi berjalan fullscreen tanpa address bar, punya ikon sendiri, dan tetap bisa dibuka offline (berkat service worker + cache yang sudah dijelaskan di [§11](#11-mode-offline--sinkronisasi-otomatis)).
 
 ### B. Membuat file .apk (otomatis lewat GitHub Actions)
-Project ini sudah dikonfigurasi dengan **Capacitor** + workflow GitHub Actions (`.github/workflows/android-build.yml`) yang membungkus hasil build web jadi APK Android secara otomatis — **tidak perlu tools eksternal** seperti PWABuilder.
+Project ini sudah dikonfigurasi dengan **Capacitor** + 3 workflow GitHub Actions yang membungkus hasil build web jadi APK/AAB Android secara otomatis — **tidak perlu tools eksternal** seperti PWABuilder, dan tidak perlu Android Studio/terminal lokal.
 
-1. **Push ke branch `main`** (atau buka tab **Actions** di GitHub → pilih workflow **"Build Android APK"** → **Run workflow** untuk memicu manual).
-2. Workflow otomatis: build web app → baca `VITE_APP_ID`/`VITE_APP_SHORT_NAME` dari `.env` → generate `capacitor.config.json` dengan Package ID & nama sesuai white label Anda → sync platform Android → **build APK debug** → jalankan sekali di emulator untuk cek ada crash atau tidak.
-3. Setelah selesai (beberapa menit), buka run tersebut di tab **Actions**, scroll ke bagian **Artifacts**, unduh **`gwg-superapp-debug-apk`** — itu file `.apk` yang bisa langsung diinstall di HP Android (aktifkan dulu "Install dari sumber tidak dikenal" di pengaturan HP).
+**Prasyarat sekali di awal** — isi 13 Secrets `VITE_*` (branding + Firebase, lihat `.env.example`) di **Settings → Secrets and variables → Actions**. Tanpa ini, step "Buat file .env dari GitHub Secrets" di kedua workflow di bawah akan menghasilkan `.env` kosong dan APK-nya jadi Mode Lokal.
+
+**B.1 — Build APK debug** (`android-build.yml`, untuk instalasi manual/internal testing)
+1. **Push ke branch `main`** (atau buka tab **Actions** → pilih workflow **"Build Android APK"** → **Run workflow** untuk memicu manual).
+2. Workflow otomatis: generate `.env` dari Secrets → terapkan branding (Package ID & nama) ke project Android → build web app → sync platform Android → **build APK debug** → jalankan sekali di emulator untuk cek ada crash atau tidak.
+3. Setelah selesai (beberapa menit), buka run tersebut, scroll ke **Artifacts**, unduh **`gwg-superapp-debug-apk`** — file `.apk` siap diinstall langsung di HP Android (aktifkan dulu "Install dari sumber tidak dikenal" di pengaturan HP).
 4. Artifact **`crash-log`**, **`network-log`**, dan **`full-log`** juga ikut diunggah — berguna untuk debug kalau APK-nya nge-hang/crash saat pertama dibuka.
 
-> ⚠️ APK yang dihasilkan adalah **build debug** (untuk instalasi manual/internal testing), bukan `.aab` production yang sudah ditandatangani untuk Google Play Store. Untuk rilis ke Play Store, perlu langkah signing key tambahan (`./gradlew bundleRelease` dengan keystore sendiri) yang belum termasuk di workflow bawaan ini.
-> 
-> 💡 Ingin Package ID/nama APK yang berbeda dari `com.gwg.superapp`? Isi `VITE_APP_ID` dan `VITE_APP_SHORT_NAME` di `.env` sebelum push — lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode) langkah 5.
+**B.2 — Build APK/AAB release, sudah ditandatangani** (untuk rilis sungguhan / upload ke Play Store)
+1. **Sekali saja** — jalankan workflow **"Generate Release Keystore"** (tab Actions → Run workflow). Hasilnya (keystore + password) muncul di ringkasan run & artifact; simpan sebagai 4 Secrets: `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`. **Jangan jalankan ulang** kalau sudah pernah rilis ke pengguna — keystore baru = HP lama tidak bisa update, harus uninstall dulu.
+2. Setelah 4 Secrets itu tersimpan, jalankan workflow **"Build Signed Release APK/AAB"** (`release-build.yml`) lewat tab Actions → Run workflow (bisa isi `versionName` opsional, mis. `1.1.0`).
+3. Workflow otomatis cek kelengkapan 4 Secret keystore → generate `.env` dari Secrets → terapkan branding → build web → decode keystore → verifikasi password/alias cocok → **build APK + AAB signed**.
+4. Unduh dari **Artifacts**: `gwg-superapp-release-apk` (siap install manual) dan `gwg-superapp-release-aab` (format yang diwajibkan Play Console untuk submit ke Play Store).
+
+> 💡 Ingin Package ID/nama APK yang berbeda dari `com.gwg.superapp`? Isi Secrets `VITE_APP_ID` dan `VITE_APP_SHORT_NAME` — lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode) langkah 5.
+>
+> ⚠️ Kalau suatu saat perlu mengedit isi file `.github/workflows/*.yml` langsung lewat editor web GitHub (mis. dari HP), cek ulang indentasi sebelum commit — editor web kadang auto-indent baris yang di-paste, dan YAML sangat sensitif terhadap ini (lihat [§17](#17-tips--troubleshooting)).
 
 ---
 
@@ -528,15 +550,19 @@ Project ini sudah dikonfigurasi dengan **Capacitor** + workflow GitHub Actions (
 ```
 Proyek-gwg-main/
 ├── index.html                     # Entry point HTML (judul/theme-color dari .env saat build)
-├── .env                            # Kredensial Firebase & branding build-time (aman di-commit, lihat §5.B)
+├── .env.example                    # Template 13 variabel yang dikenali (nilai asli TIDAK di-commit, lihat §18)
+├── .gitignore                      # Mengecualikan .env, node_modules, build output, keystore dari git
 ├── package.json                    # Dependency & script (dev/build/preview)
 ├── vite.config.js                  # Konfigurasi Vite + vite-plugin-pwa (manifest, service worker)
 ├── netlify.toml                    # Konfigurasi build & redirect untuk Netlify
 ├── vercel.json                     # Konfigurasi alternatif untuk Vercel
 ├── capacitor.config.json           # Konfigurasi APK Android (di-generate ulang dari .env saat CI build)
+├── PANDUAN-PENGGUNAAN.md           # Panduan pakai aplikasi sehari-hari (setup awal + tiap fitur, non-teknis)
 ├── PANDUAN-SETUP-WHITE-LABEL.md    # Panduan lengkap + FAQ untuk perusahaan lain (pelengkap §5.B)
 ├── .github/workflows/
-│   └── android-build.yml           # CI: build APK Android otomatis (lihat §15.B)
+│   ├── android-build.yml           # CI: build APK Android debug otomatis (lihat §15.B.1)
+│   ├── generate-keystore.yml       # CI: generate keystore signing release, jalankan sekali saja (§15.B.2)
+│   └── release-build.yml           # CI: build APK+AAB release yang sudah ditandatangani (§15.B.2)
 ├── src/
 │   ├── main.jsx                    # Bootstrap React + registrasi service worker (registerSW)
 │   ├── App.jsx                     # Layout utama, header, menu, routing antar tab
@@ -588,14 +614,18 @@ Proyek-gwg-main/
 - **Header menunjukkan "📴 Offline" terus padahal sinyal ada?** Cek indikator "N menunggu" — kalau angkanya tidak turun setelah beberapa menit, coba muat ulang halaman; antrean akan otomatis disapu ulang saat app dibuka.
 - **PWABuilder menampilkan skor Service Worker rendah padahal sudah di-install di Chrome?** Itu biasanya cache/delay dari crawler PWABuilder, bukan masalah nyata — patokan paling akurat adalah apakah Chrome sungguhan menawarkan "Install app".
 - **Deploy Netlify sukses tapi PWA tidak terdeteksi?** Cek **Deploy file browser** di dashboard Netlify — pastikan ada file `manifest.webmanifest` dan `sw.js`. Kalau tidak ada, berarti build tidak dijalankan lewat `npm run build` (misalnya karena drag-drop folder source mentah, bukan hasil `dist/`).
+- **Build APK gagal / workflow "hilang" satu step setelah diedit lewat HP?** Editor web GitHub kadang auto-indent baris yang di-paste, dan file `.github/workflows/*.yml` sangat sensitif terhadap indentasi (YAML) — satu step bisa "tertelan" jadi bagian dari script step sebelumnya tanpa terlihat errornya langsung. Kalau baru saja edit file workflow manual, cek ulang indentasi `- name:` sejajar dengan step lain di sekitarnya sebelum commit.
+- **APK/situs ter-build tapi login Firebase gagal / masuk Mode Lokal terus padahal harusnya Mode Cloud?** Berarti Secrets (GitHub Actions) atau Environment Variables (Netlify/Vercel) `VITE_FIREBASE_*` belum terisi di tempat build-nya — lihat [§14.D](#d-wajib-isi-environment-variables-di-dashboard-netlifyvercel) atau [§15.B](#b-membuat-file-apk-otomatis-lewat-github-actions).
 
 ---
 
 ## 18. Catatan Keamanan
 
 - Semua fungsi tulis data (`addRecord`, `updateRecord`, `deleteRecord`, `save`, `resetDB`) diblokir secara terpusat untuk role **Viewer** — bukan hanya disembunyikan di tampilan, sehingga tidak bisa "ditembus" lewat tab mana pun.
-- Akun **Super Admin** dikunci permanen di kode (`SUPER_ADMIN_EMAIL`) dan tidak bisa direbut, diubah, atau dihapus lewat antarmuka aplikasi oleh siapa pun.
+- Akun **Super Admin** ditentukan lewat `VITE_SUPER_ADMIN_EMAIL` (Secrets/environment variable) atau Setup Wizard, **bukan** ditulis permanen di source code — ini yang memungkinkan tiap instance white-label punya Super Admin sendiri tanpa fork kode. Begitu ditentukan, email itu tidak bisa direbut, diubah, atau dihapus lewat antarmuka aplikasi oleh siapa pun.
 - Sistem tidak akan pernah membiarkan jumlah Admin turun ke nol lewat tab Pengguna (baik lewat hapus maupun ubah role), untuk mencegah aplikasi terkunci total dari akses admin.
+- **Kredensial Firebase & email Super Admin tidak di-commit ke repo** (file `.env` masuk `.gitignore`, hanya `.env.example` berisi template kosong yang di-commit). Untuk build otomatis (GitHub Actions), nilainya disimpan sebagai **GitHub Secrets** dan digenerate jadi `.env` sekali pakai di awal tiap run — lihat [§15.B](#b-membuat-file-apk-otomatis-lewat-github-actions). Untuk deploy Netlify/Vercel, nilainya diisi manual di Environment Variables dashboard masing-masing — lihat [§14.D](#d-wajib-isi-environment-variables-di-dashboard-netlifyvercel).
+- Firebase Realtime Database Rules mensyaratkan `auth != null` + email terverifikasi + role tertentu (Admin/Manajer/Sales sesuai node) di **semua** path data — bukan cuma disembunyikan di tampilan aplikasi, jadi akses langsung ke database pun tetap tertolak tanpa login yang sesuai.
 - Email yang dihapus Admin masuk daftar blokir sehingga tidak otomatis mendaftar ulang — mencegah akun bekas karyawan/mitra login kembali tanpa sepengetahuan Admin.
 - Proses arsip ke Google Drive selalu **upload dulu → dapat file ID sukses → baru hapus dari database aktif**, sehingga tidak ada risiko kehilangan data walau koneksi terputus di tengah proses.
 - Perubahan data offline disimpan di antrean lokal (IndexedDB) yang **tidak menumpuk versi lama** — hanya versi terakhir per data yang dikirim, mencegah data usang menimpa data terbaru saat kembali online.
