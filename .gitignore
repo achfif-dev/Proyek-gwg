@@ -1,0 +1,21 @@
+# Rahasia / konfigurasi lokal — JANGAN pernah di-commit
+.env
+.env.local
+.env.*.local
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+android/app/build/
+android/build/
+android/.gradle/
+android/local.properties
+
+# Keystore (kalau pernah diunduh manual & disimpan lokal)
+*.keystore
+*.jks
+
+# Editor / OS
+.DS_Store
