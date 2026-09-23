@@ -34,7 +34,7 @@ jobs:
             exit 1
           fi
 
-            - name: Checkout kode
+      - name: Checkout kode
         uses: actions/checkout@v4
 
       - name: Buat file .env dari GitHub Secrets (tidak pernah di-commit)
