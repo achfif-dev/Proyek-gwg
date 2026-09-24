@@ -280,7 +280,7 @@ export function SetupWizard({ onDone, onCancel }) {
 
         {onCancel && (
           <div style={{ textAlign:"center", marginTop:14 }}>
-            <button onClick={()=>{ if(confirm("Kembalikan semua pengaturan white label ke bawaan GWG?")) { resetAppConfig(); window.location.reload(); } }}
+            <button onClick={()=>{ if(confirm("Kembalikan semua pengaturan white label ke bawaan aplikasi ini (hapus semua hasil Setup Wizard yang tersimpan di perangkat ini)?")) { resetAppConfig(); window.location.reload(); } }}
               style={{ background:"none", border:"none", color:T.gray400, fontSize:11, cursor:"pointer", textDecoration:"underline" }}>
               Kembalikan ke pengaturan bawaan
             </button>
