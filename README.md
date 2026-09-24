@@ -174,6 +174,13 @@ Aplikasi akan reload otomatis dan langsung memakai identitas & database baru ter
 **Langkah 5 (opsional) — Build APK dengan identitas sendiri**
 Kalau ingin APK Android dengan nama & Package ID sendiri (bukan `com.gwg.superapp`), isi juga Secrets `VITE_APP_ID` dan `VITE_APP_SHORT_NAME` di GitHub (Settings → Secrets and variables → Actions) sebelum menjalankan workflow build — `android-build.yml`/`release-build.yml` otomatis membaca nilai ini lewat step "Buat file .env dari GitHub Secrets". Lihat [§15](#15-install-sebagai-aplikasi-pwa--membuat-apk-android).
 
+**Langkah 6 (sangat disarankan) — Ganti ikon PWA & logo default**
+Setup Wizard **tidak bisa** mengganti ini — beda dengan branding lain, file-file berikut dibaca browser langsung sebagai file gambar biasa (bukan lewat JavaScript/wizard), jadi harus diganti manual di repo sebelum build:
+- `public/logo.png` — logo default yang tampil sebelum wizard selesai diisi, dan dipakai sebagai fallback kalau field logo di wizard dikosongkan.
+- `public/icons/icon-192.png`, `icon-512.png`, `apple-touch-icon.png`, `favicon-32.png`, `favicon-16.png` — ikon yang muncul di home-screen HP saat aplikasi di-install (PWA), di-bake ke `manifest.webmanifest` **saat build**.
+
+Ganti kelima file ini (ukuran & nama file tetap sama, isinya saja diganti) dengan logo perusahaan Anda sebelum `npm run build` / push ke `main` — kalau dilewati, ikon home-screen & logo sebelum-login tetap menampilkan logo GWG walau branding lain sudah sesuai.
+
 ### C. Login Pertama Kali
 1. Buka aplikasi, klik **"Masuk dengan Google"**.
 2. Akun pertama yang login otomatis menjadi **Admin**.
@@ -593,9 +600,9 @@ Proyek-gwg-main/
 │   │   └── logo.js                  # Logo bawaan (base64, fallback kalau belum upload logo custom)
 │   └── components/                 # Komponen UI reusable (Table, Modal, StatCard, FilterBar, dst)
 └── public/
-    ├── logo.png                    # Logo aplikasi (fallback bawaan)
-    ├── icons/                      # Ikon PWA (192px, 512px, apple-touch-icon)
-    └── restore-tool-proyek-gwg.html  # Alat pemulihan darurat manual (di luar app utama)
+    ├── logo.png                    # Logo default + ikon PWA (public/icons/*) — GANTI MANUAL untuk white-label, lihat §5.B Langkah 6
+    ├── icons/                      # Ikon PWA (192px, 512px, apple-touch-icon) — GANTI MANUAL juga
+    └── restore-tool.html           # Alat pemulihan darurat manual (di luar app utama, minta tempel config Firebase sendiri — white-label safe)
 ```
 
 > Aplikasi disusun **modular per fitur** (satu folder per tab di `src/features/`) supaya mudah ditelusuri per area bisnis tanpa harus menggulir satu file raksasa. Logika sinkronisasi/state global dipusatkan di `src/hooks/useDB.js`, sementara identitas/branding dipisah total ke `src/config/appConfig.js` — inilah yang memungkinkan aplikasi yang sama dipakai banyak perusahaan tanpa fork kode (lihat [§5.B](#5b-untuk-perusahaan-lain-setup-white-label-tanpa-edit-kode)).
