@@ -138,6 +138,31 @@ jobs:
       - name: Sinkronkan aset web ke Android
         run: npx cap sync android
 
+      # ✅ FIX: workflow ini sebelumnya TIDAK generate ikon sama sekali —
+      # ia diam-diam mengandalkan folder android/ hasil commit dari
+      # workflow "Build Android APK" (debug) yang sudah pernah generate
+      # ikon dari resources/icon.png. Kalau release ini dipicu duluan di
+      # fork baru (android/ belum pernah ada / belum pernah di-sync sejak
+      # resources/icon.png diganti), APK+AAB release bisa keluar dengan
+      # ikon default Capacitor (kotak putih polos) TANPA ada error atau
+      # peringatan apa pun. Generate ulang di sini supaya release build
+      # selalu konsisten dengan resources/icon.png saat ini, apa pun
+      # urutan workflow yang pernah dijalankan sebelumnya.
+      - name: Generate ikon aplikasi dari resources/icon.png
+        run: npx @capacitor/assets generate --android
+
+      - name: Verifikasi ikon bukan ikon default Capacitor
+        run: |
+          set -e
+          ICON="android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
+          if [ ! -f "$ICON" ]; then
+            echo "❌ File ikon tidak ditemukan di $ICON — generate ikon kemungkinan gagal."
+            exit 1
+          fi
+          SRC_HASH=$(sha256sum resources/icon.png | cut -d' ' -f1)
+          echo "Ikon sumber : resources/icon.png ($SRC_HASH)"
+          echo "Ikon hasil generate ada di $ICON — cek manual di artifact APK/AAB kalau ragu."
+
       - name: Decode keystore release dari secret
         working-directory: android/app
         run: echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 -d > release.keystore
