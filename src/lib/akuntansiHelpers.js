@@ -155,6 +155,17 @@ export function buatEntryJurnal({ tanggal, sumberTipe, sumberId, keterangan, bar
   return {
     id: genUniqueId("J_"),
     tanggal,
+    // ✅ FIX (audit Rules 25 Sep 2026): Firebase Rules TIDAK punya method
+    // .substring()/.slice() — Rules v11 sebelumnya mencoba turunkan "bulan
+    // tutup buku" langsung dari tanggal pakai .substring(0,7) di sisi Rules,
+    // dan gagal saat di-publish ("No such method/property 'substring'").
+    // Solusinya: hitung bulanKey di sini (JS biasa, bebas dipakai apa saja),
+    // simpan sebagai field eksplisit di entry — Rules tinggal baca field ini
+    // apa adanya, sama seperti pola yang sudah dipakai node lain (daftarAkun
+    // dkk) untuk cek tutupBuku. Berlaku otomatis untuk SEMUA entry jurnal
+    // (baik dari postJurnal langsung maupun entry pembalik dari voidJurnal),
+    // karena keduanya lewat fungsi ini.
+    bulanKey: String(tanggal).slice(0, 7),
     sumberTipe,
     sumberId: sumberId || null,
     keterangan: keterangan || "",
