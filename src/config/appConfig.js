@@ -35,10 +35,29 @@ const _envFirebase = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID || "",
 };
 
+// ✅ FIX WHITE LABEL: brand default SEBELUMNYA hardcode string "Generasi
+// Wangi Group" dkk langsung di JS — artinya device/browser mana pun yang
+// BELUM PERNAH mengisi Setup Wizard (localStorage kosong) akan menampilkan
+// identitas GWG, bukan identitas pelanggan white-label, walau .env Firebase
+// project mereka sudah benar. Sekarang default-nya ikut pola yang sama
+// dengan _envFirebase di atas: dibaca dari VITE_APP_* saat build. Fork baru
+// yang mengisi Secrets-nya akan langsung tampil dengan identitas sendiri
+// SEBELUM wizard sempat diisi sama sekali; instance GWG yang sudah berjalan
+// tidak berubah karena nilai lama tetap dipakai sebagai fallback string di
+// sisi kanan (||) kalau env belum diisi.
+const _envBrand = {
+  companyName: import.meta.env.VITE_APP_COMPANY_NAME || "Generasi Wangi Group",
+  appName: import.meta.env.VITE_APP_SHORT_NAME || "GWG Super App",
+  tagline: import.meta.env.VITE_APP_TAGLINE || "Super App · Sistem Manajemen Konsinyasi",
+  footerText: import.meta.env.VITE_APP_FOOTER || "Generasi Wangi Group · Sampang, Jawa Timur",
+  primaryColor: import.meta.env.VITE_APP_PRIMARY_COLOR || "#0F4C35",
+  accentColor: import.meta.env.VITE_APP_ACCENT_COLOR || "#C49A1A",
+};
+
 const DEFAULT_CONFIG = {
   brand: {
-    companyName: "Generasi Wangi Group",
-    appName: "GWG Super App",
+    companyName: _envBrand.companyName,
+    appName: _envBrand.appName,
     // ✅ MULTI BIDANG USAHA: aplikasi ini sejak awal sudah memakai istilah
     // generik (Produk/Toko/Kontrol/Rekap/Bagi Hasil, dst — bukan istilah
     // khusus parfum), jadi SECARA FUNGSIONAL sudah bisa dipakai perusahaan
@@ -47,11 +66,11 @@ const DEFAULT_CONFIG = {
     // TIDAK mengubah/menyembunyikan fitur apa pun berdasarkan nilainya.
     businessField: "", // kosong = generik ("Sistem Manajemen Konsinyasi" tanpa embel-embel bidang)
     businessFieldOther: "", // dipakai kalau businessField === "lainnya"
-    tagline: "Super App · Sistem Manajemen Konsinyasi",
-    footerText: "Generasi Wangi Group · Sampang, Jawa Timur",
-    logoDataUrl: "", // kosong = pakai logo bawaan (file public/logo.png)
-    primaryColor: "#0F4C35", // dipetakan ke T.green
-    accentColor: "#C49A1A",  // dipetakan ke T.gold
+    tagline: _envBrand.tagline,
+    footerText: _envBrand.footerText,
+    logoDataUrl: "", // kosong = pakai logo bawaan (file public/logo.png / resources/icon.png)
+    primaryColor: _envBrand.primaryColor, // dipetakan ke T.green
+    accentColor: _envBrand.accentColor,  // dipetakan ke T.gold
     fontFamily: DEFAULT_FONT_VALUE, // ✅ FONT DINAMIS: lihat src/theme/fonts.js
   },
   // Kosong kalau .env belum diisi VITE_FIREBASE_* — lihat komentar di atas.

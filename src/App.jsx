@@ -2,7 +2,8 @@ import { useState, useEffect, useLayoutEffect, useMemo, useCallback, useRef, laz
 import { Capacitor } from "@capacitor/core";
 import { App as CapApp } from "@capacitor/app";
 import { T } from "./theme/tokens";
-import { loadAppConfig, getBrandLogo } from "./config/appConfig";
+import { loadAppConfig, saveAppConfig, getBrandLogo } from "./config/appConfig";
+import { fetchRemoteConfig, pushRemoteBranding, bootstrapClaimSuperAdmin } from "./lib/remoteConfig";
 import { SetupWizard } from "./features/setup/SetupWizard";
 import { DB_EMPTY } from "./config/dbEmpty";
 import { FIREBASE_CONFIGURED } from "./firebase/config";
@@ -365,6 +366,76 @@ export default function GWGSuperApp() {
   // yang tingginya diukur otomatis dari header asli (lihat penjelasan di
   // atas headerRef/headerHeight).
   const { user, loading, fbReady, loginGoogle, logout } = useAuth();
+
+  // ── SENTRALISASI BRANDING (lihat src/lib/remoteConfig.js) ──────────────
+  // 1) Begitu Firebase siap (fbReady, TIDAK perlu login — branding harus
+  //    kebaca di halaman Login juga), tarik gwg_data/_config dari server.
+  //    Kalau beda dari cache localStorage, timpa cache & reload SEKALI
+  //    supaya semua modul yang sudah kadung baca appConfig di awal ikut
+  //    pakai nilai baru — sama seperti pola reload di SetupWizard.finish().
+  //    Guard sessionStorage mencegah loop reload kalau karena suatu alasan
+  //    remote tetap "beda" terus (mis. race saat penulisan gagal parsial).
+  useEffect(() => {
+    if (!fbReady) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchRemoteConfig();
+        if (cancelled) return;
+        const local = loadAppConfig();
+        const remoteBrandStr = remote.branding ? JSON.stringify(remote.branding) : null;
+        const localBrandStr = JSON.stringify(local.brand);
+        const brandBeda = remoteBrandStr && remoteBrandStr !== localBrandStr;
+        const superAdminBeda = remote.superAdminEmail && remote.superAdminEmail !== (local.superAdminEmail || "").toLowerCase();
+        if (!brandBeda && !superAdminBeda) return;
+        const guardKey = "gw_remote_config_synced_" + (remoteBrandStr || "") + (remote.superAdminEmail || "");
+        if (sessionStorage.getItem(guardKey)) return; // sudah pernah coba sinkron nilai persis ini di sesi ini, jangan loop
+        sessionStorage.setItem(guardKey, "1");
+        saveAppConfig({
+          ...(brandBeda ? { brand: remote.branding } : {}),
+          ...(superAdminBeda ? { superAdminEmail: remote.superAdminEmail } : {}),
+        });
+        window.location.reload();
+      } catch (e) {
+        // Baca remote config gagal (mis. Rules belum diupdate ke v12 di
+        // project ini, atau network) — diamkan, aplikasi tetap jalan pakai
+        // cache localStorage seperti sebelumnya. Tidak fatal.
+        console.warn("Gagal membaca remote config (branding/superAdminEmail):", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [fbReady]);
+
+  // 2) Begitu ADA yang login DAN remote superAdminEmail belum pernah diisi
+  //    sama sekali (bootstrap), sementara device ini secara lokal sudah
+  //    tahu siapa superAdminEmail-nya (dari .env/Secrets atau wizard) DAN
+  //    email itu cocok dengan akun yang baru login — klaim status Super
+  //    Admin ke Firebase sekali, lalu ikut dorong branding lokal saat itu
+  //    juga jadi branding resmi pertama di server. Ini SATU-SATUNYA jalur
+  //    otomatis yang menulis ke _config — di luar kondisi ini (superAdmin
+  //    sudah pernah diisi), Rules menolak tulisan dari akun yang bukan
+  //    Super Admin, sengaja dibiarkan gagal diam (bukan tanggung jawab
+  //    device biasa untuk mengklaim status ini).
+  useEffect(() => {
+    if (!fbReady || !user || !user.email) return;
+    const local = loadAppConfig();
+    const localSuperAdmin = (local.superAdminEmail || "").toLowerCase();
+    if (!localSuperAdmin || localSuperAdmin !== user.email.toLowerCase()) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const remote = await fetchRemoteConfig();
+        if (cancelled || remote.superAdminEmail) return; // sudah pernah diklaim orang lain/sebelumnya, jangan sentuh
+        await bootstrapClaimSuperAdmin(localSuperAdmin);
+        await pushRemoteBranding(local.brand);
+        console.info("Bootstrap: superAdminEmail & branding awal berhasil di-set ke Firebase.");
+      } catch (e) {
+        console.warn("Bootstrap remote config gagal (kemungkinan Rules belum di-deploy):", e);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [fbReady, user]);
+
   const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
   const analytics = useAnalytics(db);
 
@@ -871,7 +942,12 @@ export default function GWGSuperApp() {
   // ⚙️ di bawah), beda dari SetupWizard di LoginPage yang tampil otomatis
   // sebelum login (instalasi baru, belum ada Firebase sama sekali).
   if (showSetupWizard) {
-    return <SetupWizard onCancel={()=>setShowSetupWizard(false)} />;
+    // isSuperAdmin dikirim ke wizard supaya tahu boleh/tidaknya dorong
+    // perubahan branding ke Firebase (_config) — lihat komentar di
+    // SetupWizard.finish(). Admin/Manajer biasa tetap bisa isi wizard,
+    // hasilnya cuma berlaku lokal di device itu (tidak tersentralisasi).
+    return <SetupWizard onCancel={()=>setShowSetupWizard(false)}
+      isSuperAdmin={!!(user && user.email && isSuperAdminEmail(user.email))} />;
   }
 
   // Semua tab navigasi + tombol Keluar + menu khusus Admin digabung jadi

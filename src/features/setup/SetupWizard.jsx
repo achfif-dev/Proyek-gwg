@@ -1,6 +1,7 @@
 import React, { useRef, useState } from "react";
 import { Btn, Card, Input } from "../../components/ui";
 import { loadAppConfig, saveAppConfig, resetAppConfig, BUSINESS_FIELD_OPTIONS, suggestTagline } from "../../config/appConfig";
+import { pushRemoteBranding } from "../../lib/remoteConfig";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 import { FONT_OPTIONS, ensureFontLoaded } from "../../theme/fonts";
@@ -21,7 +22,7 @@ function parseFirebaseConfigText(text) {
 
 const STEP_LABELS = ["Branding", "Firebase", "Super Admin", "Selesai"];
 
-export function SetupWizard({ onDone, onCancel }) {
+export function SetupWizard({ onDone, onCancel, isSuperAdmin }) {
   const initial = loadAppConfig();
   const [step, setStep] = useState(1);
   const [brand, setBrand] = useState(initial.brand);
@@ -57,13 +58,32 @@ export function SetupWizard({ onDone, onCancel }) {
     setPasteMsg(`${foundCount} field berhasil terisi otomatis dari teks yang ditempel. Periksa kembali di bawah.`);
   }
 
-  function finish() {
+  async function finish() {
     const next = saveAppConfig({
       brand,
       firebase,
       superAdminEmail: superAdminEmail.trim(),
       setupCompleted: true,
     });
+    // ✅ SENTRALISASI: kalau yang isi wizard ini sudah login DAN memang
+    // tercatat sebagai Super Admin (lihat prop isSuperAdmin dari App.jsx),
+    // dorong juga brand terbaru ke Firebase (_config/branding) supaya
+    // device LAIN ikut ke-update otomatis (lihat App.jsx, efek fbReady).
+    // Kalau bukan Super Admin (atau belum login sama sekali — kasus
+    // pengisian PERTAMA KALI sebelum login), perubahan cuma berlaku lokal
+    // di device ini; sinkronisasi awal ke server ditangani terpisah oleh
+    // proses bootstrap di App.jsx begitu Super Admin login pertama kali.
+    if (isSuperAdmin) {
+      try {
+        await pushRemoteBranding(brand);
+      } catch (e) {
+        // Sengaja tidak menghentikan alur (perubahan lokal tetap tersimpan
+        // & reload tetap jalan) — cuma kasih tahu supaya tidak dikira
+        // sudah tersentralisasi padahal gagal (mis. Rules belum di-deploy
+        // ke v12 di project Firebase ini).
+        alert("Branding tersimpan di device ini, tapi GAGAL disebarkan ke device lain (" + (e.message || "error tidak diketahui") + "). Kemungkinan Firebase Rules project ini belum diperbarui ke versi yang mendukung sentralisasi branding.");
+      }
+    }
     if (onDone) onDone(next);
     // Reload penuh supaya semua modul (Firebase init, palet warna T, dsb)
     // yang sudah kadung dibaca sekali saat startup ikut memakai nilai baru.
