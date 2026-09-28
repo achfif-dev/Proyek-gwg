@@ -189,10 +189,15 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   function kontrolBisaLangsungHapus(record) {
     if (!isSalesRestricted) return true; // Admin/Manajer selalu boleh hapus langsung, kapan pun
     if (!record || !record.createdAt) return false; // entri lama (migrasi/tanpa createdAt) → wajib pengajuan
+    // ✅ FIX (audit keamanan): Rules v14 hanya mengizinkan Sales menghapus langsung entri yang
+    // (1) masih berstatus "menunggu", dan (2) dibuat oleh akunnya sendiri (createdBy).
+    // Entri yang sudah disetujui/ditolak, milik Sales lain, atau lama tanpa createdBy → wajib pengajuan.
+    if (record.status !== "menunggu") return false;
+    if (!createdBy || record.createdBy !== createdBy) return false;
     return (Date.now() - record.createdAt) <= KONTROL_DELETE_WINDOW_MS;
   }
   function requestHapusKontrol(id) {
-    const alasan = prompt("Catatan kontrol ini sudah lebih dari 24 jam, jadi penghapusannya perlu disetujui Admin/Manajer dulu.\n\nTulis alasan pengajuan hapus (wajib):");
+    const alasan = prompt("Catatan kontrol ini sudah disetujui, sudah lebih dari 24 jam, atau bukan kamu yang membuatnya, jadi penghapusannya perlu disetujui Admin/Manajer dulu.\n\nTulis alasan pengajuan hapus (wajib):");
     if (alasan === null) return; // dibatalkan
     if (!String(alasan).trim()) { alert("Alasan wajib diisi supaya Admin/Manajer tahu kenapa entri ini mau dihapus."); return; }
     updateRecord("kontrol", id, { hapusStatus: "menunggu", hapusDiajukanOleh: alasan.trim(), hapusDiajukanAt: Date.now() });
@@ -1363,7 +1368,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // ✅ createdAt dipakai rules Firebase & UI untuk menentukan apakah Sales
       // masih boleh menghapus langsung (entri "baru saja" dibuat, <24 jam) atau
       // harus mengajukan permintaan hapus yang ditinjau Admin/Manajer (entri lama).
-      const newEntry = { ...payload, ...approvalFields, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now() };
+      const newEntry = { ...payload, ...approvalFields, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now(), ...(createdBy ? { createdBy } : {}) };
       addRecord("kontrol", newEntry);
       // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update).
       // recalcTokoStok sendiri sudah mengabaikan entri status "menunggu"/"ditolak",
