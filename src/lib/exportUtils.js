@@ -8,6 +8,20 @@ import { loadAppConfig, lighten } from "../config/appConfig";
 // ✅ WHITE LABEL: nama & logo di semua ekspor (Excel/PDF/Print/Gambar)
 // memakai identitas brand yang diisi lewat Setup Wizard — jatuh balik ke
 // logo bawaan GWG kalau belum pernah diisi logo custom.
+// 🔒 KEAMANAN (XSS): jendela cetak dibuat lewat document.write dan berasal-usul
+// SAMA dengan aplikasi (about:blank mewarisi origin pembukanya). Nilai sel
+// berisi teks bebas yang bisa diisi Sales (catatan, keterangan setoran, nama
+// toko, dst) — kalau tidak di-escape, teks seperti <img onerror=...> akan
+// dieksekusi di sesi Admin/Manajer yang menekan tombol ekspor PDF.
+export function escapeHtml(v) {
+  return String(v ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const _brand = loadAppConfig().brand;
 const BRAND_NAME = _brand.companyName;
 const BRAND_TAGLINE = _brand.tagline;
@@ -48,7 +62,10 @@ export async function exportCSV(data, columns, filename) {
   const rows = data.map(row =>
     columns.map(c => {
       const val = row[c.key] ?? "";
-      const str = typeof val === "boolean" ? (val?"Ya":"Tidak") : String(val);
+      let str = typeof val === "boolean" ? (val?"Ya":"Tidak") : String(val);
+      // 🔒 CSV injection: teks bebas (bukan angka asli) yang diawali = + - @
+      // bisa dijalankan sebagai rumus saat CSV dibuka di Excel/Sheets.
+      if (typeof val === "string" && /^[=+\-@\t\r]/.test(val)) str = "'" + str;
       return `"${str.replace(/"/g,'""')}"`;
     }).join(",")
   );
@@ -321,12 +338,12 @@ export async function exportPDF(data, columns, title, filename) {
 
   const tableRows = rows.map((row, i) => `
     <tr style="background:${i%2===0?"#fff":"#f8faf8"}">
-      ${row.map((cell) => `<td style="padding:${cellPad};font-size:${cellFontSize}px;border-bottom:1px solid #e5e7eb;overflow-wrap:anywhere;word-break:break-word;">${cell}</td>`).join("")}
+      ${row.map((cell) => `<td style="padding:${cellPad};font-size:${cellFontSize}px;border-bottom:1px solid #e5e7eb;overflow-wrap:anywhere;word-break:break-word;">${escapeHtml(cell)}</td>`).join("")}
     </tr>`).join("");
 
   const html = `<!DOCTYPE html><html><head>
   <meta charset="utf-8">
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     @page { size: A4 landscape; margin: 15mm 12mm 15mm 12mm; }
     * { box-sizing: border-box; }
@@ -360,34 +377,34 @@ export async function exportPDF(data, columns, title, filename) {
   </head><body>
   <div class="header">
     <div class="brand">
-      <img src="${BRAND_LOGO}" alt="${BRAND_NAME}" style="width:40px;height:40px;border-radius:50%;background:#fff;padding:3px;object-fit:contain;border:2px solid ${BRAND_COLOR};" onerror="this.onerror=null;this.src='${BRAND_LOGO_FALLBACK}';" />
+      <img id="brand-logo" src="${escapeHtml(BRAND_LOGO)}" data-fallback="${escapeHtml(BRAND_LOGO_FALLBACK)}" alt="${escapeHtml(BRAND_NAME)}" style="width:40px;height:40px;border-radius:50%;background:#fff;padding:3px;object-fit:contain;border:2px solid ${escapeHtml(BRAND_COLOR)};" />
       <div class="brand-text">
-        <h1>${BRAND_NAME}</h1>
-        <p>${BRAND_TAGLINE}</p>
+        <h1>${escapeHtml(BRAND_NAME)}</h1>
+        <p>${escapeHtml(BRAND_TAGLINE)}</p>
       </div>
     </div>
     <div class="meta">
-      <div class="title">${title}</div>
-      <div>Diekspor: ${now}</div>
+      <div class="title">${escapeHtml(title)}</div>
+      <div>Diekspor: ${escapeHtml(now)}</div>
       <div>Total: ${data.length} data</div>
     </div>
   </div>
   <div class="summary-bar">
     <div class="summary-item"><b>${data.length}</b>Total Baris</div>
     <div class="summary-item"><b>${columns.length}</b>Kolom</div>
-    <div class="summary-item"><b>${now.split(",")[0]}</b>Tanggal Ekspor</div>
+    <div class="summary-item"><b>${escapeHtml(now.split(",")[0])}</b>Tanggal Ekspor</div>
   </div>
   <table>
     ${colgroup}
-    <thead><tr>${columns.map((c)=>`<th style="font-size:${headFontSize}px;">${c.label}</th>`).join("")}</tr></thead>
+    <thead><tr>${columns.map((c)=>`<th style="font-size:${headFontSize}px;">${escapeHtml(c.label)}</th>`).join("")}</tr></thead>
     <tbody>${tableRows}</tbody>
   </table>
   <div class="footer">
-    <span>${BRAND_NAME} · Super App</span>
-    <span>${title} · ${now}</span>
-    <span>${(BRAND_NAME||"App").replace(/\s+/g,"").slice(0,12)}-${new Date().getFullYear()}</span>
+    <span>${escapeHtml(BRAND_NAME)} · Super App</span>
+    <span>${escapeHtml(title)} · ${escapeHtml(now)}</span>
+    <span>${escapeHtml((BRAND_NAME||"App").replace(/\s+/g,"").slice(0,12))}-${new Date().getFullYear()}</span>
   </div>
-  <script>setTimeout(()=>window.print(),400)<\/script>
+  <script>(function(){var i=document.getElementById("brand-logo");if(i){var fb=i.getAttribute("data-fallback");var f=function(){i.onerror=null;if(fb)i.src=fb;};i.onerror=f;if(i.complete&&i.naturalWidth===0)f();}setTimeout(function(){window.print()},400)})()<\/script>
   </body></html>`;
 
   const win = window.open("","_blank");
@@ -613,14 +630,14 @@ export async function exportHTML(data, columns, title, filename) {
     `<tr>${columns.map(c => {
       const val = row[c.key] ?? "—";
       const str = typeof val === "boolean" ? (val?"Ya":"Tidak") : String(val);
-      return `<td>${str}</td>`;
+      return `<td>${escapeHtml(str)}</td>`;
     }).join("")}</tr>`
   ).join("");
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${title}</title>
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title>
   <style>body{font-family:sans-serif;padding:24px}h1{color:${BRAND_COLOR}}table{border-collapse:collapse;width:100%}
   th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:${BRAND_COLOR};color:#fff}tr:nth-child(even){background:#f2f2f2}</style>
-  </head><body><h1>${title}</h1><p>Diekspor: ${new Date().toLocaleString("id-ID")}</p>
-  <table><thead><tr>${columns.map(c=>`<th>${c.label}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
+  </head><body><h1>${escapeHtml(title)}</h1><p>Diekspor: ${new Date().toLocaleString("id-ID")}</p>
+  <table><thead><tr>${columns.map(c=>`<th>${escapeHtml(c.label)}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></body></html>`;
   const blob = new Blob([html], { type: "text/html" });
   await saveOrShareBlob(blob, filename + ".html");
 }
