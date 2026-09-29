@@ -37,6 +37,17 @@ jobs:
       - name: Checkout kode
         uses: actions/checkout@v4
 
+      - name: Tulis google-services.json dari Secret (tidak pernah di-commit)
+        run: |
+          if [ -z "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" ]; then
+            echo "❌ Secret GOOGLE_SERVICES_JSON_BASE64 belum di-set."
+            echo "   Ambil google-services.json dari Firebase Console project ini"
+            echo "   (harus app Android dengan package name yang SAMA dengan VITE_APP_ID),"
+            echo "   base64-kan, lalu simpan sebagai secret ini."
+            exit 1
+          fi
+          echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > android/app/google-services.json
+
       - name: Buat file .env dari GitHub Secrets (tidak pernah di-commit)
         run: |
           cat > .env << 'EOF'
