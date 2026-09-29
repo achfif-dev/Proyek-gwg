@@ -19,3 +19,6 @@ android/local.properties
 
 # Editor / OS
 .DS_Store
+
+# google-services.json — diisi lewat Secret GOOGLE_SERVICES_JSON_BASE64 saat build
+android/app/google-services.json
