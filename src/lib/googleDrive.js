@@ -1,6 +1,27 @@
-import { Capacitor } from "@capacitor/core";
+import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { FirebaseAuthentication } from "@capacitor-firebase/authentication";
 import { firebaseAuth } from "../firebase/init";
+
+// fetch() biasa di WebView APK (origin https://localhost) ditolak/diblokir
+// -> "Failed to fetch". CapacitorHttp global sengaja dimatikan di
+// capacitor.config.json (bisa mengganggu Firebase), jadi khusus panggilan
+// Drive kita pakai CapacitorHttp.request langsung di native. Di web/PWA
+// tetap memakai fetch() biasa.
+async function driveFetch(url, opts = {}) {
+  if (!Capacitor.isNativePlatform()) return fetch(url, opts);
+  const res = await CapacitorHttp.request({
+    url,
+    method: opts.method || "GET",
+    headers: opts.headers || {},
+    data: opts.body,
+  });
+  const body = res.data;
+  return {
+    ok: res.status >= 200 && res.status < 300,
+    status: res.status,
+    json: async () => (typeof body === "string" ? JSON.parse(body) : body),
+  };
+}
 
 export const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
 
@@ -51,7 +72,7 @@ export async function gdriveUploadJSON(filename, obj, description) {
     delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) +
     delimiter + "Content-Type: application/json\r\n\r\n" + content +
     closeDelimiter;
-  const resp = await fetch(
+  const resp = await driveFetch(
     "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink",
     { method: "POST", headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary="${boundary}"` }, body: multipartBody }
   );
@@ -65,7 +86,7 @@ export async function gdriveUploadJSON(filename, obj, description) {
 // Unduh isi (bukan hanya metadata) satu file dari Google Drive, by file ID.
 export async function gdriveDownloadJSON(fileId) {
   const accessToken = await getGDriveAccessToken();
-  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -75,7 +96,7 @@ export async function gdriveDownloadJSON(fileId) {
 // Hapus permanen satu file dari Google Drive, by file ID.
 export async function gdriveDeleteFile(fileId) {
   const accessToken = await getGDriveAccessToken();
-  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
@@ -104,7 +125,7 @@ export async function driveUploadJSON(accessToken, filename, obj, description) {
     delimiter + "Content-Type: application/json; charset=UTF-8\r\n\r\n" + JSON.stringify(metadata) +
     delimiter + "Content-Type: application/json\r\n\r\n" + content +
     closeDelimiter;
-  const resp = await fetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
+  const resp = await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,webViewLink", {
     method: "POST",
     headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": `multipart/related; boundary="${boundary}"` },
     body: multipartBody,
@@ -118,7 +139,7 @@ export async function driveUploadJSON(accessToken, filename, obj, description) {
 
 // Unduh isi file JSON dari Drive berdasarkan fileId.
 export async function driveDownloadJSON(accessToken, fileId) {
-  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
     headers: { Authorization: `Bearer ${accessToken}` },
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status} — file mungkin sudah dihapus dari Drive.`);
@@ -127,7 +148,7 @@ export async function driveDownloadJSON(accessToken, fileId) {
 
 // Hapus satu file dari Drive berdasarkan fileId.
 export async function driveDeleteFile(accessToken, fileId) {
-  const resp = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
+  const resp = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
     method: "DELETE",
     headers: { Authorization: `Bearer ${accessToken}` },
   });
