@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { Badge, Btn, Card, ExportMenu, Input, Modal, Table } from "../../components/ui";
-import { fmtRp } from "../../lib/format";
+import { fmtRp, sortProdukByUrutan } from "../../lib/format";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 
@@ -55,10 +55,7 @@ function TabProdukImpl({ db, addRecord, updateRecord, deleteRecord }) {
   // Produk lama yang belum punya `urutan` (data existing sebelum fitur ini
   // ada) otomatis fallback ke posisi aslinya di array db.produk, supaya
   // urutan yang sudah ada di lapangan tidak tiba-tiba berubah/acak.
-  const produkUrut = React.useMemo(() => {
-    const withEff = (db.produk||[]).map((p,i) => ({ ...p, _eff: typeof p.urutan === "number" ? p.urutan : i }));
-    return withEff.sort((a,b) => a._eff - b._eff);
-  }, [db.produk]);
+  const produkUrut = React.useMemo(() => sortProdukByUrutan(db.produk), [db.produk]);
 
   function moveProduk(id, dir) {
     const idx = produkUrut.findIndex(p=>p.id===id);

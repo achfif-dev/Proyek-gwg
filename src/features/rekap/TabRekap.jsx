@@ -3,7 +3,7 @@ import { Badge, Btn, Card, ExportMenu, StatCard, Table } from "../../components/
 import { Dashboard } from "../../features/dashboard/Dashboard";
 import { TabKontrol } from "../../features/kontrol/TabKontrol";
 import { autoUpgradeBaruToAktif } from "../../lib/dataHelpers";
-import { fmt, fmtRp, naturalCompare } from "../../lib/format";
+import { fmt, fmtRp, naturalCompare, sortProdukByUrutan } from "../../lib/format";
 import { computeSiklusSegmentsPerWilayah, statusTokoPadaTanggal } from "../../lib/dataHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
@@ -63,7 +63,7 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSalesRestricted, salesWilayahId]);
 
-  const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
+  const produkAktif = useMemo(() => sortProdukByUrutan((db.produk||[]).filter(p=>p.aktif!==false)), [db.produk]);
   const wilayahOpts = (db.wilayah||[]).map(w=>({ value:w.id, label:w.nama }));
   const ruteOpts = useMemo(() => {
     const rutes = filterWilayah

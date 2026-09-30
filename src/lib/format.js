@@ -77,3 +77,16 @@ export function naturalCompare(a, b) {
 export function sortByNama(arr, key="nama") {
   return [...(arr||[])].sort((a,b) => naturalCompare(a[key], b[key]));
 }
+
+// Urutan produk TUNGGAL untuk seluruh aplikasi (Master Produk, Tambah/Edit
+// Kontrol, tabel Kontrol, Rekap, Master Toko, template import, Dashboard).
+// Sumber kebenarannya field `urutan` yang diatur admin lewat tombol ↑/↓ di
+// tab Produk. Produk lama yang belum punya `urutan` fallback ke posisi
+// aslinya di array supaya tampilan yang sudah ada tidak tiba-tiba berubah.
+// Sort stabil: dua produk dengan nilai sama tetap mengikuti urutan array.
+export function sortProdukByUrutan(arr) {
+  return (arr||[])
+    .map((p,i) => ({ p, eff: typeof p.urutan === "number" ? p.urutan : i, i }))
+    .sort((a,b) => a.eff - b.eff || a.i - b.i)
+    .map(x => x.p);
+}

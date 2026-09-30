@@ -3,7 +3,7 @@ import { Badge, Btn, BulkActionBar, Card, ConfirmDelete, ExportMenu, FilterBar, 
 import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
 import { exportExcel } from "../../lib/exportUtils";
-import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt } from "../../lib/format";
+import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt, sortProdukByUrutan } from "../../lib/format";
 import { computeSiklusSegmentsPerWilayah, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
 import { isPeriodeTerkunci, bulanKeyOf } from "../../lib/neracaHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
@@ -482,7 +482,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   const [luarRuteForm, setLuarRuteForm] = useState(null); // null saat tertutup
   const lf = (k,v) => setLuarRuteForm(p=>({...p,[k]:v}));
 
-  const produkAktif = useMemo(() => (db.produk||[]).filter(p=>p.aktif!==false), [db.produk]);
+  const produkAktif = useMemo(() => sortProdukByUrutan((db.produk||[]).filter(p=>p.aktif!==false)), [db.produk]);
 
   // ═══════════════════════════════════════════════════════════════════
   //  FASE 3 DOUBLE-ENTRY ACCOUNTING — posting Kontrol & Penjualan Luar Rute
@@ -3603,12 +3603,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                   Produk yang belum pernah diatur urutannya (data lama)
                   fallback ke urutan aslinya di array db.produk, supaya
                   tampilan yang sudah ada tidak tiba-tiba berubah. */}
-              {[...produkAktif].sort((a,b)=>{
-                const idxA = produkAktif.indexOf(a), idxB = produkAktif.indexOf(b);
-                const effA = typeof a.urutan === "number" ? a.urutan : idxA;
-                const effB = typeof b.urutan === "number" ? b.urutan : idxB;
-                return effA - effB;
-              }).map(p => {
+              {produkAktif.map(p => {
                 const terjual = Number(form[`terjual_${p.id}`]||0);
                 const bonusPcs = Number(form[`bonusInput_${p.id}`]||0);
                 const ditarik = !!form[`ditarik_${p.id}`];

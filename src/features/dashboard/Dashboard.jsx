@@ -1,7 +1,7 @@
 import React from "react";
 import { Badge, Card, ExportMenu, StatCard } from "../../components/ui";
 import { useDB } from "../../hooks/useDB";
-import { fmt, fmtRp } from "../../lib/format";
+import { fmt, fmtRp, sortProdukByUrutan } from "../../lib/format";
 import { hitungHppPeriode } from "../../lib/neracaHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
@@ -108,7 +108,7 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
   // (kontrol yang sudah di-filter ke salesWilayahId) supaya konsisten.
   const produkStatsScoped = isSalesRestricted
     ? (() => {
-        const produkArr = db.produk||[];
+        const produkArr = sortProdukByUrutan(db.produk);
         const map = new Map(produkArr.map(p => [p.id, { ...p, terjual:0, rev:0 }]));
         const luarScoped = (analytics.penjualanLuar||[]).filter(pl => pl.wilayahId === salesWilayahId);
         [...kontrolUntukRentang, ...luarScoped].forEach(k => {

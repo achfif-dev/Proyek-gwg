@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { naturalCompare } from "../lib/format";
+import { naturalCompare, sortProdukByUrutan } from "../lib/format";
 import { hitungHppPeriode, periodeBounds, hitungJumlahBulanPeriode, hitungAmortisasiPeriode, migrasiBebanUsahaLama, hitungDanaCadanganPeriode } from "../lib/neracaHelpers";
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -22,7 +22,7 @@ import { hitungHppPeriode, periodeBounds, hitungJumlahBulanPeriode, hitungAmorti
 // ─────────────────────────────────────────────────────────────────────────
 export function useAnalytics(db) {
   return useMemo(() => {
-    const produkArr = db.produk||[];
+    const produkArr = sortProdukByUrutan(db.produk);
     const tokoArr = db.toko||[];
     const ruteArr = db.rute||[];
     const wilayahArr = db.wilayah||[];

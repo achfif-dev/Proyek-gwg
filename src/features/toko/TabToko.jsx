@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ExportMenu, FilterBar, ImportMenu, Input, Modal, SearchableSelect, Table } from "../../components/ui";
-import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt, sortByNama } from "../../lib/format";
+import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt, sortByNama, sortProdukByUrutan } from "../../lib/format";
 import { downloadTokoTemplate } from "../../lib/importUtils";
 import { appendStatusHistory, buildProdukFlagUpdates, recalcTokoStok } from "../../lib/dataHelpers";
 import { T } from "../../theme/tokens";
@@ -140,7 +140,7 @@ function TabTokoImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWil
     (!filter.produkId || t[`produk_${filter.produkId}`]) // hanya toko yang dititipkan produk ini
   ), [sorted, filter, isSalesRestricted, salesWilayahId]);
 
-  const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
+  const produkAktif = useMemo(() => sortProdukByUrutan((db.produk||[]).filter(p=>p.aktif!==false)), [db.produk]);
   // Opsi dropdown untuk filter "Produk" — daftar produk aktif, terurut abjad,
   // dipakai untuk menyaring toko berdasarkan produk yang dititipkan di sana
   // (flag produk_<id> === true pada masing-masing toko).

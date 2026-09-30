@@ -2,12 +2,13 @@ import * as XLSX from "xlsx";
 import { saveWorkbookNative } from "./fileSave";
 import { CATATAN_STATUS } from "../theme/tokens";
 import { loadAppConfig } from "../config/appConfig";
+import { sortProdukByUrutan } from "./format";
 
 const BRAND_NAME = loadAppConfig().brand.companyName;
 
 export async function downloadTokoTemplate(db) {
   try {
-    const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
+    const produkAktif = sortProdukByUrutan((db.produk||[]).filter(p=>p.aktif!==false));
     const header = ["Nama Toko*", "Rute*", "Status", "Catatan", ...produkAktif.map(p=>`Jual: ${p.nama}`), ...produkAktif.map(p=>`Stok: ${p.nama}`)];
     const sample = ["Toko Barokah", (db.rute||[])[0]?.nama || "Rute Utara A", "Aktif", "",
       ...produkAktif.map(()=>"Ya"), ...produkAktif.map(()=>0)];
@@ -46,7 +47,7 @@ export async function downloadTokoTemplate(db) {
 
 export async function downloadKontrolTemplate(db) {
   try {
-    const produkAktif = (db.produk||[]).filter(p=>p.aktif!==false);
+    const produkAktif = sortProdukByUrutan((db.produk||[]).filter(p=>p.aktif!==false));
     const header = ["Toko*", "Tanggal* (YYYY-MM-DD)", "Status Kunjungan", "Catatan",
       ...produkAktif.flatMap(p=>[`Stok Awal: ${p.nama}`, `Terjual: ${p.nama}`, `Bonus: ${p.nama}`])];
     const sample = [(db.toko||[]).find(t=>t.status==="Aktif")?.nama || "Toko Barokah",
