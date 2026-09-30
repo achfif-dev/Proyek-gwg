@@ -4,8 +4,8 @@ import { Card } from "./Primitives";
 export function StatCard({ label, value, sub, icon: IconComp, color=T.green, bg, pending, pendingTitle }) {
   return (
     <Card className="gw-statcard" style={{ background:bg||color+"0D", border:`1.5px solid ${color}22`, position:"relative" }}>
-      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between" }}>
-        <div style={{ minWidth:0 }}>
+      <div style={{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", gap:8 }}>
+        <div style={{ minWidth:0, flex:1 }}>
           <div className="gw-statcard-label" style={{ fontSize:11, fontWeight:700, color, textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6, display:"flex", alignItems:"center", gap:5 }}>
             {label}
             {/* ✅ Titik kecil berkedip: menandai angka ini masih bisa berubah
@@ -19,12 +19,12 @@ export function StatCard({ label, value, sub, icon: IconComp, color=T.green, bg,
                   animation:"gw-pulse 1.2s ease-in-out infinite" }} />
             )}
           </div>
-          <div className="gw-statcard-value" style={{ fontSize:26, fontWeight:800, color:T.gray800, lineHeight:1.15, wordBreak:"break-word" }}>{value}</div>
+          <div className="gw-statcard-value" style={{ fontSize:26, fontWeight:800, color:T.gray800, lineHeight:1.15 }}>{value}</div>
           {sub && <div style={{ fontSize:12, color:T.gray400, marginTop:4 }}>{sub}{pending && <span style={{ color, fontWeight:700 }}> · masih memuat…</span>}</div>}
         </div>
         {IconComp && (
           <div className="gw-statcard-icon" style={{ display:"flex", alignItems:"center", justifyContent:"center",
-            width:40, height:40, borderRadius:T.radiusMd, background:color+"1A", color, flexShrink:0, marginLeft:8 }}>
+            width:40, height:40, borderRadius:T.radiusMd, background:color+"1A", color, flexShrink:0 }}>
             <IconComp size={20} strokeWidth={1.75} />
           </div>
         )}

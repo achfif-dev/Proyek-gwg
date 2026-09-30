@@ -3132,7 +3132,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
           ikut menampilkan pcs terjual dari Penjualan Luar Rute yang memang
           tidak relevan dengan status kunjungan tsb. */}
       {produkAktif.length > 0 && (data.length > 0 || luarRuteDataForSummary.length > 0) && (
-        <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:14 }}>
+        <div className="gw-stat-grid gw-dash-stats" style={{ marginBottom:14 }}>
           {produkAktif.map(p => {
             const totalTerjual = data.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0)
               + luarRuteDataForSummary.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);

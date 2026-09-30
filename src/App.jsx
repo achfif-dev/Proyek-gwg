@@ -522,13 +522,23 @@ export default function GWGSuperApp() {
       .gw-header-revenue { padding: clamp(4px, 1.2vw, 6px) clamp(8px, 2.5vw, 14px) !important; font-size: clamp(10.5px, 2.6vw, 12px) !important; }
       .gw-header-activeusers button { padding: clamp(4px, 1.2vw, 6px) clamp(8px, 2.5vw, 12px) !important; font-size: clamp(10.5px, 2.6vw, 12px) !important; }
 
+      /* ✅ Grid kartu ringkasan (semua tab): kolom minimal cukup lebar agar
+         angka Rupiah tidak turun baris; auto-fit membuat kartu mengisi
+         seluruh lebar baris (tidak menyisakan kolom kosong di desktop). */
+      .gw-stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr)); gap: 12px; margin-bottom: 16px; }
+      .gw-statcard { container-type: inline-size; min-width: 0; }
+      .gw-statcard-label { white-space: normal; line-height: 1.25; }
+      /* Angka mengecil mengikuti lebar kartu & tidak pernah terpecah baris */
+      .gw-statcard-value { font-size: clamp(15px, 8.5cqw, 26px) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+      @media (min-width: 641px) { .gw-statcard-icon { width: 36px !important; height: 36px !important; } }
+
       @media (max-width: 640px) {
         .gw-header-top { padding-top: 10px !important; padding-bottom: 10px !important; }
         .gw-header-subtitle { display: none; }
         .gw-grid2, .gw-grid3 { grid-template-columns: 1fr !important; }
-        .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+        .gw-dash-stats, .gw-stat-grid { grid-template-columns: repeat(2, minmax(0,1fr)) !important; gap: 8px !important; }
         .gw-statcard { padding: 12px !important; }
-        .gw-statcard-value { font-size: 19px !important; }
+        .gw-statcard-value { font-size: clamp(13px, 9cqw, 19px) !important; }
         .gw-statcard-label { font-size: 9.5px !important; }
         .gw-modal-body { padding: 16px !important; }
         .gw-modal-header { padding: 14px 16px !important; }
@@ -537,9 +547,9 @@ export default function GWGSuperApp() {
       }
       @media (max-width: 400px) {
         .gw-hide-xs { display: none !important; }
-        .gw-dash-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 6px !important; }
+        .gw-dash-stats, .gw-stat-grid { grid-template-columns: repeat(2, minmax(0,1fr)) !important; gap: 6px !important; }
         .gw-statcard { padding: 10px !important; }
-        .gw-statcard-value { font-size: 17px !important; }
+        .gw-statcard-value { font-size: clamp(12px, 9cqw, 17px) !important; }
       }
     `;
     document.head.appendChild(style);

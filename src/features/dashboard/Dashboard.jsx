@@ -167,7 +167,7 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
       </div>
       <div style={{ fontSize:12, color:T.gray400, marginBottom:20 }}>Data real-time dari semua master data & kontrol bulanan</div>
 
-      <div className="gw-dash-stats" style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(180px,1fr))", gap:12, marginBottom:20 }}>
+      <div className="gw-stat-grid gw-dash-stats" style={{ marginBottom:20 }}>
         <StatCard label="Toko Aktif"      value={tokoAktif}            sub={`dari ${tokoTotalScoped} total`} icon={Icon.toko} color={T.green} />
         <StatCard label="Total Wilayah"   value={isSalesRestricted ? 1 : (db.wilayah||[]).length} sub={`${ruteTotalScoped} rute`}   icon={Icon.wilayah} color={T.teal} />
         <StatCard label="Total Pendapatan" value={fmtRp(totalRev)}      sub={totalPendapatanSub}                 icon={Icon.wallet} color={T.gold}

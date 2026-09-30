@@ -446,7 +446,7 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
 
       {activeSubTab === "ringkasan" && (<>
       {/* Ringkasan Kinerja Periode */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:10, marginBottom:16 }}>
+      <div className="gw-stat-grid">
         <StatCard label="Total Revenue" value={fmtRp(akuntansi.pendapatan)} icon={Icon.banknote} color={T.green} sub={PERIODE_LABELS[periodeMode]} />
         <StatCard label="Laba Bersih / SHU" value={fmtRp(akuntansi.labaBersihFinal)} icon={Icon.trendingUp} color={T.teal}
           sub={akuntansi.metodeHpp==="otomatis" ? "metode HPP (riil)" : `${akuntansi.marginPct}% dari Laba Kotor`} />

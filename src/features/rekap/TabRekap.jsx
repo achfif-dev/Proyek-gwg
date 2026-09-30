@@ -1678,7 +1678,7 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
       )}
 
       {/* Summary Cards */}
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
+      <div className="gw-stat-grid">
         <StatCard label="Total Revenue" value={fmtRp(totalRevAll)} icon={Icon.wallet} color={T.green}
           pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — Total Revenue bisa masih bertambah" />
         <StatCard label={labaLabelRekap} value={fmtRp(labaBersihAll)} icon={Icon.rekap} color={T.gold}
@@ -1698,7 +1698,7 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
           bagian "📦 RINGKASAN TOKO — SIKLUS INI" di hasil ekspor) — supaya
           Admin/Manajer bisa langsung lihat di layar tanpa harus ekspor dulu. */}
       {mode==="siklus" && filterSiklusWilayahs.length>0 && (
-        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(160px,1fr))", gap:12, marginBottom:16 }}>
+        <div className="gw-stat-grid">
           <StatCard label="Jumlah Data Toko Keseluruhan" value={fmt(siklusTokoSummary.totalToko)} icon={Icon.package} color={T.gray600} />
           <StatCard label="Toko Aktif saat Siklus Berlangsung" value={fmt(siklusTokoSummary.aktifSaatSiklus)} icon={Icon.checkCircle} color={T.green} />
           <StatCard label="Toko Ditarik/Non-Aktif saat Siklus" value={fmt(siklusTokoSummary.ditarikSaatSiklus)} icon={Icon.arrowDown} color={T.red} />

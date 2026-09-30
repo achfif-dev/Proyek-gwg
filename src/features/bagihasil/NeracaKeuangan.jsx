@@ -651,7 +651,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
           <div style={{ fontSize: 12, color: T.gray400, marginBottom: 10 }}>
             Rasio & indikator keuangan untuk periode <b>{PERIODE_LABELS[periodeMode]}</b>. Biaya Amortisasi otomatis diambil dari daftar Aset (tab Amortisasi) dan sudah termasuk di Laporan Laba Rugi.
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10, marginBottom: 16 }}>
+          <div className="gw-stat-grid">
             <StatCard label="BOPO" value={`${bopoPct.toFixed(1)}%`} icon={Icon.percent} color={bopoPct > 80 ? T.red : T.orange} sub="Biaya Operasional / Pendapatan" />
             <StatCard label="SHU / Laba Bersih" value={fmtRp(akuntansi.labaBersihFinal)} icon={Icon.wallet} color={T.teal} sub={PERIODE_LABELS[periodeMode]} />
             <StatCard label="ROE Periode" value={roePeriodePct !== null ? `${roePeriodePct.toFixed(1)}%` : "—"} icon={Icon.trendingUp} color={T.purple}
@@ -679,7 +679,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
       {section === "kas" && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(160px,1fr))", gap: 10, marginBottom: 16 }}>
+          <div className="gw-stat-grid">
             <StatCard label="Saldo Awal" value={fmtRp(Number(config.kasSaldoAwal) || 0)} icon={Icon.landmark} color={T.gray600} />
             <StatCard label="Total Kas Masuk" value={fmtRp(kasLedgerTerkini.totalMasuk)} icon={Icon.trendingUp} color={T.green} />
             <StatCard label="Total Kas Keluar" value={fmtRp(kasLedgerTerkini.totalKeluar)} icon={Icon.trendingDown} color={T.red} />
@@ -964,7 +964,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
       {section === "amortisasi" && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10, marginBottom: 16 }}>
+          <div className="gw-stat-grid">
             <StatCard label="Jumlah Aset" value={fmt(asetArr.length)} icon={Icon.package} color={T.gray600} />
             <StatCard label="Total Nilai Perolehan" value={fmtRp(asetArr.reduce((s, a) => s + (Number(a.nilaiPerolehan) || 0), 0))} icon={Icon.banknote} color={T.blue} />
             <StatCard label={`Amortisasi ${PERIODE_LABELS[periodeMode]}`} value={fmtRp(amortisasiPeriode.total)} icon={Icon.calculator} color={T.orange} />
@@ -1169,7 +1169,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
 
       {section === "hutangpiutang" && (
         <>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(180px,1fr))", gap: 10, marginBottom: 16 }}>
+          <div className="gw-stat-grid">
             <StatCard label="Total Hutang Outstanding" value={fmtRp(ringkasanHutang.totalOutstanding)} icon={Icon.trendingDown} color={T.red} sub={`${ringkasanHutang.rows.filter(r=>!r.lunas).length} belum lunas`} />
             <StatCard label="Total Piutang Outstanding" value={fmtRp(ringkasanPiutang.totalOutstanding)} icon={Icon.trendingUp} color={T.green} sub={`${ringkasanPiutang.rows.filter(r=>!r.lunas).length} belum lunas`} />
             <StatCard label="Posisi Bersih" value={fmtRp(ringkasanPiutang.totalOutstanding - ringkasanHutang.totalOutstanding)} icon={Icon.scale} color={T.blue} sub="Piutang − Hutang" />
