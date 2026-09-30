@@ -2010,7 +2010,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
           <div style={{ background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:10,
             padding:"10px 16px", marginBottom:14, fontSize:13, color:"#92400E",
             display:"flex", alignItems:"center", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
-            <span><Icon.hourglass size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada <b>{pending.length} pengajuan Kontrol Bulanan (Stok Awal)</b> dari Sales yang menunggu persetujuan
+            <span><Icon.hourglass size={14} strokeWidth={2} style={{verticalAlign:"-2px", marginRight:5}}/> Ada <b>{pending.length} pengajuan Kontrol Bulanan</b> dari Sales yang menunggu persetujuan
             (otomatis disetujui dalam 24 jam kalau tidak ditinjau).</span>
             <Btn variant="secondary" size="sm" onClick={()=>setKontrolPanelOpen(true)}>Tinjau Pengajuan</Btn>
           </div>
@@ -2019,30 +2019,160 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       {kontrolPanelOpen && (() => {
         const pending = (db.kontrol||[]).filter(k=>k.status==="menunggu")
           .sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+        const fmtWaktu = (ts) => ts
+          ? new Date(ts).toLocaleString("id-ID", { day:"2-digit", month:"short", hour:"2-digit", minute:"2-digit" })
+          : "-";
+        const sisaWaktu = (ts) => {
+          if (!ts) return null;
+          const ms = ts - Date.now();
+          if (ms <= 0) return "segera disetujui otomatis";
+          const j = Math.floor(ms/3600000), m = Math.floor((ms%3600000)/60000);
+          return `${j} jam ${m} menit lagi`;
+        };
+        const tglLokal = (ts) => {
+          if (!ts) return "";
+          const d = new Date(ts);
+          return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+        };
+        const chip = (label, bg, color, border) => (
+          <span style={{ fontSize:11, fontWeight:700, background:bg, color, border:`1px solid ${border}`,
+            borderRadius:99, padding:"2px 8px", whiteSpace:"nowrap" }}>{label}</span>
+        );
         return (
-          <Modal title={<><Icon.kontrol size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pengajuan Kontrol Bulanan (Stok Awal)</>} onClose={()=>setKontrolPanelOpen(false)} width={640}>
+          <Modal title={<><Icon.kontrol size={16} style={{verticalAlign:"-3px", marginRight:6}}/>Pengajuan Kontrol Bulanan ({pending.length})</>} onClose={()=>setKontrolPanelOpen(false)} width={760}>
             {pending.length === 0 ? (
               <div style={{ padding:"20px 0", textAlign:"center", color:T.gray400, fontSize:13 }}>Tidak ada pengajuan yang menunggu.</div>
             ) : (
-              <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
+              <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
                 {pending.map(k => {
-                  const tk = (db.toko||[]).find(t=>t.id===k.tokoId);
-                  const detailProduk = produkAktif.filter(p=>Number(k[`stok_${p.id}`]||0)>0 || k[`ditarik_${p.id}`])
-                    .map(p=>k[`ditarik_${p.id}`] ? `${p.nama}: ditarik` : `${p.nama}: stok awal ${k[`stok_${p.id}`]}`).join(" · ");
+                  const tk = tokoByIdKontrol.get(k.tokoId);
+                  const rt = ruteByIdKontrol.get(k.ruteId || tk?.ruteId);
+                  const wl = wilayahByIdKontrol.get(k.wilayahId || rt?.wilayahId);
+                  const pengaju = (db.pengguna||[]).find(u => u.email && k.createdBy && u.email.toLowerCase() === String(k.createdBy).toLowerCase());
+                  const st = CATATAN_STATUS[k.catatanStatus];
+
+                  // Baris per produk. Produk yang semua angkanya nol (dan tidak
+                  // ditarik) disembunyikan supaya kartu tidak penuh baris kosong.
+                  const semuaBaris = produkAktif.map(p => {
+                    const stok = Number(k[`stok_${p.id}`]||0);
+                    const jual = Number(k[`terjual_${p.id}`]||0);
+                    const bonus = Number(k[`bonusInput_${p.id}`]||0);
+                    const ditarik = !!k[`ditarik_${p.id}`];
+                    const stokSistem = Number(tk?.[`stok_${p.id}`]||0);
+                    return { p, stok, jual, bonus, ditarik, stokSistem, rev: jual*(p.harga||0) };
+                  });
+                  const baris = semuaBaris.filter(r => r.stok>0 || r.jual>0 || r.bonus>0 || r.ditarik || r.stokSistem>0);
+                  const totalJual = semuaBaris.reduce((a,r)=>a+r.jual,0);
+                  const totalBonus = semuaBaris.reduce((a,r)=>a+r.bonus,0);
+                  const totalRev = semuaBaris.reduce((a,r)=>a+r.rev,0);
+
+                  // Setoran — rumus sama dengan syncPiutangSetoran (piutang
+                  // baru tercatat saat pengajuan ini DISETUJUI).
+                  const nominalIsi = k.nominalDisetor==="" || k.nominalDisetor==null ? null : (Number(k.nominalDisetor)||0);
+                  const kurangSetor = nominalIsi==null ? 0 : Math.max(0, totalRev - nominalIsi);
+
+                  // Hal yang patut dicek peninjau sebelum menyetujui.
+                  const peringatan = [];
+                  const bedaStok = baris.filter(r => !r.ditarik && r.stok !== r.stokSistem);
+                  if (bedaStok.length) peringatan.push(`Stok awal berbeda dari stok sistem: ${bedaStok.map(r=>r.p.nama).join(", ")}`);
+                  if (k.createdAt && tglLokal(k.createdAt) !== k.tanggal) peringatan.push(`Tanggal kontrol (${k.tanggal}) berbeda dari tanggal pengajuan (${tglLokal(k.createdAt)})`);
+                  const kembar = (db.kontrol||[]).some(x => x.id!==k.id && x.tokoId===k.tokoId && x.tanggal===k.tanggal && x.status!=="ditolak");
+                  if (kembar) peringatan.push("Toko ini sudah punya kontrol lain di tanggal yang sama");
+                  if (kurangSetor > 0) peringatan.push(`Setoran kurang ${fmtRp(kurangSetor)} — piutang toko akan tercatat otomatis saat disetujui`);
+                  if (nominalIsi == null && totalRev > 0) peringatan.push("Ada penjualan tapi nominal setoran belum diisi");
+
                   return (
-                    <div key={k.id} style={{ border:`1px solid ${T.gray200}`, borderRadius:10, padding:"10px 14px" }}>
+                    <div key={k.id} style={{ border:`1px solid ${peringatan.length ? "#FDE68A" : T.gray200}`, borderRadius:12, padding:"12px 14px", background:"#fff" }}>
+                      {/* Kepala: identitas toko + tombol keputusan */}
                       <div style={{ display:"flex", justifyContent:"space-between", gap:10, flexWrap:"wrap" }}>
-                        <div>
-                          <div style={{ fontWeight:700 }}>{tk?.nama || "(toko tidak diketahui)"}</div>
-                          <div style={{ fontSize:12, color:T.gray500 }}>Tanggal kontrol: {k.tanggal}</div>
+                        <div style={{ minWidth:0, flex:"1 1 260px" }}>
+                          <div style={{ fontWeight:800, fontSize:14, color:T.gray800 }}>{tk?.nama || "(toko tidak diketahui)"}</div>
+                          <div style={{ fontSize:12, color:T.gray600, marginTop:2 }}>
+                            {[k.tokoId, rt?.nama, wl?.nama].filter(Boolean).join(" · ")}
+                          </div>
+                          <div style={{ fontSize:12, color:T.gray600, marginTop:2 }}>
+                            Tanggal kontrol: <b style={{ color:T.gray800 }}>{k.tanggal}</b>
+                          </div>
                         </div>
-                        <div style={{ display:"flex", gap:6 }}>
+                        <div style={{ display:"flex", gap:6, alignItems:"flex-start" }}>
                           <Btn variant="primary" size="sm" icon={Icon.checkCircle} onClick={()=>setujuiKontrolPengajuan(k.id)}>Setujui</Btn>
                           <Btn variant="secondary" size="sm" icon={Icon.closeCircle} onClick={()=>tolakKontrolPengajuan(k.id)}>Tolak</Btn>
                         </div>
                       </div>
-                      {detailProduk && (
-                        <div style={{ fontSize:12, color:T.gray600, marginTop:6 }}>{detailProduk}</div>
+
+                      {/* Status kunjungan + info pengaju */}
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:6, alignItems:"center", marginTop:8 }}>
+                        {st
+                          ? chip(st.label, st.bg, st.color, st.border)
+                          : chip(totalJual>0 ? "Terjual" : "Belum ada penjualan", totalJual>0 ? "#DCFCE7" : "#F3F4F6", totalJual>0 ? "#15803D" : "#6B7280", totalJual>0 ? "#86EFAC" : "#E5E7EB")}
+                        {baris.some(r=>r.ditarik) && chip("Ada produk ditarik", "#FEE2E2", "#DC2626", "#FCA5A5")}
+                        <span style={{ fontSize:11, color:T.gray600 }}>
+                          Diajukan oleh <b>{pengaju?.nama || k.createdBy || "-"}</b> · {fmtWaktu(k.createdAt)}
+                          {k.autoApproveAt ? <> · otomatis disetujui {sisaWaktu(k.autoApproveAt)}</> : null}
+                        </span>
+                      </div>
+
+                      {/* Hal yang perlu dicek */}
+                      {peringatan.length > 0 && (
+                        <div style={{ marginTop:8, background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8, padding:"6px 10px", fontSize:12, color:"#92400E" }}>
+                          <b>Perlu dicek:</b>
+                          {peringatan.map((t,i)=><div key={i}>• {t}</div>)}
+                        </div>
+                      )}
+
+                      {/* Tabel produk */}
+                      {baris.length > 0 && (
+                        <div style={{ overflowX:"auto", marginTop:10 }}>
+                          <table style={{ width:"100%", borderCollapse:"collapse", fontSize:12, minWidth:460 }}>
+                            <thead>
+                              <tr style={{ background:T.gray50, color:T.gray600, textAlign:"right" }}>
+                                <th style={{ textAlign:"left", padding:"6px 8px" }}>Produk</th>
+                                <th style={{ padding:"6px 8px" }}>Stok sistem</th>
+                                <th style={{ padding:"6px 8px" }}>Stok awal</th>
+                                <th style={{ padding:"6px 8px" }}>Terjual</th>
+                                <th style={{ padding:"6px 8px" }}>Bonus</th>
+                                <th style={{ padding:"6px 8px" }}>Revenue</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {baris.map(r => {
+                                const beda = !r.ditarik && r.stok !== r.stokSistem;
+                                return (
+                                  <tr key={r.p.id} style={{ borderTop:`1px solid ${T.gray100}`, textAlign:"right" }}>
+                                    <td style={{ textAlign:"left", padding:"6px 8px", fontWeight:700, color:T.gray800 }}>
+                                      {r.p.nama}{r.ditarik && <span style={{ marginLeft:6, fontSize:10, color:"#DC2626", fontWeight:700 }}>DITARIK</span>}
+                                    </td>
+                                    <td style={{ padding:"6px 8px", color:T.gray600 }}>{fmt(r.stokSistem)}</td>
+                                    <td style={{ padding:"6px 8px", fontWeight:700, color: beda ? "#B45309" : T.gray800, background: beda ? "#FFFBEB" : "transparent" }}>{fmt(r.stok)}</td>
+                                    <td style={{ padding:"6px 8px", fontWeight:700, color: r.jual>0 ? "#15803D" : T.gray400 }}>{fmt(r.jual)}</td>
+                                    <td style={{ padding:"6px 8px", color: r.bonus>0 ? T.gold : T.gray400 }}>{fmt(r.bonus)}</td>
+                                    <td style={{ padding:"6px 8px" }}>{fmtRp(r.rev)}</td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                            <tfoot>
+                              <tr style={{ borderTop:`2px solid ${T.gray200}`, textAlign:"right", fontWeight:800 }}>
+                                <td style={{ textAlign:"left", padding:"6px 8px" }} colSpan={3}>Total</td>
+                                <td style={{ padding:"6px 8px" }}>{fmt(totalJual)}</td>
+                                <td style={{ padding:"6px 8px" }}>{fmt(totalBonus)}</td>
+                                <td style={{ padding:"6px 8px" }}>{fmtRp(totalRev)}</td>
+                              </tr>
+                            </tfoot>
+                          </table>
+                        </div>
+                      )}
+
+                      {/* Setoran & catatan */}
+                      <div style={{ display:"flex", flexWrap:"wrap", gap:14, marginTop:10, fontSize:12, color:T.gray600 }}>
+                        <div>Setoran: <b style={{ color: kurangSetor>0 ? "#DC2626" : T.gray800 }}>{nominalIsi==null ? "belum diisi" : fmtRp(nominalIsi)}</b>
+                          {nominalIsi!=null && totalRev>0 && <> dari estimasi {fmtRp(totalRev)}</>}</div>
+                        {k.keteranganSetoran && <div>Ket. setoran: {k.keteranganSetoran}</div>}
+                      </div>
+                      {k.catatan && (
+                        <div style={{ fontSize:12, color:"#92400E", background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:6, padding:"4px 8px", marginTop:8 }}>
+                          Catatan sales: {k.catatan}
+                        </div>
                       )}
                     </div>
                   );
