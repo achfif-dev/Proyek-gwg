@@ -98,8 +98,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // sesaat setelah buka app, sebelum db.pengguna tersinkron).
     if (!isManajer) return;
     const now = Date.now();
+      // 🔒 Rules v15: periode yang sudah ditutup buku TIDAK boleh berubah status.
+      // Entri menunggu di bulan terkunci dibiarkan (tidak di-auto-approve) sampai
+      // kuncinya dibuka — kalau dipaksa, server menolak dan banner penolakan muncul.
     const expired = (db.penyesuaian||[]).filter(pz =>
       pz.status === "menunggu" && pz.autoApproveAt && pz.autoApproveAt <= now
+      && !isPeriodeTerkunci(db.tutupBuku || [], pz.tanggal)
     );
     if (expired.length === 0) return;
     const expiredIds = new Set(expired.map(pz=>pz.id));
@@ -119,7 +123,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     const tokoIds = [...new Set(expired.map(pz=>pz.tokoId))];
     tokoIds.forEach(tid => recalcTokoStok(tid, undefined, updatedPenyesuaian));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db.penyesuaian, isManajer]);
+  }, [db.penyesuaian, db.tutupBuku, isManajer]);
 
   // ✅ AUTO-APPROVE: pengajuan Kontrol Bulanan (Tambah Kontrol / Stok Awal)
   // dari Sales — SAMA PERSIS alurnya dengan Penyesuaian Stok di atas, supaya
@@ -136,8 +140,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // sesaat setelah buka app, sebelum db.pengguna tersinkron).
     if (!isManajer) return;
     const now = Date.now();
+      // 🔒 Rules v15: periode yang sudah ditutup buku TIDAK boleh berubah status.
+      // Entri menunggu di bulan terkunci dibiarkan (tidak di-auto-approve) sampai
+      // kuncinya dibuka — kalau dipaksa, server menolak dan banner penolakan muncul.
     const expired = (db.kontrol||[]).filter(k =>
       k.status === "menunggu" && k.autoApproveAt && k.autoApproveAt <= now
+      && !isPeriodeTerkunci(db.tutupBuku || [], k.tanggal)
     );
     if (expired.length === 0) return;
     const expiredIds = new Set(expired.map(k=>k.id));
@@ -175,7 +183,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       entriesForToko.forEach(entri => syncProdukIdsDariStokKontrol(tid, entri));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db.kontrol, isManajer]);
+  }, [db.kontrol, db.tutupBuku, isManajer]);
 
   // ✅ AUTO-APPROVE: pengajuan Tarik/Non-Aktifkan Toko dari Sales — sama
   // seperti dua alur di atas, otomatis "disetujui" lewat 24 jam kalau tidak
@@ -192,13 +200,17 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // sesaat setelah buka app, sebelum db.pengguna tersinkron).
     if (!isManajer) return;
     const now = Date.now();
+      // 🔒 Rules v15: periode yang sudah ditutup buku TIDAK boleh berubah status.
+      // Entri menunggu di bulan terkunci dibiarkan (tidak di-auto-approve) sampai
+      // kuncinya dibuka — kalau dipaksa, server menolak dan banner penolakan muncul.
     const expired = (db.penarikanToko||[]).filter(pk =>
       pk.status === "menunggu" && pk.autoApproveAt && pk.autoApproveAt <= now
+      && !isPeriodeTerkunci(db.tutupBuku || [], pk.tanggal)
     );
     if (expired.length === 0) return;
     expired.forEach(pk => terapkanPenarikanToko(pk, "Otomatis (24 jam)"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [db.penarikanToko, isManajer]);
+  }, [db.penarikanToko, db.tutupBuku, isManajer]);
   const [deleteTarget, setDeleteTarget] = useState(null); // Fix: konfirmasi hapus
   const [selectedIds, setSelectedIds] = useState([]);
   // ✅ ALUR PERSETUJUAN HAPUS KONTROL LAMA: Sales hanya boleh menghapus langsung
