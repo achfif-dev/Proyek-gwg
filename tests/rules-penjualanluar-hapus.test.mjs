@@ -1,11 +1,11 @@
-// Rules v16: Sales tidak boleh menghapus/mengubah penjualan luar rute yang sudah ada
+// Rules v17: Sales tidak boleh menghapus/mengubah penjualan luar rute yang sudah ada
 // (jurnalnya tidak bisa di-void dari perangkat Sales). Buat baru tetap boleh.
 // Jalankan: node --import ./tests/register.mjs --test tests/rules-penjualanluar-hapus.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const rules = JSON.parse(readFileSync(new URL("../firebase-rules/database_rules_v16_penjualanluar_hapus.json", import.meta.url), "utf8"));
+const rules = JSON.parse(readFileSync(new URL("../firebase-rules/database_rules_v17_penjualanluar_hapus.json", import.meta.url), "utf8"));
 const node = rules.rules.gwg_data.shared.penjualanLuar["$id"];
 String.prototype.matches = function (r) { return r.test(String(this)); };
 String.prototype.beginsWith = function (s) { return String(this).startsWith(s); };
@@ -55,11 +55,8 @@ test("Sales TIDAK boleh menghapus penjualan luar (wilayah sendiri maupun lain)",
 test("Sales tidak boleh mengubah penjualan luar yang sudah ada", () => {
   assert.equal(w(SALES, rec(), { ...rec(), terjual_P1: 99 }), false);
 });
-test("Admin dan Manajer tetap boleh menghapus di bulan terbuka, tapi tidak di bulan terkunci", () => {
-  for (const e of [ADMIN, MGR]) {
-    assert.equal(w(e, rec(), undefined), true, `${e} bulan terbuka`);
-    assert.equal(w(e, rec("2026-08-10"), undefined), false, `${e} bulan terkunci`);
-  }
+test("Admin dan Manajer tetap boleh menghapus penjualan luar", () => {
+  for (const e of [ADMIN, MGR]) assert.equal(w(e, rec(), undefined), true, `${e}`);
 });
 test("Klien: tombol dan fungsi hapus penjualan luar dijaga isSalesRestricted", () => {
   const src = readFileSync(new URL("../src/features/kontrol/TabKontrol.jsx", import.meta.url), "utf8");

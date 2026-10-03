@@ -69,3 +69,11 @@ test("Klien: tiga efek auto-approve di TabKontrol dijaga isManajer", () => {
     assert.match(src.slice(akhir, akhir + 60), /isManajer\]/, `dependency ${tabel} tanpa isManajer`);
   }
 });
+
+test("Klien: tiga efek auto-approve melewati entri di periode yang sudah ditutup buku", () => {
+  const src = readFileSync(new URL("../src/features/kontrol/TabKontrol.jsx", import.meta.url), "utf8");
+  for (const [tabel, v] of [["penyesuaian", "pz"], ["kontrol", "k"], ["penarikanToko", "pk"]]) {
+    assert.ok(src.includes(`&& !isPeriodeTerkunci(db.tutupBuku || [], ${v}.tanggal)`), `efek ${tabel} tanpa filter periode terkunci`);
+    assert.ok(src.includes(`}, [db.${tabel}, db.tutupBuku, isManajer]);`), `dependency ${tabel} tanpa db.tutupBuku`);
+  }
+});
