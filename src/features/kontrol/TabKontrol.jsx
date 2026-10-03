@@ -1210,6 +1210,15 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     setLuarRuteForm(null);
   }
   function deleteLuarRute(id) {
+    // 🔒 Rules v16: Sales TIDAK boleh menghapus penjualan luar rute. Alasannya
+    // akuntansi, bukan sekadar izin: jurnalnya sudah diposting dan perangkat
+    // Sales tidak bisa membaca jurnalUmum, jadi jurnal itu tidak bisa dibatalkan
+    // (void) dari sini — menghapus hanya akan meninggalkan jurnal yatim dan
+    // pendapatan di neraca tetap terhitung. Koreksi lewat Admin/Manajer.
+    if (isSalesRestricted) {
+      alert("Penjualan luar rute yang sudah dicatat tidak bisa dihapus oleh Sales. Minta Admin/Manajer untuk mengoreksinya.");
+      return;
+    }
     if (!confirm("Hapus catatan penjualan luar rute ini? Tindakan ini permanen.")) return;
     const rec = (db.penjualanLuar||[]).find(r=>r.id===id);
     if (rec && cekTutupBuku(rec.tanggal)) return;
@@ -3591,7 +3600,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                         <td style={{ padding:"6px 10px", color:T.gray500 }}>{pl.dicatatOleh || <span style={{ color:T.gray400 }}>—</span>}</td>
                         <td style={{ padding:"6px 10px", textAlign:"right", fontWeight:700, color:T.green }}>{fmtRp(rev)}</td>
                         <td style={{ padding:"6px 10px", textAlign:"right" }}>
-                          <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>deleteLuarRute(pl.id)}>Hapus</Btn>
+                          {!isSalesRestricted && (
+                            <Btn variant="danger" size="sm" icon={Icon.delete} onClick={()=>deleteLuarRute(pl.id)}>Hapus</Btn>
+                          )}
                         </td>
                       </tr>
                     );
