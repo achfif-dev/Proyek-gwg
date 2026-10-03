@@ -65,7 +65,7 @@ export function LoginPage({ onLoginGoogle, fbReady, error }) {
 
             <p style={{ fontSize:12, color:T.gray400, marginTop:20 }}>
               Hanya akun Google yang terdaftar dapat mengakses aplikasi ini.<br/>
-              Akun baru otomatis masuk sebagai <b>Sales</b>; Admin/Manajer dapat
+              Akun baru otomatis masuk sebagai <b>Viewer</b>; Admin/Manajer dapat
               mengubah role di tab <b>Pengguna</b>.
             </p>
           </>
