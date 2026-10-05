@@ -263,7 +263,11 @@ function TabBagiHasilImpl({ db, analytics, save, addRecord, updateRecord, delete
   }
 
   function saveConfig(newCfg) {
-    save({ ...db, bagiHasilConfig: newCfg });
+    // FIX: bentuk fungsi (state TERBARU), bukan save({ ...db, ... }). `db` di
+    // closure ini bisa basi (dari render sebelumnya) -> save() menganggap record
+    // yang baru ditambahkan di event yang sama (mis. tutupBuku & jurnal saat Tutup
+    // Buku) sebagai "dihapus" lalu menulis null ke server.
+    save(prev => ({ ...prev, bagiHasilConfig: newCfg }));
   }
 
   function submitConfig() {

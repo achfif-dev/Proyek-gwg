@@ -538,7 +538,7 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
       const bulanLalu = bulanSebelumnya(bulanIniKey);
       const saldoAwalMap = db.saldoAkunBulanan?.[bulanLalu] || {};
       const snapshot = hitungSnapshotSaldoAkun([...entriesBulanIniDb, ...entriesTambahan], saldoAwalMap, db.daftarAkun);
-      save({ ...db, saldoAkunBulanan: { ...db.saldoAkunBulanan, [bulanIniKey]: snapshot } });
+      save(prev => ({ ...prev, saldoAkunBulanan: { ...prev.saldoAkunBulanan, [bulanIniKey]: snapshot } }));
     } catch (e) {
       console.warn("Gagal menyimpan snapshot saldo akun bulanan (Tutup Buku & jurnal tetap tersimpan):", e);
       alert(`Periode berhasil ditutup, TAPI snapshot saldo akun bulanan gagal disimpan: ${e.message}`);
@@ -564,9 +564,11 @@ export function NeracaKeuangan({ db, save, addRecord, updateRecord, deleteRecord
     // nanti ditutup ulang, snapshot dihitung ulang dari data yang benar
     // (bukan snapshot basi dari sebelum dibuka kuncinya).
     if (db.saldoAkunBulanan?.[id]) {
-      const updated = { ...db.saldoAkunBulanan };
-      delete updated[id];
-      save({ ...db, saldoAkunBulanan: updated });
+      save(prev => {
+        const updated = { ...prev.saldoAkunBulanan };
+        delete updated[id];
+        return { ...prev, saldoAkunBulanan: updated };
+      });
     }
     deleteRecord("tutupBuku", id);
   }
