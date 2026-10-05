@@ -738,8 +738,11 @@ export function useDB(user) {
   // state sebelumnya dan hanya mengirim tabel yang berubah ke Firebase
   // (bukan seluruh database), serta menulis tabel sebagai MAP per-id
   // (bukan array besar) supaya update 1 toko = 1 path kecil, bukan 1 blob.
-  const save = useCallback((newDB) => {
+  const save = useCallback((newDBArg) => {
     setDB(prevDB => {
+      // Bentuk fungsi: save(prev => next) — selalu memakai state TERBARU,
+      // aman dipanggil tepat setelah addRecord/postJurnal di event yang sama.
+      const newDB = typeof newDBArg === "function" ? newDBArg(prevDB) : newDBArg;
       const updates = {};
       LIST_TABLES.forEach(key => {
         if (newDB[key] === prevDB[key]) return;
@@ -1739,7 +1742,7 @@ export function useDB(user) {
     if (db.daftarAkun && Object.keys(db.daftarAkun).length > 0) {
       return { ok: false, message: "daftarAkun sudah terisi — tidak ditimpa." };
     }
-    save({ ...db, daftarAkun: DEFAULT_DAFTAR_AKUN });
+    save(prev => ({ ...prev, daftarAkun: DEFAULT_DAFTAR_AKUN }));
     return { ok: true };
   }, [db, save]);
 
