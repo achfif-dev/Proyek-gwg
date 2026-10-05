@@ -11,6 +11,11 @@ import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "../lib/g
 import { downloadJSON } from "../lib/fileSave";
 import { ambilSnapshotServer, simpanBackupCloud, jalankanReset, jalankanRestore, snapshotKosong } from "../lib/backupRestore";
 
+// [TB-DIAG] Logging sementara untuk melacak kenapa record tutupBuku hilang. Filter Console dengan "[TB]".
+const TB = (...a) => { try { console.log("[TB]", new Date().toISOString().slice(11, 23), ...a); } catch { /* noop */ } };
+const TBT = (label) => { try { console.log("[TB] " + label + " <- dipanggil dari:\n" + String(new Error().stack).split("\n").slice(2, 9).join("\n")); } catch { /* noop */ } };
+
+
 export function useDB(user) {
   const [db, setDB] = useState(() => {
     try {
@@ -458,6 +463,7 @@ export function useDB(user) {
         // membesar signifikan seiring waktu. ──
         const unsub = onValue(r, snap => {
           const val = snap.val();
+          if (key === "tutupBuku") TB("onValue tutupBuku dari server, id =", JSON.stringify(Object.keys(val || {})));
           remoteRef.current[key] = val;
           setDB(prev => {
             const next = { ...prev };
@@ -624,8 +630,11 @@ export function useDB(user) {
       const kirim = async (path, value) => {
         const target = ref(rtdb, `gwg_data/shared/${path}`);
         try {
+          if (path.startsWith("tutupBuku")) TB("kirim ->", path, value === null ? "NULL(HAPUS)" : "ADA");
           await set(target, value);
+          if (path.startsWith("tutupBuku")) TB("kirim OK", path);
         } catch (e) {
+          if (path.startsWith("tutupBuku")) TB("kirim GAGAL", path, e?.code || "", e?.message || String(e));
           if (!isPermissionDenied(e) || tokenSudahDiperbarui) throw e;
           tokenSudahDiperbarui = true;
           try { await firebaseAuth?.auth?.currentUser?.getIdToken(true); } catch { throw e; }
@@ -712,6 +721,7 @@ export function useDB(user) {
   // koneksi kembali, walau app sempat ditutup/HP mati di antaranya.
   const pushUpdates = useCallback((updates) => {
     const entries = Object.entries(updates).map(([path, value]) => [path, value === undefined ? null : value]);
+    entries.forEach(([path, value]) => { if (path.startsWith("tutupBuku")) { TB("pushUpdates", path, value === null ? "NULL(HAPUS)" : "ADA"); if (value === null) TBT("pushUpdates NULL " + path); } });
     Promise.all(entries.map(([path, value]) => queueWrite(path, value))).then((tersimpan) => {
       refreshPendingCount();
       // ✅ FIX: kalau IndexedDB tidak tersedia (mis. private mode), queueWrite
@@ -847,6 +857,7 @@ export function useDB(user) {
           });
         });
       }
+      if (Object.keys(updates).some(k => k.startsWith("tutupBuku"))) { TB("save() menyentuh tutupBuku:", JSON.stringify(Object.keys(updates).filter(k => k.startsWith("tutupBuku")))); TBT("save() tutupBuku"); }
       if (Object.keys(updates).length) pushUpdates(updates);
       saveLocalDB(newDB);
       return newDB;
@@ -857,6 +868,7 @@ export function useDB(user) {
   // Untuk tabel "kontrol" khusus, path ditulis sebagai "kontrol/{tahun}/{id}"
   // (partisi tahun) alih-alih "kontrol/{id}".
   const addRecord = useCallback((table, record) => {
+    if (table === "tutupBuku") TB("addRecord tutupBuku", record?.id);
     // ✅ Tandai key ini "baru saja ditulis sendiri" SEBELUM push ke Firebase,
     // supaya begitu echo-nya sampai lewat listener (bisa dalam hitungan
     // milidetik di jaringan cepat), sudah langsung dikenali dan diabaikan
@@ -965,6 +977,7 @@ export function useDB(user) {
 
 
   const deleteRecord = useCallback((table, id) => {
+    if (table === "tutupBuku") { TB("deleteRecord tutupBuku", id); TBT("deleteRecord tutupBuku " + id); }
     markLocalWrite(table, id);
     setDB(prevDB => {
       const targetRecord = (table === "kontrol" || table === "jurnalUmum") ? (prevDB[table]||[]).find(r => r.id === id) : null;
