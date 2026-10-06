@@ -634,18 +634,14 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   const wilayahByIdKontrol = useMemo(() => new Map((db.wilayah||[]).map(w => [w.id, w])), [db.wilayah]);
   const enriched = useMemo(() => (db.kontrol||[]).map(k => {
     const toko = tokoByIdKontrol.get(k.tokoId) || null;
-    // ✅ FIX BUG (snapshot wilayah/rute): entri BARU sudah punya k.ruteId/
-    // k.wilayahId tersimpan sendiri di record (diisi saat Tambah/Edit
-    // Kontrol — lihat komentar di handleSubmit), jadi dipakai duluan supaya
-    // tidak berubah walau toko-nya kemudian dipindah rute/wilayah. Entri
-    // LAMA (sebelum fix ini) belum punya field itu — fallback ke rute toko
-    // saat ini seperti perilaku lama, supaya tetap tampil (bukan kosong).
-    const rute = k.ruteId
-      ? (ruteByIdKontrol.get(k.ruteId) || null)
-      : (toko ? (ruteByIdKontrol.get(toko.ruteId) || null) : null);
-    const wilayah = k.wilayahId
-      ? (wilayahByIdKontrol.get(k.wilayahId) || null)
-      : (rute ? (wilayahByIdKontrol.get(rute.wilayahId) || null) : null);
+    // Rute & wilayah baris kontrol SELALU mengikuti rute toko SAAT INI (keputusan Ach,
+    // 6 Okt 2026): kalau toko dipindah rute, seluruh riwayat kunjungannya ikut pindah di
+    // Tab Kontrol, Rekap, Dashboard, dan Bagi Hasil. Dari 5 Sep s/d 6 Okt 2026 sempat
+    // dipakai snapshot per-entri (k.ruteId/k.wilayahId) agar riwayat tidak ikut pindah;
+    // itu DIBALIK. Field ruteId/wilayahId lama di record kontrol kini DIABAIKAN saat membaca.
+    // Konsekuensi: pindah rute LINTAS WILAYAH menggeser angka wilayah bulan lampau.
+    const rute = toko ? (ruteByIdKontrol.get(toko.ruteId) || null) : null;
+    const wilayah = rute ? (wilayahByIdKontrol.get(rute.wilayahId) || null) : null;
     let totalRev = 0, totalBonus = 0, totalTerjual = 0;
     produkAktif.forEach(p => {
       const terjual = k[`terjual_${p.id}`]||0;
@@ -1335,40 +1331,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     const d = form.tanggal;
     const [y,m] = d.split("-");
     const payload = { ...form };
-    // ✅ FIX BUG: snapshot ruteId/wilayahId toko INI PADA SAAT ENTRI
-    // disimpan, langsung di record kontrol-nya. Sebelumnya rute/wilayah
-    // tiap baris kontrol SELALU dihitung ulang dari rute toko SAAT INI
-    // (lihat useAnalytics.js & `enriched` di atas) — bukan dari rute toko
-    // saat kunjungan itu terjadi. Akibatnya, begitu sebuah toko dipindah
-    // wilayah lewat "Pindah Rute Massal" (Master Toko), SELURUH riwayat
-    // kontrol toko itu — termasuk kunjungan-kunjungan lama — ikut "pindah"
-    // ke wilayah baru di semua rekap (termasuk Siklus Wilayah), padahal
-    // kunjungan itu benar-benar terjadi saat toko masih di wilayah lama.
-    // Dengan snapshot ini, begitu direkam, wilayah/rute suatu kunjungan
-    // tidak akan berubah lagi walau tokonya kemudian dipindah rute/wilayah.
-    // (useAnalytics.js & `enriched` di TabKontrol diubah untuk memakai
-    // snapshot ini kalau ada, fallback ke perhitungan lama untuk data lama
-    // yang belum punya snapshot ini.)
-    //
-    // ⚠️ FIX BUG LANJUTAN: snapshot ini HANYA boleh dibuat sekali, saat
-    // entri BARU pertama kali direkam (modal==="add") — bukan dihitung
-    // ULANG setiap kali entri (lama) ini diedit. Sebelumnya blok ini
-    // berjalan tanpa syarat untuk add MAUPUN edit, jadi tiap kali Admin
-    // membuka & menyimpan ulang entri LAMA (mis. cuma membetulkan catatan),
-    // snapshot-nya diam-diam ikut ditimpa ke rute toko SAAT INI — kalau
-    // toko itu sudah pindah wilayah di antara kunjungan asli dan
-    // pengeditan, snapshot historisnya jadi salah lagi (persis bug yang
-    // snapshot ini coba selesaikan). Untuk edit, payload.ruteId/wilayahId
-    // SUDAH otomatis terisi benar dari `{...form}` di atas — form diisi
-    // dari `row` hasil `enriched` (openEdit), yang sudah mengutamakan
-    // snapshot asli record ini (lihat komentar di `enriched`) — jadi
-    // cukup dibiarkan apa adanya, tidak perlu (dan tidak boleh) dihitung ulang.
-    if (modal === "add") {
-      const tokoSnapshot = tokoByIdKontrol.get(form.tokoId) || null;
-      const ruteSnapshot = tokoSnapshot ? (ruteByIdKontrol.get(tokoSnapshot.ruteId) || null) : null;
-      payload.ruteId = ruteSnapshot?.id || "";
-      payload.wilayahId = ruteSnapshot?.wilayahId || "";
-    }
+    // Rute/wilayah TIDAK disimpan di record kontrol (lihat catatan di `enriched`): selalu
+    // dihitung dari rute toko saat ini. Buang field turunan ini supaya tidak tersimpan basi.
+    delete payload.ruteId;
+    delete payload.wilayahId;
     // ✅ BARU: nominal setoran — kosongkan (bukan simpan angka acak) kalau
     // memang tidak diisi, supaya jelas beda antara "belum diisi" vs
     // "disetor Rp0". Kalau diisi, pastikan berupa angka valid.
@@ -2091,8 +2057,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
               <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
                 {pending.map(k => {
                   const tk = tokoByIdKontrol.get(k.tokoId);
-                  const rt = ruteByIdKontrol.get(k.ruteId || tk?.ruteId);
-                  const wl = wilayahByIdKontrol.get(k.wilayahId || rt?.wilayahId);
+                  const rt = ruteByIdKontrol.get(tk?.ruteId);
+                  const wl = wilayahByIdKontrol.get(rt?.wilayahId);
                   const pengaju = (db.pengguna||[]).find(u => u.email && k.createdBy && u.email.toLowerCase() === String(k.createdBy).toLowerCase());
                   const st = CATATAN_STATUS[k.catatanStatus];
 
