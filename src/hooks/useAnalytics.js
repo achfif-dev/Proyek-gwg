@@ -92,25 +92,14 @@ export function useAnalytics(db) {
         else status = "Laku Sebagian";
       }
       const toko = tokoById.get(k.tokoId) || null;
-      // ✅ FIX BUG (snapshot wilayah/rute kunjungan): entri kontrol yang
-      // sudah punya k.ruteId/k.wilayahId sendiri — direkam pada saat
-      // kunjungan itu terjadi, lihat TabKontrol.jsx handleSubmit — dipakai
-      // DULUAN di sini, supaya rute/wilayah suatu kunjungan LAMA tidak
-      // berubah walau tokonya kemudian dipindah rute/wilayah lewat
-      // "Pindah Rute Massal" (Master Toko). Sebelumnya field ini SELALU
-      // dihitung ulang dari rute toko SAAT INI, jadi begitu toko pindah
-      // wilayah, seluruh riwayat kunjungannya (termasuk data lama) ikut
-      // "pindah" secara diam-diam di Dashboard, semua mode Tab Rekap
-      // (termasuk Siklus Wilayah), dan Tab Bagi Hasil — karena semuanya
-      // bersumber dari analytics.kontrol ini. Entri LAMA (sebelum fix ini
-      // ada) belum punya field k.ruteId/k.wilayahId — fallback ke rute
-      // toko saat ini seperti perilaku lama, supaya tetap tampil.
-      const rute = k.ruteId
-        ? (ruteById.get(k.ruteId) || null)
-        : (toko ? (ruteById.get(toko.ruteId) || null) : null);
-      const wilayah = k.wilayahId
-        ? (wilayahById.get(k.wilayahId) || null)
-        : (rute ? (wilayahById.get(rute.wilayahId) || null) : null);
+      // Rute & wilayah baris kontrol SELALU mengikuti rute toko SAAT INI (keputusan Ach,
+      // 6 Okt 2026): kalau toko dipindah rute, seluruh riwayat kunjungannya ikut pindah di
+      // Tab Kontrol, Rekap, Dashboard, dan Bagi Hasil. Dari 5 Sep s/d 6 Okt 2026 sempat
+      // dipakai snapshot per-entri (k.ruteId/k.wilayahId) agar riwayat tidak ikut pindah;
+      // itu DIBALIK. Field ruteId/wilayahId lama di record kontrol kini DIABAIKAN saat membaca.
+      // Konsekuensi: pindah rute LINTAS WILAYAH menggeser angka wilayah bulan lampau.
+      const rute = toko ? (ruteById.get(toko.ruteId) || null) : null;
+      const wilayah = rute ? (wilayahById.get(rute.wilayahId) || null) : null;
       if (wilayah) bump(wilayahAgg, wilayah.id, totalRev, totalTerjual);
       if (rute) bump(ruteAgg, rute.id, totalRev, totalTerjual);
       return { ...k, totalRev, totalTerjual, totalStok, totalBonus, status, toko, rute, wilayah,
