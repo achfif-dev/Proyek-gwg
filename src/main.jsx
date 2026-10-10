@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import { Capacitor } from '@capacitor/core'
 import GWGSuperApp from './App'
+import ErrorBoundary from './components/ErrorBoundary'
 
 // PWA service worker HANYA relevan untuk konteks browser/PWA (supaya app bisa
 // dipakai offline & auto-update lewat browser). Di APK (Capacitor native),
@@ -17,7 +18,9 @@ import GWGSuperApp from './App'
 // dilewati total di platform native.
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
-    <GWGSuperApp />
+    <ErrorBoundary>
+      <GWGSuperApp />
+    </ErrorBoundary>
   </React.StrictMode>,
 )
 
