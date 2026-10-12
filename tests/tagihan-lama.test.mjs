@@ -197,3 +197,22 @@ test("uangDiterimaBaris", () => {
   assert.equal(uangDiterimaBaris({ totalRev: 8000, nominalDisetor: "" }), 8000);
   assert.equal(uangDiterimaBaris({ totalRev: 8000 }), 8000);
 });
+
+test("ringkasanUangKontrol: baris dari Rekap (status = status stok) tetap dihitung; Luar Rute ikut dihitung sebagai diterima penuh", () => {
+  // Di Rekap, useAnalytics menimpa `status` dengan status stok ("Habis", "Laku Sebagian", ...)
+  // dan sudah membuang entri menunggu/ditolak — jadi semua baris harus dihitung.
+  const rowsRekap = [
+    { tokoId: "t1", status: "Habis", totalRev: 120000, nominalDisetor: "", tagihanLama: "" },
+    { tokoId: "t2", status: "Laku Sebagian", totalRev: 100000, nominalDisetor: 8000, tagihanLama: 92000 },
+    { tokoId: "t3", status: "Belum Laku", totalRev: 0, nominalDisetor: "", tagihanLama: 50000 },
+    { tokoId: "", status: undefined, totalRev: 70000 }, // Penjualan Luar Rute — tanpa setoran/tagihan, dianggap diterima penuh
+  ];
+  const r = ringkasanUangKontrol(rowsRekap);
+  assert.equal(r.n, 4);
+  assert.equal(r.nilai, 290000);
+  assert.equal(r.diterima, 120000 + 8000 + 0 + 70000);
+  assert.equal(r.piutangBaru, 92000);
+  assert.equal(r.tagihanLama, 142000);
+  assert.equal(r.nTagihan, 2);
+  assert.equal(r.total, 198000 + 142000);
+});
