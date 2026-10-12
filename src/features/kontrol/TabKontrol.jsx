@@ -1977,8 +1977,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // kontribusi luar rute per rute.
   const totalRevData = data.reduce((s,k)=>s+k.totalRev,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalRev,0);
   const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalBonus,0);
-  // Ringkasan uang untuk validasi laporan Sales (hanya kontrol toko yang sesuai filter).
-  const ringkasanUang = ringkasanUangKontrol(data);
+  // Ringkasan uang untuk validasi laporan Sales: kontrol toko yang sesuai filter + Penjualan Luar
+  // Rute (form-nya tidak punya kolom setoran/tagihan lama, jadi dianggap diterima penuh = nilai
+  // penjualan, tanpa piutang). Sama dengan kartu di Tab Rekap. Luar Rute otomatis tidak ikut
+  // (luarRuteDataForSummary kosong) kalau filter Sales/status/jumlah/kunjungan berulang aktif,
+  // karena penjualan Luar Rute tidak punya data itu — selaras dengan Total Revenue di header.
+  const ringkasanUang = ringkasanUangKontrol([...data, ...luarRuteDataForSummary]);
   const catatanSt = form.catatanStatus||"";
 
   const cols = [
@@ -3258,10 +3262,16 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         </div>
       )}
 
-      {data.length > 0 && (
+      {ringkasanUang.n > 0 && (
         <div style={{ marginBottom:14 }}>
           <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:6, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
             <Icon.wallet size={13} strokeWidth={2}/> Ringkasan Uang (sesuai filter) · {ringkasanUang.n} kunjungan
+            {luarRuteDataForSummary.length > 0 && (
+              <span style={{ color:T.gray400, fontWeight:600 }}>· termasuk {luarRuteDataForSummary.length} Penjualan Luar Rute (dianggap diterima penuh)</span>
+            )}
+            {adaFilterAuditKunjungan && (
+              <span style={{ color:T.gray400, fontWeight:600 }}>· Penjualan Luar Rute tidak dihitung (filter Sales/status/jumlah aktif)</span>
+            )}
             {ringkasanUang.nMenunggu > 0 && (
               <span style={{ color:T.orange, fontWeight:600 }}>· {ringkasanUang.nMenunggu} entri menunggu persetujuan tidak dihitung</span>
             )}
