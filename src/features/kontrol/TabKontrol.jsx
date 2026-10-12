@@ -6,6 +6,10 @@ import { exportExcel } from "../../lib/exportUtils";
 import { fmt, fmtRp, nextKodeCounter, genUniqueId, naturalCompare, normTxt, sortProdukByUrutan } from "../../lib/format";
 import { computeSiklusSegmentsPerWilayah, appendStatusHistory, recalcTokoStok as recalcTokoStokShared, buildProdukFlagUpdates as buildProdukFlagUpdatesShared } from "../../lib/dataHelpers";
 import { isPeriodeTerkunci, bulanKeyOf } from "../../lib/neracaHelpers";
+import {
+  hitungDeltaTagihanLama, perubahanTerbayar, ringkasPiutangToko,
+  ringkasanUangKontrol, uangDiterimaBaris,
+} from "../../lib/tagihanLamaHelpers";
 import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { bangunBarisJurnalKontrol, bangunBarisJurnalPenjualanLuar } from "../../lib/akuntansiHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
@@ -24,7 +28,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // ✅ PERSISTEN: filter & pencarian tab ini disimpan ke localStorage supaya
   // tetap sama setelah refresh / app dibuka ulang, bukan balik ke default.
   const [hanyaBelumKontrol, setHanyaBelumKontrol] = usePersistedState("kontrol.hanyaBelumKontrol", false);
-  const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", q:initialQuery||"",
+  // Nama Sales pelapor terakhir yang dipakai — jadi isian awal supaya input beberapa toko
+  // dari satu laporan WhatsApp tidak perlu mengetik ulang.
+  const [lastSales, setLastSales] = usePersistedState("kontrol.lastSales", "");
+  const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:initialQuery||"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
@@ -248,6 +255,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     const recTerdampak = (db.kontrol||[]).find(k=>k.id===id);
     if (recTerdampak && cekTutupBuku(recTerdampak.tanggal)) return;
     const tokoIdTerdampak = recTerdampak?.tokoId;
+    if (recTerdampak) kembalikanTagihanLama(recTerdampak);
     voidJurnalSumber("kontrol", id, "Pengajuan hapus kontrol disetujui");
     deleteRecord("kontrol", id);
     if (tokoIdTerdampak) {
@@ -319,6 +327,31 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     }
   }
 
+  // ── TAGIHAN LAMA DITERIMA ─────────────────────────────────────────────
+  // Uang yang diterima Sales di kunjungan ini untuk melunasi piutang toko dari
+  // kunjungan sebelumnya. Otomatis mengurangi saldo piutang (field `terbayar`) di
+  // Hutang/Piutang, paling lama dulu, dan dibalik persis kalau kontrolnya
+  // diedit/dihapus/ditolak (alokasinya disimpan di record: alokasiTagihanLama).
+  // TIDAK membuat Kas Masuk/jurnal (akuntansi belum dipakai; uang Sales sering
+  // ditumpuk sampai akhir perjalanan). Hanya dipanggil dari jalur Admin/Manajer
+  // (sama seperti syncPiutangSetoran: Rules hutangPiutang hanya untuk mereka).
+  const ctxTagihan = () => ({ hutangPiutang: db.hutangPiutang, toko: db.toko, kontrol: db.kontrol });
+  function terapkanDeltaPiutang(delta) {
+    perubahanTerbayar(db.hutangPiutang, delta).forEach(p =>
+      updateRecord("hutangPiutang", p.id, { terbayar: p.terbayar }));
+  }
+  function sinkronTagihanLama(rec) {
+    const { delta, alokasiBaru, tidakTeralokasi } = hitungDeltaTagihanLama(ctxTagihan(), rec);
+    terapkanDeltaPiutang(delta);
+    if (JSON.stringify(rec.alokasiTagihanLama || []) !== JSON.stringify(alokasiBaru)) {
+      updateRecord("kontrol", rec.id, { alokasiTagihanLama: alokasiBaru });
+    }
+    return tidakTeralokasi;
+  }
+  function kembalikanTagihanLama(rec) {
+    terapkanDeltaPiutang(hitungDeltaTagihanLama(ctxTagihan(), rec, { hapus: true }).delta);
+  }
+
   function setujuiKontrolPengajuan(id) {
     const rec = (db.kontrol||[]).find(k=>k.id===id);
     if (!rec) return;
@@ -341,6 +374,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     syncProdukIdsDariStokKontrol(rec.tokoId, updatedRec);
     syncJurnalKontrol(updatedRec);
     syncPiutangSetoran(updatedRec);
+    sinkronTagihanLama(updatedRec);
   }
   function tolakKontrolPengajuan(id) {
     if (!confirm("Tolak pengajuan Kontrol Bulanan (Stok Awal) ini? Entri akan tetap tersimpan (ditandai Ditolak) tapi tidak memengaruhi stok Master Toko.")) return;
@@ -350,6 +384,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       const updatedList = (db.kontrol||[]).map(k => k.id===id ? { ...k, status:"ditolak", disetujuiOleh:"Manual" } : k);
       recalcTokoStok(rec.tokoId, updatedList);
       voidJurnalSumber("kontrol", id, "Pengajuan kontrol ditolak");
+      sinkronTagihanLama({ ...rec, status: "ditolak" });
     }
   }
 
@@ -469,6 +504,16 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         if (perluAjukan.length === 0) return;
       } else if (langsungBisaHapus.length > 0) {
         const affectedTokoIds = [...new Set(langsungBisaHapus.map(id => (db.kontrol||[]).find(k=>k.id===id)?.tokoId).filter(Boolean))];
+        // Kembalikan alokasi Tagihan Lama dulu — digabung per piutang supaya beberapa
+        // kontrol yang menyentuh piutang yang sama tidak saling menimpa.
+        const deltaBulk = {};
+        langsungBisaHapus.forEach(id => {
+          const r = (db.kontrol||[]).find(k=>k.id===id);
+          if (!r) return;
+          Object.entries(hitungDeltaTagihanLama(ctxTagihan(), r, { hapus: true }).delta)
+            .forEach(([pid, d]) => { deltaBulk[pid] = (deltaBulk[pid]||0) + d; });
+        });
+        terapkanDeltaPiutang(deltaBulk);
         langsungBisaHapus.forEach(id => { voidJurnalSumber("kontrol", id, "Kontrol dihapus (bulk)"); deleteRecord("kontrol", id); });
         const remaining = (db.kontrol||[]).filter(k => !langsungBisaHapus.includes(k.id));
         affectedTokoIds.forEach(tokoId => recalcTokoStok(tokoId, remaining, undefined, true));
@@ -743,6 +788,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     (!filter.ruteId    || k.ruteId    === filter.ruteId) &&
     (!filter.bulan     || k.tanggal?.startsWith(filter.bulan)) &&
     (!filter.tanggal   || k.tanggal === filter.tanggal) &&
+    (!filter.dari      || k.tanggal >= filter.dari) &&
+    (!filter.sampai    || k.tanggal <= filter.sampai) &&
+    (!filter.salesPelapor || normTxt(k.salesPelapor) === normTxt(filter.salesPelapor)) &&
     (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q))) &&
     (!filter.catatanStatus || (filter.catatanStatus==="manual" ? !k.catatanStatus || k.catatanStatus==="manual" : k.catatanStatus===filter.catatanStatus)) &&
     (filter.minJumlah==="" || filter.minJumlah==null || k.totalTerjual >= Number(filter.minJumlah)) &&
@@ -769,6 +817,17 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     .sort((a,b) => (a.createdAt||0)-(b.createdAt||0) || String(a.id).localeCompare(String(b.id)))
   , [enriched, filter, kunjunganBerulangIds]);
 
+  // Daftar nama Sales pelapor yang pernah dipakai (unik, tidak peka huruf besar/kecil)
+  // — untuk filter dan saran isian di form.
+  const salesOpts = useMemo(() => {
+    const seen = new Map();
+    (db.kontrol||[]).forEach(k => {
+      const n = String(k.salesPelapor||"").trim();
+      if (n && !seen.has(normTxt(n))) seen.set(normTxt(n), n);
+    });
+    return [...seen.values()].sort((a,b)=>a.localeCompare(b)).map(n => ({ value:n, label:n }));
+  }, [db.kontrol]);
+
   // ✅ Penjualan Luar Rute yang cocok dengan filter Wilayah/Rute/Bulan yang
   // sedang aktif di tab ini — dipakai supaya ringkasan Revenue, ringkasan
   // per Produk, dan hasil Ekspor Kontrol Bulanan ikut ter-update sesuai
@@ -791,7 +850,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         (!filter.wilayahId || pl.wilayahId === filter.wilayahId) &&
         (!filter.ruteId    || pl.ruteId    === filter.ruteId) &&
         (!filter.bulan     || pl.tanggal?.startsWith(filter.bulan)) &&
-        (!filter.tanggal   || pl.tanggal === filter.tanggal)
+        (!filter.tanggal   || pl.tanggal === filter.tanggal) &&
+        (!filter.dari      || pl.tanggal >= filter.dari) &&
+        (!filter.sampai    || pl.tanggal <= filter.sampai)
       )
       .map(pl => {
         let totalRev = 0, totalBonus = 0;
@@ -803,7 +864,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         const ruteNama = (db.rute||[]).find(r=>r.id===pl.ruteId)?.nama || "";
         return { ...pl, totalRev, totalBonus, wilayahNama, ruteNama };
       });
-  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, filter.tanggal, filter.q, isSalesRestricted, salesWilayahId]);
+  }, [db.penjualanLuar, produkAktif, filter.wilayahId, filter.ruteId, filter.bulan, filter.tanggal, filter.dari, filter.sampai, filter.q, isSalesRestricted, salesWilayahId]);
 
   // ✅ FIX SINKRONISASI: Penjualan Luar Rute tidak punya konsep "Status
   // Kunjungan" (Toko Tutup/Tidak Terjual/Bermasalah/Isi Manual), rentang
@@ -817,7 +878,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // tidak ada hubungannya dengan status kunjungan toko. Saat salah satu
   // filter audit ini aktif, entri Luar Rute dikosongkan di sini supaya
   // semua ringkasan yang bergantung padanya tetap sinkron dengan filter.
-  const adaFilterAuditKunjungan = !!filter.catatanStatus || filter.minJumlah !== "" || filter.maxJumlah !== "" || !!filter.kunjunganBerulang;
+  const adaFilterAuditKunjungan = !!filter.salesPelapor || !!filter.catatanStatus || filter.minJumlah !== "" || filter.maxJumlah !== "" || !!filter.kunjunganBerulang;
   const luarRuteDataForSummary = adaFilterAuditKunjungan ? [] : luarRuteData;
 
   // ✅ RINGKASAN TANGGAL KONTROL — daftar tanggal (dalam Wilayah/Rute/Bulan
@@ -1235,7 +1296,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // belum bayar sama sekali" sebelum admin/sales benar-benar mengisi —
       // lihat catatan di kotak Estimasi Revenue untuk kapan field ini
       // "cocok" dengan estimasi vs kapan dianggap ada piutang toko.
-      nominalDisetor:"", keteranganSetoran:"" };
+      nominalDisetor:"", keteranganSetoran:"",
+      salesPelapor: lastSales||"", tagihanLama:"" };
     produkAktif.forEach(p => {
       initial[`stok_${p.id}`] = 0;
       initial[`terjual_${p.id}`] = 0;
@@ -1263,7 +1325,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // ✅ default aman untuk entri LAMA (sebelum field setoran ini ada) —
       // supaya input Nominal Disetor tidak "uncontrolled→controlled".
       nominalDisetor: row.nominalDisetor==null ? "" : row.nominalDisetor,
-      keteranganSetoran: row.keteranganSetoran||"" };
+      keteranganSetoran: row.keteranganSetoran||"",
+      salesPelapor: row.salesPelapor||"",
+      tagihanLama: row.tagihanLama==null ? "" : row.tagihanLama };
     // Pastikan bonusInput tersedia
     produkAktif.forEach(p => {
       if (initial[`bonusInput_${p.id}`] === undefined) initial[`bonusInput_${p.id}`] = p.bonus||0;
@@ -1341,6 +1405,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     payload.nominalDisetor = form.nominalDisetor==="" || form.nominalDisetor==null
       ? "" : Number(form.nominalDisetor)||0;
     payload.keteranganSetoran = String(form.keteranganSetoran||"").trim();
+    // Sales yang melapor + uang yang diterima untuk melunasi piutang kunjungan sebelumnya.
+    payload.salesPelapor = String(form.salesPelapor||"").trim();
+    payload.tagihanLama = form.tagihanLama===""||form.tagihanLama==null ? "" : Math.max(0, Number(form.tagihanLama)||0);
     // catatanStatus tetap disimpan apa adanya (boleh ada catatan meski ada penjualan)
     // Jika user tidak pilih status apapun → biarkan kosong (= Terjual normal)
     produkAktif.forEach(p => {
@@ -1359,6 +1426,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // langsung memengaruhi Master Toko), otomatis "disetujui" sendiri kalau
     // 24 jam tidak ditinjau Admin/Manajer — persis alur Penyesuaian Stok.
     // Pengajuan dari Admin/Manajer langsung "disetujui" (tidak perlu approval).
+    let sisaTagihanTakTeralokasi = 0;
     const approvalFields = {
       status: isSalesRestricted ? "menunggu" : "disetujui",
       autoApproveAt: isSalesRestricted ? (Date.now() + 24*60*60*1000) : null,
@@ -1381,6 +1449,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // harus mengajukan permintaan hapus yang ditinjau Admin/Manajer (entri lama).
       const newEntry = { ...payload, ...approvalFields, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now(), ...(createdBy ? { createdBy } : {}) };
       addRecord("kontrol", newEntry);
+      if (payload.salesPelapor) setLastSales(payload.salesPelapor);
       // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update).
       // recalcTokoStok sendiri sudah mengabaikan entri status "menunggu"/"ditolak",
       // jadi aman dipanggil selalu — baseline stok Master Toko baru berubah
@@ -1395,7 +1464,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // aman untuk langsung sinkron Piutang (lihat catatan izin di
       // syncPiutangSetoran). Kalau ini pengajuan Sales ("menunggu"),
       // piutangnya baru dibuat nanti saat Admin/Manajer menyetujui.
-      if (!isSalesRestricted) syncPiutangSetoran(newEntry);
+      if (!isSalesRestricted) {
+        syncPiutangSetoran(newEntry);
+        sisaTagihanTakTeralokasi = sinkronTagihanLama(newEntry);
+      }
     } else {
       const updatedPayload = { ...payload, ...approvalFields };
       updateRecord("kontrol", form.id, updatedPayload);
@@ -1405,9 +1477,15 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       if (!isSalesRestricted) syncProdukIdsDariStokKontrol(form.tokoId, payload);
       const finalRec = { ...updatedList.find(k => k.id === form.id) };
       syncJurnalKontrol(finalRec);
-      if (!isSalesRestricted) syncPiutangSetoran(finalRec);
+      if (!isSalesRestricted) {
+        syncPiutangSetoran(finalRec);
+        sisaTagihanTakTeralokasi = sinkronTagihanLama(finalRec);
+      }
     }
     setModal(null);
+    if (sisaTagihanTakTeralokasi > 0) {
+      alert(`Kontrol tersimpan. Tagihan lama ${fmtRp(sisaTagihanTakTeralokasi)} MELEBIHI total piutang toko ini yang masih berjalan, jadi bagian itu tidak mengurangi piutang mana pun (tetap dihitung sebagai uang diterima). Cek kembali nominalnya kalau tidak sesuai.`);
+    }
     if (isSalesRestricted) {
       alert("Kontrol tersimpan. Perubahan Stok Awal masih menunggu persetujuan Admin/Manajer (otomatis disetujui dalam 24 jam kalau tidak ditinjau) sebelum berlaku di Master Toko.");
     }
@@ -1899,6 +1977,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // kontribusi luar rute per rute.
   const totalRevData = data.reduce((s,k)=>s+k.totalRev,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalRev,0);
   const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalBonus,0);
+  // Ringkasan uang untuk validasi laporan Sales (hanya kontrol toko yang sesuai filter).
+  const ringkasanUang = ringkasanUangKontrol(data);
   const catatanSt = form.catatanStatus||"";
 
   const cols = [
@@ -2179,6 +2259,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                         <div>Setoran: <b style={{ color: kurangSetor>0 ? "#DC2626" : T.gray800 }}>{nominalIsi==null ? "belum diisi" : fmtRp(nominalIsi)}</b>
                           {nominalIsi!=null && totalRev>0 && <> dari estimasi {fmtRp(totalRev)}</>}</div>
                         {k.keteranganSetoran && <div>Ket. setoran: {k.keteranganSetoran}</div>}
+                        {k.salesPelapor && <div>Sales pelapor: {k.salesPelapor}</div>}
+                        {Number(k.tagihanLama) > 0 && <div>Tagihan lama diterima: {fmtRp(Number(k.tagihanLama))}</div>}
                       </div>
                       {k.catatan && (
                         <div style={{ fontSize:12, color:"#92400E", background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:6, padding:"4px 8px", marginTop:8 }}>
@@ -2303,6 +2385,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             const recTerdampak = (db.kontrol||[]).find(k=>k.id===deleteTarget);
             if (recTerdampak && cekTutupBuku(recTerdampak.tanggal)) { setDeleteTarget(null); return; }
             const tokoIdTerdampak = recTerdampak?.tokoId;
+            if (recTerdampak) kembalikanTagihanLama(recTerdampak);
             voidJurnalSumber("kontrol", deleteTarget, "Kontrol dihapus");
             deleteRecord("kontrol", deleteTarget);
             if (tokoIdTerdampak) {
@@ -2731,6 +2814,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
               ]),
               { key:"totalRevFmt",  label:"Revenue (Rp)" },
               { key:"totalBonus",   label:"Total Bonus (pcs)" },
+              { key:"salesPelapor", label:"Sales Pelapor" },
+              { key:"diterimaFmt",  label:"Diterima (Rp)" },
+              { key:"tagihanLamaFmt", label:"Tagihan Lama (Rp)" },
               { key:"statusLabel",  label:"Status" },
               { key:"catatan",      label:"Catatan" },
             ];
@@ -2738,6 +2824,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
               ...data.map(row=>({
                 ...row,
                 totalRevFmt: fmtRp(row.totalRev||0),
+                salesPelapor: row.salesPelapor || "",
+                diterimaFmt: fmtRp(uangDiterimaBaris(row)),
+                tagihanLamaFmt: Number(row.tagihanLama) > 0 ? fmtRp(Number(row.tagihanLama)) : "",
                 statusLabel: row.catatanStatus
                   ? (CATATAN_STATUS[row.catatanStatus]?.label || row.catatanStatus)
                   : "Terjual",
@@ -2771,6 +2860,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
               { id:"", tokoNama:"Total Entri Kontrol",  wilayahNama:String(data.length),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Entri Luar Rute", wilayahNama:String(luarRuteDataForSummary.length), ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Revenue",         wilayahNama:fmtRp(totalRevData),          ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Uang Diterima dari Penjualan", wilayahNama:fmtRp(ringkasanUang.diterima), ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Piutang Baru", wilayahNama:fmtRp(ringkasanUang.piutangBaru), ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Tagihan Lama Diterima", wilayahNama:fmtRp(ringkasanUang.tagihanLama), ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
+              { id:"", tokoNama:"Total Harus Disetor Sales", wilayahNama:fmtRp(ringkasanUang.total), ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Total Bonus (pcs)",     wilayahNama:String(totalBonusData),       ruteNama:"", tanggal:"", totalRevFmt:"",                              totalBonus:"", statusLabel:"", catatan:"" },
               { id:"", tokoNama:"Revenue Rata-rata",     wilayahNama:data.length ? fmtRp(Math.round(totalRevData/data.length)) : "Rp 0", ruteNama:"", tanggal:"", totalRevFmt:"", totalBonus:"", statusLabel:"", catatan:"" },
             ];
@@ -3016,6 +3109,11 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         // bulan yang sama. Lihat juga kartu "Ringkasan Tanggal Kontrol" di
         // bawah untuk melihat tanggal mana saja yang punya entri Kontrol.
         { key:"tanggal",   label:"Tgl Kontrol", value:filter.tanggal, type:"date" },
+        // Rentang tanggal (mis. satu perjalanan Sales yang uangnya ditumpuk sampai akhir):
+        // dipakai bersama filter Sales/Wilayah/Rute untuk memvalidasi laporan WhatsApp.
+        { key:"dari",      label:"Dari Tgl",   value:filter.dari||"",   type:"date" },
+        { key:"sampai",    label:"Sampai Tgl", value:filter.sampai||"", type:"date" },
+        { key:"salesPelapor", label:"Sales Pelapor", value:filter.salesPelapor||"", options:salesOpts },
         ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
         { key:"catatanStatus", label:"Status Kunjungan", value:filter.catatanStatus,
@@ -3028,7 +3126,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       ]} onChange={(k,v)=>{
         if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
         else setFilter(p=>({...p,[k]:v}));
-      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", q:"",
+      }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:"",
         cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
         catatanStatus:"", minJumlah:"", maxJumlah:"", kunjunganBerulang:false, piutangBelumTercatat:false})} />
 
@@ -3157,6 +3255,29 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                 icon={Icon.produk} color={T.gold} />
             );
           })}
+        </div>
+      )}
+
+      {data.length > 0 && (
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:6, display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+            <Icon.wallet size={13} strokeWidth={2}/> Ringkasan Uang (sesuai filter) · {ringkasanUang.n} kunjungan
+            {ringkasanUang.nMenunggu > 0 && (
+              <span style={{ color:T.orange, fontWeight:600 }}>· {ringkasanUang.nMenunggu} entri menunggu persetujuan tidak dihitung</span>
+            )}
+          </div>
+          <div className="gw-stat-grid gw-dash-stats">
+            <StatCard label="Nilai Penjualan" value={fmtRp(ringkasanUang.nilai)}
+              sub="pcs terjual × harga" icon={Icon.wallet} color={T.gold} />
+            <StatCard label="Diterima dari Penjualan" value={fmtRp(ringkasanUang.diterima)}
+              sub="nominal setoran (pas bila kosong)" icon={Icon.wallet} color={T.green} />
+            <StatCard label="Piutang Baru" value={fmtRp(ringkasanUang.piutangBaru)}
+              sub="setoran kurang dari nilai penjualan" icon={Icon.warning} color={T.orange} />
+            <StatCard label="Tagihan Lama Diterima" value={fmtRp(ringkasanUang.tagihanLama)}
+              sub={`${ringkasanUang.nTagihan} kunjungan`} icon={Icon.checkCircle} color={T.blue} />
+            <StatCard label="Total Harus Disetor Sales" value={fmtRp(ringkasanUang.total)}
+              sub="diterima + tagihan lama" icon={Icon.wallet} color={T.green} />
+          </div>
         </div>
       )}
 
@@ -3470,6 +3591,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                 const rec = (db.kontrol||[]).find(k=>k.id===id);
                 if (kontrolBisaLangsungHapus(rec)) {
                   if (rec && cekTutupBuku(rec.tanggal)) return;
+                  if (rec) kembalikanTagihanLama(rec);
                   voidJurnalSumber("kontrol", id, "Kontrol dihapus");
                   deleteRecord("kontrol", id);
                   const remaining = (db.kontrol||[]).filter(k=>k.id!==id);
@@ -3868,7 +3990,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
                 {selisih!==null && selisih<0 && (
                   <div style={{ background:T.blueLt, color:T.gray700, borderRadius:7, padding:"8px 10px",
                     fontSize:12, fontWeight:700, marginBottom:8 }}>
-                    Setoran melebihi estimasi Rp{fmt(Math.abs(selisih))} (mis. sekalian bayar sisa kunjungan lalu) — cek kembali kalau bukan salah ketik.
+                    Setoran melebihi estimasi Rp{fmt(Math.abs(selisih))} (kalau ini pembayaran sisa kunjungan lalu, isi di kolom Tagihan Lama di bawah, bukan di sini) — cek kembali kalau bukan salah ketik.
                   </div>
                 )}
                 <Input label="Keterangan Setoran (opsional)" value={form.keteranganSetoran||""}
@@ -3877,6 +3999,58 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
               </div>
             );
           })()}
+
+          {/* BARU: Sales yang melapor + Tagihan Lama Diterima (uang untuk melunasi piutang
+              kunjungan SEBELUMNYA). Selalu tampil — toko bisa saja hanya membayar sisa lama
+              tanpa ada penjualan baru. Otomatis mengurangi saldo piutang toko di Hutang/Piutang. */}
+          <div style={{ marginBottom:16, padding:"12px 14px", border:`1.5px solid ${T.gray200}`, borderRadius:8 }}>
+            <div style={{ fontSize:12, fontWeight:700, color:T.gray600, marginBottom:8, display:"flex", alignItems:"center", gap:5 }}>
+              <Icon.wallet size={13} strokeWidth={2}/> Laporan Sales & Tagihan Lama
+            </div>
+            <div style={{ marginBottom:10 }}>
+              <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Sales Pelapor (opsional)</div>
+              <input list="gw-sales-pelapor" value={form.salesPelapor||""}
+                onChange={e=>f("salesPelapor", e.target.value)}
+                placeholder="Nama Sales yang melapor lewat WhatsApp"
+                style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                  borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+              <datalist id="gw-sales-pelapor">
+                {salesOpts.map(o => <option key={o.value} value={o.value} />)}
+              </datalist>
+            </div>
+            {(() => {
+              const rp = ringkasPiutangToko(ctxTagihan(), form.tokoId, form.id, form.alokasiTagihanLama);
+              const tl = form.tagihanLama==="" || form.tagihanLama==null ? 0 : Number(form.tagihanLama)||0;
+              const teralokasi = (form.alokasiTagihanLama||[]).reduce((sum,a)=>sum+(Number(a.jumlah)||0),0);
+              return (
+                <>
+                  <div style={{ fontSize:11, color:T.gray400, marginBottom:8 }}>
+                    Isi kalau Sales menagih sisa piutang kunjungan SEBELUMNYA. Nominal ini otomatis mengurangi
+                    saldo piutang toko di Hutang/Piutang (paling lama dulu). Piutang toko ini yang masih berjalan:{" "}
+                    <b>{form.tokoId ? `${fmtRp(rp.total)} (${rp.jumlah} catatan)` : "pilih toko dulu"}</b>
+                  </div>
+                  <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Tagihan Lama Diterima (Rp)</div>
+                  <input type="number" min={0} value={form.tagihanLama ?? ""}
+                    onChange={e=>f("tagihanLama", e.target.value)}
+                    placeholder="cth: 92000 (kosongkan kalau tidak ada)"
+                    style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
+                      borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
+                  {tl > 0 && form.tokoId && tl > rp.total && (
+                    <div style={{ background:T.orangeLt, color:T.orange, borderRadius:7, padding:"8px 10px",
+                      fontSize:12, fontWeight:700, marginTop:8 }}>
+                      Melebihi piutang toko yang masih berjalan ({fmtRp(rp.total)}). Selisihnya tidak mengurangi piutang mana pun.
+                    </div>
+                  )}
+                  {teralokasi > 0 && (
+                    <div style={{ background:T.greenLt, color:T.green, borderRadius:7, padding:"8px 10px",
+                      fontSize:11.5, fontWeight:600, marginTop:8 }}>
+                      Tersimpan: {fmtRp(teralokasi)} sudah mengurangi piutang toko ini. Mengubah angka di atas akan menyesuaikan ulang otomatis.
+                    </div>
+                  )}
+                </>
+              );
+            })()}
+          </div>
 
           {/* Status kunjungan: selalu tampil.
                - Saat tidak ada penjualan → WAJIB dipilih
