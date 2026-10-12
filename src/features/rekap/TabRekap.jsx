@@ -8,6 +8,7 @@ import { computeSiklusSegmentsPerWilayah, statusTokoPadaTanggal } from "../../li
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
+import { ringkasanUangKontrol } from "../../lib/tagihanLamaHelpers";
 
 function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, deleteRecord, save, isManajer, dataStillSyncing, archivedKontrolYears }) {
   const isSalesRestricted = !!salesWilayahId;
@@ -974,6 +975,22 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
   const totalTutupAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTutup||0),0);
   const totalTidakTerjualAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahTidakTerjual||0),0);
   const totalMasalahAll = isPerputaran ? 0 : activeData.reduce((s,r)=>s+(r.jumlahMasalah||0),0);
+  // ✅ BARU: Ringkasan Uang (Diterima dari Penjualan, Piutang Baru, Tagihan Lama
+  // Diterima, Total Harus Disetor Sales) — rumus SAMA dengan kartu di Tab Kontrol
+  // (ringkasanUangKontrol). Sumbernya baris kontrol di tiap kelompok rekap
+  // (g.rows, atau g.detail untuk kelompok yang hanya punya detail).
+  // ⚠️ Di Rekap field `status` baris kontrol sudah ditimpa jadi status stok
+  // ("Habis"/"Laku Sebagian"/…) oleh useAnalytics — tapi entri "menunggu"/"ditolak"
+  // SUDAH dibuang di hulu (useAnalytics), jadi tidak perlu disaring lagi di sini.
+  // Penjualan Luar Rute (tanpa tokoId) IKUT dihitung: form-nya tidak punya kolom
+  // setoran/tagihan lama, jadi dianggap diterima penuh (= nilai penjualan, tanpa piutang).
+  // Mode Ranking Toko & Perputaran Stok tidak punya cakupan uang per periode → tidak dihitung.
+  const adaRingkasanUang = mode !== "perputaran" && mode !== "ranking";
+  const ringkasanUang = useMemo(() => {
+    if (!adaRingkasanUang) return null;
+    const rows = activeData.flatMap(g => g.rows || g.detail || []);
+    return ringkasanUangKontrol(rows);
+  }, [activeData, adaRingkasanUang]);
   // ✅ BARU: jumlah toko yang statusnya Non-Aktif ("ditarik" lewat fitur
   // Tarik/Nonaktifkan Toko), dibatasi sesuai filter Wilayah/Rute yang sedang
   // aktif di Rekap. Beda dengan Tutup/Tidak Terjual/Bermasalah yang dihitung
@@ -1340,6 +1357,12 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
             { wilayahNama:"RINGKASAN",             ruteNama:"",                        totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Total Revenue",             ruteNama:fmtRp(totalRevAll),         totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Total Bonus (pcs)",         ruteNama:String(totalBonusAll),      totalRevFmt:"", totalBonus:"" },
+            ...(ringkasanUang ? [
+              { wilayahNama:"Diterima dari Penjualan",   ruteNama:fmtRp(ringkasanUang.diterima),    totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Piutang Baru",              ruteNama:fmtRp(ringkasanUang.piutangBaru), totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Tagihan Lama Diterima",     ruteNama:fmtRp(ringkasanUang.tagihanLama), totalRevFmt:"", totalBonus:"" },
+              { wilayahNama:"Total Harus Disetor Sales", ruteNama:fmtRp(ringkasanUang.total),       totalRevFmt:"", totalBonus:"" },
+            ] : []),
             { wilayahNama:"Jumlah Kunjungan/Toko",    ruteNama:String(totalKunjungan),     totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Toko Tutup",                ruteNama:String(totalTutupAll),       totalRevFmt:"", totalBonus:"" },
             { wilayahNama:"Toko Tidak Terjual",        ruteNama:String(totalTidakTerjualAll),totalRevFmt:"", totalBonus:"" },
@@ -1694,6 +1717,29 @@ function TabRekapImpl({ db, analytics, salesWilayahId, addRecord, updateRecord, 
             icon={Icon.produk} color={T.purple} />
         ))}
       </div>
+      {/* ✅ Ringkasan Uang — sama dengan kartu di Tab Kontrol, tapi sesuai periode/filter Rekap */}
+      {ringkasanUang && ringkasanUang.n > 0 && (
+        <>
+          <div style={{ fontSize:12, fontWeight:700, color:T.gray600, margin:"2px 0 6px", display:"flex", alignItems:"center", gap:6, flexWrap:"wrap" }}>
+            <Icon.wallet size={13} strokeWidth={2}/> Ringkasan Uang (sesuai periode & filter) · {ringkasanUang.n} kunjungan
+            <span style={{ color:T.gray400, fontWeight:600 }}>· termasuk Penjualan Luar Rute (dianggap diterima penuh) · entri menunggu/ditolak tidak dihitung</span>
+          </div>
+          <div className="gw-stat-grid">
+            <StatCard label="Diterima dari Penjualan" value={fmtRp(ringkasanUang.diterima)}
+              sub="nominal setoran (pas bila kosong)" icon={Icon.wallet} color={T.green}
+              pending={dataStillSyncing} pendingTitle="Data kontrol masih disinkronkan di latar belakang — angka bisa masih bertambah" />
+            <StatCard label="Piutang Baru" value={fmtRp(ringkasanUang.piutangBaru)}
+              sub="setoran kurang dari nilai penjualan" icon={Icon.warning} color={T.orange}
+              pending={dataStillSyncing} />
+            <StatCard label="Tagihan Lama Diterima" value={fmtRp(ringkasanUang.tagihanLama)}
+              sub={`${ringkasanUang.nTagihan} kunjungan`} icon={Icon.checkCircle} color={T.blue}
+              pending={dataStillSyncing} />
+            <StatCard label="Total Harus Disetor Sales" value={fmtRp(ringkasanUang.total)}
+              sub="diterima + tagihan lama" icon={Icon.wallet} color={T.green}
+              pending={dataStillSyncing} />
+          </div>
+        </>
+      )}
       {/* ✅ Ringkasan Toko khusus mode Siklus Wilayah (sama persis dengan
           bagian "📦 RINGKASAN TOKO — SIKLUS INI" di hasil ekspor) — supaya
           Admin/Manajer bisa langsung lihat di layar tanpa harus ekspor dulu. */}
