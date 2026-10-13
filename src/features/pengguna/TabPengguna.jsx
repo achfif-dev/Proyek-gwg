@@ -3,13 +3,14 @@ import { Badge, Btn, Card, ExportMenu, Input, Modal, Table } from "../../compone
 import { SUPER_ADMIN_CANONICAL_ID, SUPER_ADMIN_EMAIL, isSuperAdminEmail } from "../../config/superAdmin";
 import { Dashboard } from "../../features/dashboard/Dashboard";
 import { encodeEmailKey } from "../../lib/dataHelpers";
+import { teksDiam } from "../../lib/presenceHelpers";
 import { T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
 
 function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergencyAdmin, listDeletedUsers, restoreDeletedUser, activeUsers, pindahIdPengguna }) {
-  // Set email (huruf kecil) yang punya minimal satu sesi aktif — dipakai
-  // untuk badge "🟢 Online" per baris pengguna di tabel bawah.
-  const activeEmailSet = new Set((activeUsers||[]).map(a => a.email?.toLowerCase()).filter(Boolean));
+  // email (huruf kecil) -> data presence akun itu (dipakai/idleMs). Dipakai untuk lencana
+  // "Aktif" (sedang dipakai) atau "Diam" (terhubung tapi tidak sedang dipakai) per baris.
+  const presenceByEmail = new Map((activeUsers||[]).filter(a => a.email).map(a => [a.email.toLowerCase(), a]));
   const [modal, setModal] = useState(null);
   const [form, setForm] = useState({ nama:"", email:"", role:"Viewer", wilayahId:"" });
   const f = (k,v) => setForm(p=>({...p,[k]:v}));
@@ -144,11 +145,19 @@ function TabPenggunaImpl({ db, addRecord, updateRecord, deleteRecord, isEmergenc
     { key:"nama",  label:"Nama",  render:(v,row)=>(
         <span style={{ display:"flex", alignItems:"center", gap:6 }}>
           <b>{v}</b>
-          {activeEmailSet.has(row?.email?.toLowerCase()) && (
-            <span title="Sedang aktif" style={{ display:"inline-flex", alignItems:"center", gap:4, fontSize:10, fontWeight:700, color:"#16A34A", background:"#DCFCE7", borderRadius:99, padding:"1px 7px" }}>
-              <span style={{ width:6, height:6, borderRadius:"50%", background:"#22C55E" }} /> Online
-            </span>
-          )}
+          {(() => {
+            const pr = presenceByEmail.get(row?.email?.toLowerCase());
+            if (!pr) return null;
+            return pr.dipakai ? (
+              <span title="Sedang dipakai" style={{ display:"inline-flex", alignItems:"center", gap:4, fontSize:10, fontWeight:700, color:"#16A34A", background:"#DCFCE7", borderRadius:99, padding:"1px 7px" }}>
+                <span style={{ width:6, height:6, borderRadius:"50%", background:"#22C55E" }} /> Aktif
+              </span>
+            ) : (
+              <span title="Terhubung tapi tidak sedang dipakai" style={{ display:"inline-flex", alignItems:"center", gap:4, fontSize:10, fontWeight:700, color:"#64748B", background:"#F1F5F9", borderRadius:99, padding:"1px 7px" }}>
+                <span style={{ width:6, height:6, borderRadius:"50%", background:"#CBD5E1" }} /> Diam {teksDiam(pr.idleMs)}
+              </span>
+            );
+          })()}
         </span>
       ) },
     { key:"email", label:"Email", render:v=><span style={{ color:T.blue }}>{v}</span> },
