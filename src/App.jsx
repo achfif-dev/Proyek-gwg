@@ -14,6 +14,7 @@ import { useAuth } from "./hooks/useAuth";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
 import { useAppResumeReload } from "./hooks/useAppResumeReload";
 import { usePresence } from "./hooks/usePresence";
+import { kelompokkanPengguna, ringkasPresence, teksDiam } from "./lib/presenceHelpers";
 import { useDB } from "./hooks/useDB";
 import { useAnalytics } from "./hooks/useAnalytics";
 import { encodeEmailKey, decodeEmailKey, kontrolYearOf, autoUpgradeBaruToAktif } from "./lib/dataHelpers";
@@ -698,18 +699,13 @@ export default function GWGSuperApp() {
   //    digabung jadi SATU baris (dengan jumlah sesi), supaya tidak terlihat
   //    seperti "pengguna dobel" di panel — sebelumnya tiap sesi ditampilkan
   //    sebagai baris terpisah walau namanya sama persis.
+  // Satu akun = satu baris (jumlah sesi di dropdown). "Dipakai" = ada sesi yang masih berdetak
+  // (lib/presenceHelpers.js); akun yang hanya terhubung di latar belakang dihitung "diam".
   const visibleActiveUsers = useMemo(() => {
     const registeredEmails = new Set((db.pengguna||[]).map(p => p.email?.toLowerCase()).filter(Boolean));
-    const grouped = new Map();
-    (activeUsers||[]).forEach(au => {
-      const emailKey = au.email?.toLowerCase();
-      if (!emailKey || !registeredEmails.has(emailKey)) return; // pengguna sudah diblokir/dihapus, sembunyikan
-      const existing = grouped.get(emailKey);
-      if (existing) existing.sessionCount += 1;
-      else grouped.set(emailKey, { ...au, sessionCount: 1 });
-    });
-    return Array.from(grouped.values());
+    return kelompokkanPengguna(activeUsers, registeredEmails); // email tidak terdaftar/diblokir disembunyikan
   }, [activeUsers, db.pengguna]);
+  const presenceRingkas = ringkasPresence(visibleActiveUsers);
 
   // BOOTSTRAP ADMIN & AUTO-DAFTAR PENGGUNA BARU:
   // 1) Jika tabel pengguna masih kosong, orang yang login sekarang PERMANEN
@@ -1059,27 +1055,28 @@ export default function GWGSuperApp() {
               {user && (
                 <div ref={activeUsersRef} className="gw-header-activeusers" style={{ position:"relative" }}>
                   <button onClick={() => setShowActiveUsers(v => !v)}
-                    title="Pengguna sedang aktif"
+                    title={`${presenceRingkas.aktif} akun sedang dipakai, ${presenceRingkas.terhubung - presenceRingkas.aktif} terhubung tapi diam`}
                     style={{ display:"flex", alignItems:"center", gap:6, background:"rgba(255,255,255,.12)", border:"none", borderRadius:10, padding:"6px 12px", fontSize:12, color:"#fff", fontWeight:600, cursor:"pointer", whiteSpace:"nowrap" }}>
-                    <span style={{ width:8, height:8, borderRadius:"50%", background:"#22C55E", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
-                    {visibleActiveUsers.length}<span className="gw-hide-xs"> Aktif</span>
+                    <span style={{ width:8, height:8, borderRadius:"50%", background: presenceRingkas.aktif > 0 ? "#22C55E" : "#94A3B8", display:"inline-block", boxShadow:"0 0 0 2px rgba(255,255,255,.4)" }} />
+                    {presenceRingkas.aktif}<span className="gw-hide-xs"> Aktif</span>
                   </button>
                   {showActiveUsers && activeUsersMenuStyle && (
                     <div style={{ ...activeUsersMenuStyle, background:"#fff", borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.2)", maxHeight:"60vh", overflowY:"auto", zIndex:250, padding:8 }}>
                       <div style={{ fontSize:11, fontWeight:700, color:T.gray600, padding:"4px 8px", textTransform:"uppercase", letterSpacing:"0.05em" }}>
-                        Pengguna Sedang Aktif ({visibleActiveUsers.length})
+                        Pengguna Terhubung ({presenceRingkas.terhubung}) · {presenceRingkas.aktif} dipakai
                       </div>
                       {visibleActiveUsers.length === 0 ? (
                         <div style={{ fontSize:12, color:T.gray400, padding:"8px" }}>Tidak ada sesi aktif.</div>
                       ) : visibleActiveUsers.map(au => (
                         <div key={au.email} style={{ display:"flex", alignItems:"center", gap:8, padding:"6px 8px", borderRadius:8, background: au.email===user.email ? T.greenLt : "transparent" }}>
-                          <span style={{ width:7, height:7, borderRadius:"50%", background:"#22C55E", flexShrink:0 }} />
+                          <span style={{ width:7, height:7, borderRadius:"50%", background: au.dipakai ? "#22C55E" : "#CBD5E1", flexShrink:0 }} />
                           <div style={{ minWidth:0 }}>
                             <div style={{ fontSize:12, fontWeight:600, color:T.gray800, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>
                               {au.nama || au.email} {au.email===user.email && "(Anda)"}
                               {au.sessionCount > 1 && <span style={{ color:T.gray400, fontWeight:400 }}> · {au.sessionCount} sesi</span>}
                             </div>
                             <div style={{ fontSize:10, color:T.gray400, display:"flex", alignItems:"center", gap:3 }}>{au.role}{isSuperAdminEmail(au.email) && <> · <Icon.crown size={10} strokeWidth={2} /> Super Admin</>}</div>
+                            {!au.dipakai && <div style={{ fontSize:10, color:T.gray400 }}>Diam {teksDiam(au.idleMs)} · terhubung di latar belakang</div>}
                           </div>
                         </div>
                       ))}
