@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ConfirmDelete, ExportMenu, FilterBar, ImportMenu, Input, Modal, SearchableSelect, StatCard, Table } from "../../components/ui";
 import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
@@ -28,9 +28,10 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // ✅ PERSISTEN: filter & pencarian tab ini disimpan ke localStorage supaya
   // tetap sama setelah refresh / app dibuka ulang, bukan balik ke default.
   const [hanyaBelumKontrol, setHanyaBelumKontrol] = usePersistedState("kontrol.hanyaBelumKontrol", false);
-  // Nama Sales pelapor terakhir yang dipakai — jadi isian awal supaya input beberapa toko
-  // dari satu laporan WhatsApp tidak perlu mengetik ulang.
-  const [lastSales, setLastSales] = usePersistedState("kontrol.lastSales", "");
+  // Sales Pelapor di modal Tambah Kontrol terisi OTOMATIS sesuai wilayah toko yang
+  // dipilih (lihat salesPerWilayah). Ref ini menandai kalau admin sudah mengetik/
+  // mengubah nama itu sendiri, supaya pindah toko/wilayah tidak menimpa ketikannya.
+  const salesManualRef = useRef(false);
   const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:initialQuery||"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
@@ -828,6 +829,46 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     return [...seen.values()].sort((a,b)=>a.localeCompare(b)).map(n => ({ value:n, label:n }));
   }, [db.kontrol]);
 
+  // ✅ Sales yang bertugas per wilayah — supaya kolom/filter Sales Pelapor tidak
+  // menampilkan nama sales dari wilayah lain.
+  // Nama utama (terisi otomatis) diambil berurutan dari:
+  //   1. "Sales Bertugas" di Master Wilayah (diganti di sana kalau sales berganti),
+  //   2. pengguna ber-role Sales yang wilayah tugasnya wilayah ini,
+  //   3. nama pelapor pada kontrol TERBARU di wilayah ini.
+  // Daftar pilihan = nama utama + nama yang pernah melapor di wilayah ini saja.
+  // Bentuk: { [wilayahId]: { utama: "Budi", opsi: ["Budi", ...] } }
+  const salesPerWilayah = useMemo(() => {
+    const riwayat = {}; // wilayahId -> [{ nama, waktu }]
+    enriched.forEach(k => {
+      const n = String(k.salesPelapor||"").replace(/\s+/g," ").trim();
+      if (!n || !k.wilayahId) return;
+      (riwayat[k.wilayahId] ||= []).push({ nama:n, waktu: `${k.tanggal||""}|${String(k.createdAt||0).padStart(15,"0")}` });
+    });
+    const penggunaSales = {};
+    (db.pengguna||[]).filter(p => p.role === "Sales" && p.wilayahId && String(p.nama||"").trim())
+      .sort((a,b) => String(a.nama).localeCompare(String(b.nama)))
+      .forEach(p => { (penggunaSales[p.wilayahId] ||= []).push(String(p.nama).replace(/\s+/g," ").trim()); });
+    const hasil = {};
+    (db.wilayah||[]).forEach(w => {
+      const terbaru = [...(riwayat[w.id]||[])].sort((a,b) => b.waktu.localeCompare(a.waktu)).map(r => r.nama);
+      const dariWilayah = String(w.salesNama||"").replace(/\s+/g," ").trim();
+      const utama = dariWilayah || penggunaSales[w.id]?.[0] || terbaru[0] || "";
+      const seen = new Set();
+      const opsi = [utama, dariWilayah, ...(penggunaSales[w.id]||[]), ...terbaru].filter(n => {
+        const key = normTxt(n);
+        if (!key || seen.has(key)) return false;
+        seen.add(key); return true;
+      });
+      hasil[w.id] = { utama, opsi };
+    });
+    return hasil;
+  }, [enriched, db.wilayah, db.pengguna]);
+  // Wilayah dari sebuah toko (toko → rute → wilayah), sama seperti `enriched`.
+  const wilayahIdDariToko = (tokoId) => {
+    const t = tokoByIdKontrol.get(tokoId);
+    return (t && ruteByIdKontrol.get(t.ruteId)?.wilayahId) || "";
+  };
+
   // ✅ Penjualan Luar Rute yang cocok dengan filter Wilayah/Rute/Bulan yang
   // sedang aktif di tab ini — dipakai supaya ringkasan Revenue, ringkasan
   // per Produk, dan hasil Ekspor Kontrol Bulanan ikut ter-update sesuai
@@ -1297,7 +1338,11 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // lihat catatan di kotak Estimasi Revenue untuk kapan field ini
       // "cocok" dengan estimasi vs kapan dianggap ada piutang toko.
       nominalDisetor:"", keteranganSetoran:"",
-      salesPelapor: lastSales||"", tagihanLama:"" };
+      // Terisi otomatis sesuai wilayah (Sales: wilayahnya; Admin: wilayah di filter
+      // kalau ada, selain itu menyusul begitu toko/wilayah dipilih di modal).
+      salesPelapor: salesPerWilayah[isSalesRestricted ? salesWilayahId : (filter.wilayahId||"")]?.utama || "",
+      tagihanLama:"" };
+    salesManualRef.current = false;
     produkAktif.forEach(p => {
       initial[`stok_${p.id}`] = 0;
       initial[`terjual_${p.id}`] = 0;
@@ -1328,6 +1373,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       keteranganSetoran: row.keteranganSetoran||"",
       salesPelapor: row.salesPelapor||"",
       tagihanLama: row.tagihanLama==null ? "" : row.tagihanLama };
+    // Entri lama yang sudah punya nama pelapor tidak ditimpa otomatis saat edit.
+    salesManualRef.current = !!String(row.salesPelapor||"").trim();
     // Pastikan bonusInput tersedia
     produkAktif.forEach(p => {
       if (initial[`bonusInput_${p.id}`] === undefined) initial[`bonusInput_${p.id}`] = p.bonus||0;
@@ -1341,18 +1388,39 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   function handleTokoChange(tokoId) {
     const updates = { tokoId };
     produkAktif.forEach(p => { updates[`stok_${p.id}`] = getInitialStok(tokoId, p.id); });
+    // Sales Pelapor otomatis mengikuti wilayah toko yang dipilih (kecuali sudah diubah manual).
+    const wid = wilayahIdDariToko(tokoId);
+    if (wid && !salesManualRef.current) updates.salesPelapor = salesPerWilayah[wid]?.utama || "";
     setForm(prev => ({ ...prev, ...updates }));
   }
 
   // Cascade pilihan Wilayah & Rute di dalam modal Tambah/Edit Kontrol
   function handleModalWilayahChange(wilayahId) {
     setModalFilter({ wilayahId, ruteId:"" });
-    setForm(p=>({ ...p, tokoId:"" }));
+    setForm(p => {
+      const next = { ...p, tokoId:"" };
+      // Ganti wilayah → nama sales ikut wilayah baru (kosong kalau wilayah belum punya sales).
+      if (wilayahId && !salesManualRef.current) next.salesPelapor = salesPerWilayah[wilayahId]?.utama || "";
+      return next;
+    });
   }
   function handleModalRuteChange(ruteId) {
     setModalFilter(p=>({ ...p, ruteId }));
     setForm(p=>({ ...p, tokoId:"" }));
   }
+  // Pilihan nama Sales di modal: hanya sales wilayah toko/wilayah yang sedang dipilih.
+  // Belum ada wilayah terpilih (Admin) → tampilkan semua nama seperti sebelumnya.
+  const salesOptsModal = useMemo(() => {
+    const wid = wilayahIdDariToko(form.tokoId) || modalFilter.wilayahId;
+    return wid ? (salesPerWilayah[wid]?.opsi || []) : salesOpts.map(o => o.value);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.tokoId, modalFilter.wilayahId, salesPerWilayah, salesOpts]);
+  // Pilihan di filter tab: ikut Wilayah yang sedang difilter.
+  const salesOptsFilter = useMemo(() =>
+    filter.wilayahId
+      ? (salesPerWilayah[filter.wilayahId]?.opsi || []).map(n => ({ value:n, label:n }))
+      : salesOpts
+  , [filter.wilayahId, salesPerWilayah, salesOpts]);
 
   function submit() {
     if (!form.tokoId || !form.tanggal) return alert("Toko & Tanggal wajib diisi");
@@ -1449,7 +1517,6 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
       // harus mengajukan permintaan hapus yang ditinjau Admin/Manajer (entri lama).
       const newEntry = { ...payload, ...approvalFields, id:`${y}-${m}-${form.tokoId}-${uniqueSuffix}`, createdAt: Date.now(), ...(createdBy ? { createdBy } : {}) };
       addRecord("kontrol", newEntry);
-      if (payload.salesPelapor) setLastSales(payload.salesPelapor);
       // Sinkron stok master Toko pakai daftar kontrol + entri baru (db.kontrol di closure belum update).
       // recalcTokoStok sendiri sudah mengabaikan entri status "menunggu"/"ditolak",
       // jadi aman dipanggil selalu — baseline stok Master Toko baru berubah
@@ -3117,7 +3184,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         // dipakai bersama filter Sales/Wilayah/Rute untuk memvalidasi laporan WhatsApp.
         { key:"dari",      label:"Dari Tgl",   value:filter.dari||"",   type:"date" },
         { key:"sampai",    label:"Sampai Tgl", value:filter.sampai||"", type:"date" },
-        { key:"salesPelapor", label:"Sales Pelapor", value:filter.salesPelapor||"", options:salesOpts },
+        { key:"salesPelapor", label:"Sales Pelapor", value:filter.salesPelapor||"", options:salesOptsFilter },
         ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
         { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
         { key:"catatanStatus", label:"Status Kunjungan", value:filter.catatanStatus,
@@ -3128,7 +3195,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             { value:"masalah", label:"Bermasalah" },
           ] },
       ]} onChange={(k,v)=>{
-        if (k==="wilayahId") setFilter(p=>({...p, wilayahId:v, ruteId:""}));
+        if (k==="wilayahId") setFilter(p=>{
+          // Ganti wilayah → pilihan Sales Pelapor ikut wilayah itu; nama yang
+          // tidak termasuk sales wilayah baru dilepas supaya tabel tidak kosong tanpa sebab.
+          const opsiBaru = v ? (salesPerWilayah[v]?.opsi || []) : null;
+          const salesMasihCocok = !p.salesPelapor || !opsiBaru || opsiBaru.some(n => normTxt(n) === normTxt(p.salesPelapor));
+          return { ...p, wilayahId:v, ruteId:"", salesPelapor: salesMasihCocok ? p.salesPelapor : "" };
+        });
         else setFilter(p=>({...p,[k]:v}));
       }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:"",
         cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
@@ -4020,12 +4093,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
             <div style={{ marginBottom:10 }}>
               <div style={{ fontSize:11, color:T.gray500, marginBottom:3 }}>Sales Pelapor (opsional)</div>
               <input list="gw-sales-pelapor" value={form.salesPelapor||""}
-                onChange={e=>f("salesPelapor", e.target.value)}
-                placeholder="Nama Sales yang melapor lewat WhatsApp"
+                onChange={e=>{ salesManualRef.current = true; f("salesPelapor", e.target.value); }}
+                placeholder="Terisi otomatis sesuai wilayah — bisa diubah"
                 style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
                   borderRadius:7, fontSize:13, fontFamily:"inherit", boxSizing:"border-box" }} />
               <datalist id="gw-sales-pelapor">
-                {salesOpts.map(o => <option key={o.value} value={o.value} />)}
+                {salesOptsModal.map(n => <option key={n} value={n} />)}
               </datalist>
             </div>
             {(() => {
