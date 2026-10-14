@@ -7,7 +7,7 @@ import { Icon } from "../../theme/icons.jsx";
 
 function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
   const [modal, setModal] = useState(null);
-  const [form, setForm] = useState({ nama:"", deskripsi:"" });
+  const [form, setForm] = useState({ nama:"", deskripsi:"", salesNama:"" });
   // ✅ PERSISTEN: filter tetap sama setelah refresh / app dibuka ulang.
   const [filter, setFilter] = usePersistedState("wilayah.filter", { q:"" });
   const [selectedIds, setSelectedIds] = useState([]);
@@ -150,8 +150,8 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
     isDuplikat: dupGroups.some(g => g.some(x=>x.id===w.id)),
   }));
 
-  function openAdd() { setForm({ nama:"", deskripsi:"" }); setModal("add"); }
-  function openEdit(row) { setForm({ ...row }); setModal("edit"); }
+  function openAdd() { setForm({ nama:"", deskripsi:"", salesNama:"" }); setModal("add"); }
+  function openEdit(row) { setForm({ ...row, salesNama: row.salesNama || "" }); setModal("edit"); }
   function submit() {
     if (!form.nama) return alert("Nama wajib diisi");
     // Validasi duplikat: nama wilayah yang sama (tidak case-sensitive, abaikan spasi
@@ -173,8 +173,12 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
     // Kontrol/Pengguna (lihat komentar FIX ID-COLLISION di file-file itu),
     // tapi Wilayah sempat terlewat. Sekarang pakai genUniqueId() (timestamp
     // + random, basis-36) yang praktis mustahil bentrok lintas perangkat.
-    if (modal==="add") addRecord("wilayah", { ...form, id:genUniqueId("WIL-") });
-    else updateRecord("wilayah", form.id, form);
+    // Nama Sales Bertugas dirapikan (spasi ganda/ujung dibuang). Kalau diganti
+    // (mis. sales pindah/berganti orang), Tab Kontrol otomatis memakai nama baru
+    // untuk input kontrol berikutnya; riwayat kontrol lama tidak diubah.
+    const payload = { ...form, salesNama: String(form.salesNama||"").replace(/\s+/g," ").trim() };
+    if (modal==="add") addRecord("wilayah", { ...payload, id:genUniqueId("WIL-") });
+    else updateRecord("wilayah", payload.id, payload);
     setModal(null);
   }
 
@@ -186,7 +190,8 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
         </span>
       ) },
     { key:"deskripsi", label:"Deskripsi" },
-    { key:"jumlahRute",label:"Rute",       render: v=><Badge color={T.teal}>{v} rute</Badge> },
+    { key:"salesNama", label:"Sales Bertugas", render: v=>v ? <Badge color={T.blue}>{v}</Badge> : <span style={{ color:T.gray400 }}>—</span> },
+    { key:"jumlahRute",label:"Rute",      render: v=><Badge color={T.teal}>{v} rute</Badge> },
     { key:"jumlahToko",label:"Toko",       render: v=><Badge color={T.green}>{v} toko</Badge> },
   ];
 
@@ -243,6 +248,9 @@ function TabWilayahImpl({ db, addRecord, updateRecord, deleteRecord }) {
       {modal && (
         <Modal title={modal==="add"?"Tambah Wilayah":"Edit Wilayah"} onClose={()=>setModal(null)}>
           <Input label="Nama Wilayah" value={form.nama} onChange={v=>f("nama",v)} required placeholder="cth: Bangkalan Utara" />
+          <Input label="Sales Bertugas" value={form.salesNama||""} onChange={v=>f("salesNama",v)}
+            placeholder="cth: Budi"
+            hint="Nama ini otomatis terisi di kolom Sales Pelapor saat tambah Kontrol di wilayah ini. Ganti di sini kalau sales berganti." />
           <Input label="Deskripsi" value={form.deskripsi} onChange={v=>f("deskripsi",v)} type="textarea" />
           <div style={{ display:"flex", gap:10, justifyContent:"flex-end", marginTop:8 }}>
             <Btn variant="secondary" onClick={()=>setModal(null)}>Batal</Btn>
