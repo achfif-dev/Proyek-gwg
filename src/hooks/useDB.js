@@ -641,9 +641,15 @@ export function useDB(user) {
   // ("setengah mati" — sering terjadi saat HP berpindah/menggabung jalur
   // Wi-Fi & data seluler). Dibatasi 1x per 60 dtk supaya tidak berulang-ulang.
   const sambungUlangTerakhirRef = useRef(0);
-  const sambungUlangFirebase = useCallback(async () => {
+  // Status socket Firebase menurut `.info/connected` (null = belum diketahui) dan
+  // sejak kapan terputus — dipakai untuk (a) tidak menyetor tulisan ke SDK yang
+  // sedang terputus (menumpuk duplikat) dan (b) memutuskan kapan mempercepat
+  // reconnect. Diisi oleh efek `.info/connected` di bawah.
+  const terhubungRef = useRef(null);
+  const terputusSejakRef = useRef(0);
+  const sambungUlangFirebase = useCallback(async (minJeda = 60000) => {
     const t = Date.now();
-    if (t - sambungUlangTerakhirRef.current < 60000) return false;
+    if (t - sambungUlangTerakhirRef.current < minJeda) return false;
     sambungUlangTerakhirRef.current = t;
     try {
       const { db: rtdb, goOffline, goOnline } = firebaseDB || {};
@@ -655,8 +661,24 @@ export function useDB(user) {
       return true;
     } catch (e) { console.warn("Putus-sambung Firebase gagal:", e); return false; }
   }, []);
+  // SDK Firebase TIDAK mencoba sambung tanpa jeda: tiap gagal jedanya ×1,3 (acak),
+  // sampai MAKS 5 MENIT, dan tulisan baru hanya di-buffer — tidak mempercepat
+  // sambung. Di sinyal lemah, jeda itu bisa membuat aplikasi terasa "mati" lama
+  // padahal sinyal sudah pulih. Fungsi ini mereset jeda (goOffline/goOnline)
+  // bila sudah terputus > 8 dtk — dibatasi 1x per 30 dtk supaya setiap upaya
+  // sambung diberi waktu cukup dan baterai tidak boros.
+  const dorongSambung = useCallback(() => {
+    if (terhubungRef.current !== false || !terputusSejakRef.current) return;
+    if (Date.now() - terputusSejakRef.current < 8000) return;
+    if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    sambungUlangFirebase(30000);
+  }, [sambungUlangFirebase]);
   const flushWriteQueue = useCallback(async () => {
     if (!firebaseDB || !basePathRef.current) return;
+    // Socket sedang terputus → JANGAN menyetor tulisan ke SDK sekarang (hanya
+    // akan menggantung 25 dtk lalu menumpuk duplikat). Antrean aman di
+    // IndexedDB; kirim dipicu otomatis saat `.info/connected` jadi true.
+    if (terhubungRef.current === false) return;
     // Sedang mengirim → jangan tumpuk, tapi CATAT bahwa ada perubahan baru
     // supaya begitu putaran ini selesai langsung diproses (bukan menunggu
     // interval berikutnya). Kalau flush sebelumnya MENGGANTUNG (> 90 dtk),
@@ -779,20 +801,30 @@ export function useDB(user) {
     // Jaring pengaman tiap 10 dtk (dulu 30 dtk): murah — saat antrean kosong
     // cuma 1x baca IndexedDB lokal — tapi memangkas jeda pemulihan setelah
     // kegagalan sesaat (sinyal naik-turun) jadi sepertiganya.
-    const interval = setInterval(flushWriteQueue, 10000);
+    const interval = setInterval(() => { flushWriteQueue(); dorongSambung(); }, 10000);
+    // Aplikasi kembali ke layar depan: kalau masih terputus, reset jeda sambung.
+    const onVisible = () => { if (document.visibilityState === "visible") dorongSambung(); };
+    document.addEventListener("visibilitychange", onVisible);
     // Begitu socket Firebase BENAR-BENAR tersambung lagi, langsung kirim —
     // event 'online' browser sering datang lebih dulu dari socket yang siap.
     let unsubConn = null;
     try {
       const { db: rtdb, ref, onValue } = firebaseDB;
-      unsubConn = onValue(ref(rtdb, ".info/connected"), snap => { if (snap.val() === true) flushWriteQueue(); });
+      unsubConn = onValue(ref(rtdb, ".info/connected"), snap => {
+        const t = snap.val() === true;
+        terhubungRef.current = t;
+        if (t) { terputusSejakRef.current = 0; flushWriteQueue(); }
+        else if (!terputusSejakRef.current) terputusSejakRef.current = Date.now();
+      });
     } catch { /* tanpa pemicu ini, interval tetap jalan */ }
     return () => {
       window.removeEventListener("online", onOnline);
       clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
       if (typeof unsubConn === "function") unsubConn();
+      terhubungRef.current = null; terputusSejakRef.current = 0;
     };
-  }, [user, flushWriteQueue, refreshPendingCount]);
+  }, [user, flushWriteQueue, refreshPendingCount, dorongSambung]);
 
   // Tulis HANYA path/record yang benar-benar berubah. Setiap perubahan
   // SELALU dicatat dulu ke antrean lokal durable (IndexedDB) — baru
@@ -821,9 +853,9 @@ export function useDB(user) {
           });
         });
       }
-      if (user && firebaseDB && basePathRef.current) flushWriteQueue();
+      if (user && firebaseDB && basePathRef.current) { flushWriteQueue(); dorongSambung(); }
     });
-  }, [user, flushWriteQueue, refreshPendingCount]);
+  }, [user, flushWriteQueue, refreshPendingCount, dorongSambung]);
 
   // save() generik dipertahankan agar kode lama (stok update, import excel,
   // config bagi hasil) yang memanggil save(newDB) tetap berfungsi tanpa
