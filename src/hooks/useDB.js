@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { firebaseDB, firebaseAuth } from "../firebase/init";
 import { FIREBASE_CONFIGURED, FIREBASE_CONFIG } from "../firebase/config";
-import { idbGet, idbSet, queueWrite, queueGetDenied, queueCount, queueRetryDenied, queueDiscardDenied, drainQueue, isPermissionDenied, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
+import { idbGet, idbSet, queueWriteMany, queueGetDenied, queueCount, queueRetryDenied, queueDiscardDenied, drainQueue, isPermissionDenied, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
 import { loadAppConfig } from "../config/appConfig";
 import { setTahunKontrolTidakTerlihat, LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
@@ -163,6 +163,12 @@ export function useDB(user) {
   const KONTROL_LIVE_YEARS = 1; // jumlah tahun terbaru yang otomatis live-sync — diturunkan dari 2 supaya hemat kuota unduhan Firebase menjelang pemakaian oleh sales lapangan (tahun lain tetap bisa dimuat manual dari menu Backup)
   const kontrolByYearRef = useRef({}); // { "2026": { id1:{...}, id2:{...} }, "2025": {...} }
   const kontrolYearUnsubsRef = useRef({}); // { "2026": () => {...} }
+  // Tahun yang SUDAH tercatat di kontrolYearsIndex menurut SERVER (bukan tebakan
+  // lokal). Dipakai untuk tidak menulis ulang `kontrolYearsIndex/{tahun}` di
+  // setiap input kontrol — tulisan berulang itu menambah beban antrean tanpa guna.
+  const kontrolYearsKnownRef = useRef(new Set());
+  const indexTahunUpd = (indexKey, y) =>
+    (indexKey === "kontrolYearsIndex" && kontrolYearsKnownRef.current.has(String(y))) ? {} : { [`${indexKey}/${y}`]: true };
   const jurnalByYearRef = useRef({}); // { "2026": { id1:{...}, ... } } — sama pola dengan kontrolByYearRef, versi disederhanakan (lihat komentar di listener "jurnalUmum")
   const [loadedKontrolYears, setLoadedKontrolYears] = useState([]); // tahun yang sudah live-sync / dimuat
   const [availableKontrolYears, setAvailableKontrolYears] = useState([]); // semua tahun yang ADA di cloud (dari index ringan)
@@ -338,6 +344,7 @@ export function useDB(user) {
           const idxRef = ref(rtdb, `gwg_data/shared/kontrolYearsIndex`);
           const unsubIdx = onValue(idxRef, snap => {
             const val = snap.val() || {};
+            kontrolYearsKnownRef.current = new Set(Object.keys(val));
             setAvailableKontrolYears(Object.keys(val).sort());
           });
           unsubs.push(() => off(idxRef));
@@ -659,6 +666,7 @@ export function useDB(user) {
       do {
         flushAgainRef.current = false;
         const hasil = await drainQueue(kirim, {
+          onProgress: () => refreshPendingCount(),
           // ✅ FIX: perubahan yang ditolak rules TIDAK lagi dibuang dari
           // antrean. Ia ditandai `denied` dan disimpan permanen di
           // IndexedDB sampai user memilih Kirim Ulang / Buang / Simpan
@@ -729,10 +737,21 @@ export function useDB(user) {
     flushWriteQueue();
     const onOnline = () => flushWriteQueue();
     window.addEventListener("online", onOnline);
-    const interval = setInterval(flushWriteQueue, 30000);
+    // Jaring pengaman tiap 10 dtk (dulu 30 dtk): murah — saat antrean kosong
+    // cuma 1x baca IndexedDB lokal — tapi memangkas jeda pemulihan setelah
+    // kegagalan sesaat (sinyal naik-turun) jadi sepertiganya.
+    const interval = setInterval(flushWriteQueue, 10000);
+    // Begitu socket Firebase BENAR-BENAR tersambung lagi, langsung kirim —
+    // event 'online' browser sering datang lebih dulu dari socket yang siap.
+    let unsubConn = null;
+    try {
+      const { db: rtdb, ref, onValue } = firebaseDB;
+      unsubConn = onValue(ref(rtdb, ".info/connected"), snap => { if (snap.val() === true) flushWriteQueue(); });
+    } catch { /* tanpa pemicu ini, interval tetap jalan */ }
     return () => {
       window.removeEventListener("online", onOnline);
       clearInterval(interval);
+      if (typeof unsubConn === "function") unsubConn();
     };
   }, [user, flushWriteQueue, refreshPendingCount]);
 
@@ -744,7 +763,11 @@ export function useDB(user) {
   const pushUpdates = useCallback((updates) => {
     const entries = Object.entries(updates).map(([path, value]) => [path, value === undefined ? null : value]);
     entries.forEach(([path, value]) => { if (path.startsWith("tutupBuku")) { TB("pushUpdates", path, value === null ? "NULL(HAPUS)" : "ADA"); if (value === null) TBT("pushUpdates NULL " + path); } });
-    Promise.all(entries.map(([path, value]) => queueWrite(path, value))).then((tersimpan) => {
+    // Satu transaksi IndexedDB untuk semua path, DAN pengiriman baru dimulai
+    // SETELAH antrean benar-benar tersimpan (bukan paralel dengan penyimpanan)
+    // — supaya drainQueue pasti melihat entri yang baru masuk, tanpa harus
+    // menunggu putaran interval berikutnya.
+    queueWriteMany(entries).then((tersimpan) => {
       refreshPendingCount();
       // ✅ FIX: kalau IndexedDB tidak tersedia (mis. private mode), queueWrite
       // gagal dan antrean kosong → sebelumnya perubahan TIDAK PERNAH dikirim
@@ -759,9 +782,8 @@ export function useDB(user) {
           });
         });
       }
+      if (user && firebaseDB && basePathRef.current) flushWriteQueue();
     });
-    if (!user || !firebaseDB || !basePathRef.current) return;
-    flushWriteQueue();
   }, [user, flushWriteQueue, refreshPendingCount]);
 
   // save() generik dipertahankan agar kode lama (stok update, import excel,
@@ -812,7 +834,7 @@ export function useDB(user) {
               updates[`${key}/${y}/${id}`] = idsBaru[id] || null; // null = record ini dihapus
               if (idsBaru[id]) markLocalWrite(key, id);
             });
-            if (Object.keys(idsBaru).length > 0) updates[`${yearsIndexKey}/${y}`] = true;
+            if (Object.keys(idsBaru).length > 0) Object.assign(updates, indexTahunUpd(yearsIndexKey, y));
           });
           return;
         }
@@ -903,7 +925,7 @@ export function useDB(user) {
       if (table === "kontrol" || table === "jurnalUmum") {
         const y = kontrolYearOf(record);
         const yearsIndexKey = table === "kontrol" ? "kontrolYearsIndex" : "jurnalYearsIndex";
-        pushUpdates({ [`${table}/${y}/${record.id}`]: record, [`${yearsIndexKey}/${y}`]: true });
+        pushUpdates({ [`${table}/${y}/${record.id}`]: record, ...indexTahunUpd(yearsIndexKey, y) });
       } else {
         pushUpdates({ [`${table}/${record.id}`]: record });
       }
@@ -936,7 +958,7 @@ export function useDB(user) {
             pushUpdates({
               [`${table}/${oldYear}/${id}`]: null,
               [`${table}/${newYear}/${id}`]: mergedRecord,
-              [`${yearsIndexKey}/${newYear}`]: true,
+              ...indexTahunUpd(yearsIndexKey, newYear),
             });
           } else {
             // ✅ FIX RISIKO TABRAKAN EDIT BERSAMAAN: dulu baris ini menulis
