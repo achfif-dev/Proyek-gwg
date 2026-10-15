@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { firebaseDB, firebaseAuth } from "../firebase/init";
 import { FIREBASE_CONFIGURED, FIREBASE_CONFIG } from "../firebase/config";
-import { idbGet, idbSet, queueWriteMany, queueGetDenied, queueCount, queueRetryDenied, queueDiscardDenied, drainQueue, isPermissionDenied, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
+import { idbGet, idbSet, queueWriteMany, queueGetDenied, queueCount, queueRetryDenied, queueDiscardDenied, drainQueue, isPermissionDenied, isKirimTimeout, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
 import { loadAppConfig } from "../config/appConfig";
+import { keputusanFlush } from "../lib/syncStatus";
 import { setTahunKontrolTidakTerlihat, LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
 import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/akuntansiHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
@@ -630,13 +631,43 @@ export function useDB(user) {
   // berikutnya (event 'online' berikutnya / retry berkala), supaya tidak
   // spam percobaan yang pasti gagal saat memang belum ada sinyal.
   const flushAgainRef = useRef(false);
+  const flushStartRef = useRef(0);   // kapan flush yang sedang berjalan dimulai
+  const flushGenRef = useRef(0);     // nomor generasi flush (untuk pengambilalihan)
+  const flushRef = useRef(null);
+  const [sendError, setSendError] = useState(null); // { code, message, at } kendala kirim terakhir
+  // Putus-sambung paksa koneksi Firebase (goOffline → goOnline). Tulisan yang
+  // belum di-ACK TIDAK hilang: SDK menyimpannya & mengirim ulang saat tersambung.
+  // Dipakai saat tulisan tak kunjung dibalas padahal socket dianggap tersambung
+  // ("setengah mati" — sering terjadi saat HP berpindah/menggabung jalur
+  // Wi-Fi & data seluler). Dibatasi 1x per 60 dtk supaya tidak berulang-ulang.
+  const sambungUlangTerakhirRef = useRef(0);
+  const sambungUlangFirebase = useCallback(async () => {
+    const t = Date.now();
+    if (t - sambungUlangTerakhirRef.current < 60000) return false;
+    sambungUlangTerakhirRef.current = t;
+    try {
+      const { db: rtdb, goOffline, goOnline } = firebaseDB || {};
+      if (!rtdb || !goOffline || !goOnline) return false;
+      console.warn("Tulisan tak dibalas server — putus-sambung koneksi Firebase");
+      goOffline(rtdb);
+      await new Promise(r => setTimeout(r, 800));
+      goOnline(rtdb);
+      return true;
+    } catch (e) { console.warn("Putus-sambung Firebase gagal:", e); return false; }
+  }, []);
   const flushWriteQueue = useCallback(async () => {
     if (!firebaseDB || !basePathRef.current) return;
     // Sedang mengirim → jangan tumpuk, tapi CATAT bahwa ada perubahan baru
     // supaya begitu putaran ini selesai langsung diproses (bukan menunggu
-    // interval 30 detik).
-    if (flushingRef.current) { flushAgainRef.current = true; return; }
+    // interval berikutnya). Kalau flush sebelumnya MENGGANTUNG (> 90 dtk),
+    // ambil alih — tanpa ini satu await yang tak selesai mengunci antrean
+    // sampai aplikasi di-refresh.
+    const putusan = keputusanFlush({ berjalan: flushingRef.current, mulai: flushStartRef.current, now: Date.now() });
+    if (putusan === "tunda") { flushAgainRef.current = true; return; }
+    if (putusan === "ambil-alih") console.warn("Flush sebelumnya menggantung >90 dtk — diambil alih");
+    const gen = ++flushGenRef.current;
     flushingRef.current = true;
+    flushStartRef.current = Date.now();
     try {
       const { db: rtdb, ref, set } = firebaseDB;
       // Urutan kirim = urutan `ts` (waktu perubahan di-queue), bukan
@@ -679,14 +710,22 @@ export function useDB(user) {
         if (hasil.sent > 0) catatProgres(true);
         if (hasil.stopped) {
           console.warn("Sinkron tertunda (kemungkinan masih offline):", hasil.error);
+          setSendError({ code: hasil.error?.code || "", message: hasil.error?.message || String(hasil.error), at: Date.now() });
+          // Tak dibalas server padahal dianggap tersambung → putus-sambung koneksi,
+          // lalu coba lagi beberapa detik kemudian (tanpa menunggu interval).
+          if (isKirimTimeout(hasil.error)) {
+            sambungUlangFirebase().then(ok => { if (ok) setTimeout(() => flushRef.current && flushRef.current(), 3000); });
+          }
           break; // coba lagi nanti begitu online/retry berikutnya
         }
+        if (hasil.sent > 0 || hasil.denied > 0) setSendError(null);
       } while (flushAgainRef.current);
     } finally {
-      flushingRef.current = false;
+      if (flushGenRef.current === gen) flushingRef.current = false; // hanya generasi terbaru yang melepas kunci
       refreshPendingCount();
     }
-  }, [refreshPendingCount, catatProgres]);
+  }, [refreshPendingCount, catatProgres, sambungUlangFirebase]);
+  useEffect(() => { flushRef.current = flushWriteQueue; }, [flushWriteQueue]);
 
   // Titik awal "kemajuan" saat antrean mulai terisi; dibersihkan saat kosong.
   useEffect(() => {
@@ -1810,7 +1849,7 @@ export function useDB(user) {
     return { ok: true };
   }, [db, save]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, lastSendOk, sendProgressAt, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, lastSendOk, sendProgressAt, sendError, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
 }
 
 
