@@ -46,7 +46,7 @@ export function deriveSyncStatus({
   if (fbConnected === false) {
     return { key: "putus", level: "warn", icon: "wifiOff", spin: false, count: pendingSync,
       label: pendingSync > 0 ? "Tak terhubung · menunggu" : "Tak terhubung ke server",
-      title: "Perangkat online, tetapi belum tersambung ke server data (sinyal lemah / jaringan tanpa internet). Perubahan tetap aman tersimpan di perangkat dan akan terkirim saat tersambung." };
+      title: "Perangkat online, tetapi belum tersambung ke server data (sinyal lemah / jaringan tanpa internet). Perubahan tetap aman tersimpan di perangkat dan akan terkirim otomatis saat tersambung. Aplikasi mencoba menyambung ulang sendiri sekitar tiap 30 detik; Firebase sendiri bisa menunda percobaan sampai beberapa menit di sinyal lemah, jadi ini dipercepat." };
   }
   if (syncError) {
     return { key: "error", level: "bad", icon: "warning", spin: false, count: 0,
