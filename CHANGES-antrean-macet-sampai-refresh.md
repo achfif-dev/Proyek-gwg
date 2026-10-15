@@ -24,3 +24,19 @@ Firebase dianggap tersambung; baru terkirim setelah refresh.
 
 **Belum terbukti memperbaiki** — butuh uji di perangkat. Jika masih macet, ketuk ikon dan catat
 pesan "Kendala terakhir".
+
+---
+## Tambahan: sinyal lemah — percepat sambung ulang ke RTDB
+**Fakta dari kode SDK (@firebase/database 1.0.5, bawaan firebase 10.12.0):** SDK TIDAK mencoba
+sambung tanpa jeda. Jeda mulai 1 dtk, dikali 1,3 tiap gagal (diacak), maksimal **5 menit**;
+reset ke 1 dtk hanya bila event `online` browser, jendela jadi terlihat saat jeda sudah
+maksimal, atau terhubung >30 dtk. Tulisan baru hanya di-*buffer* (`Buffering put`) dan TIDAK
+memicu sambung. Di sinyal lemah, aplikasi bisa tampak mati lama walau sinyal sudah pulih.
+
+**Perbaikan (`useDB.js`)**: `dorongSambung` — bila `.info/connected` false > 8 dtk dan aplikasi
+terlihat, jeda direset lewat goOffline/goOnline (maks 1x/30 dtk). Dipicu: input baru (setelah
+antrean tersimpan), kembali ke layar depan, dan jaring pengaman 10 dtk. Saat terputus, antrean
+TIDAK disetor ke SDK (menghindari menggantung 25 dtk + duplikat); kirim otomatis saat
+`.info/connected` kembali true.
+**Risiko**: tiap upaya sambung ulang memakai baterai/data sedikit; 30 dtk dipilih supaya
+handshake di sinyal lemah punya waktu. Belum diuji di jaringan nyata.
