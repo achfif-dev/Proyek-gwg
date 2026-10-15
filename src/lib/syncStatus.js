@@ -9,10 +9,27 @@ export const SYNC_STUCK_MS = 45000; // antrean tertunda tanpa kemajuan selama in
 
 const jam = (ms) => (ms ? new Date(ms).toLocaleTimeString("id-ID", { hour: "2-digit", minute: "2-digit" }) : null);
 
+// Kendala pengiriman terakhir (kode + pesan) untuk ditampilkan saat ikon diketuk —
+// supaya penyebab "macet" bisa dibaca langsung dari layar HP.
+export function teksKendala(err) {
+  if (!err) return "";
+  const kode = err.code ? `[${err.code}] ` : "";
+  return `\n\nKendala terakhir: ${kode}${err.message || "tidak diketahui"}`;
+}
+
+// Kunci pengiriman antrean dengan pengambilalihan: kalau pengiriman sebelumnya
+// menggantung lebih lama dari `staleMs` (mis. satu `await` tak pernah selesai),
+// pemanggil baru BOLEH mengambil alih — kalau tidak, semua flush berikutnya
+// langsung keluar dan antrean macet sampai aplikasi di-refresh.
+export function keputusanFlush({ berjalan, mulai, now, staleMs = 90000 }) {
+  if (!berjalan) return "mulai";
+  return now - mulai > staleMs ? "ambil-alih" : "tunda";
+}
+
 export function deriveSyncStatus({
   isOnline = true, fbConnected = null, writeDeniedCount = 0, syncError = null,
   pendingSync = 0, sendProgressAt = null, now = Date.now(),
-  syncing = false, dataStillSyncing = false, lastSendOk = null, lastSync = null,
+  syncing = false, dataStillSyncing = false, lastSendOk = null, lastSync = null, sendError = null,
 } = {}) {
   const lastSyncMs = lastSync instanceof Date ? lastSync.getTime() : (lastSync || null);
 
@@ -41,7 +58,7 @@ export function deriveSyncStatus({
       const detik = Math.round((now - sendProgressAt) / 1000);
       return { key: "macet", level: "warn", icon: "warning", spin: false, count: pendingSync,
         label: "tertunda · macet",
-        title: `${pendingSync} perubahan belum terkirim dan belum ada kemajuan selama ${detik} detik. Sistem terus mencoba tiap 30 detik; data aman di perangkat. Jika berlanjut, periksa sinyal atau muat ulang aplikasi.` };
+        title: `${pendingSync} perubahan belum terkirim dan belum ada kemajuan selama ${detik} detik. Sistem terus mencoba tiap 30 detik; data aman di perangkat. Jika berlanjut, periksa sinyal atau muat ulang aplikasi.${teksKendala(sendError)}` };
     }
     return { key: "mengirim", level: "info", icon: "refresh", spin: true, count: pendingSync,
       label: "Mengirim perubahan...",
