@@ -84,6 +84,53 @@ export async function queueWrite(path, value) {
   });
 }
 
+// Versi BATCH dari queueWrite: SATU transaksi IndexedDB untuk semua path
+// (bukan satu transaksi per path). `ts`/`v` tetap dipatok SINKRON dan
+// berurutan, jadi urutan kirim = urutan pemanggilan. Mengembalikan array
+// boolean (sama panjang dengan `pairs`); semuanya true/false bersama karena
+// satu transaksi = semuanya tersimpan atau tidak sama sekali.
+export async function queueWriteMany(pairs) {
+  const items = pairs.map(([path, value]) => { const ts = nextTs(); return { path, value, ts, v: `${ts}-${++_seq}` }; });
+  const gagal = () => items.map(() => false);
+  if (!items.length) return [];
+  const db = await openIDB();
+  if (!db) return gagal();
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      const st = tx.objectStore(IDB_QUEUE_STORE);
+      items.forEach(it => st.put(it));
+      tx.oncomplete = () => resolve(items.map(() => true));
+      tx.onerror = () => resolve(gagal());
+      tx.onabort = () => resolve(gagal());
+    } catch { resolve(gagal()); }
+  });
+}
+
+// Hapus-bersyarat BANYAK entri dalam SATU transaksi (versi batch dari
+// queueRemoveIfSame). Mengembalikan jumlah entri yang benar-benar terhapus.
+export async function queueRemoveManyIfSame(entries) {
+  const db = await openIDB();
+  if (!db || !entries || !entries.length) return 0;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(IDB_QUEUE_STORE, "readwrite");
+      const store = tx.objectStore(IDB_QUEUE_STORE);
+      let removed = 0;
+      entries.forEach(entry => {
+        const req = store.get(entry.path);
+        req.onsuccess = () => {
+          const cur = req.result;
+          if (cur && !cur.denied && versiOf(cur) === versiOf(entry)) { store.delete(entry.path); removed++; }
+        };
+      });
+      tx.oncomplete = () => resolve(removed);
+      tx.onerror = () => resolve(0);
+      tx.onabort = () => resolve(0);
+    } catch { resolve(0); }
+  });
+}
+
 // Hapus entri HANYA jika versinya masih sama dengan `entry` (yang baru terkirim).
 export async function queueRemoveIfSame(entry) {
   const db = await openIDB();
@@ -201,36 +248,62 @@ export function isPermissionDenied(e) {
   return String(e?.code || e?.message || "").toUpperCase().includes("PERMISSION_DENIED");
 }
 
-// Kirim antrean satu per satu, berurutan menurut `ts`. `send(path, value)`
-// harus melempar error kalau gagal.
-//  • sukses            → hapus-bersyarat (aman terhadap edit baru di path yang sama)
-//  • PERMISSION_DENIED → tandai `denied` (TIDAK dihapus), lanjut ke entri berikutnya
-//  • error lain        → berhenti (kemungkinan offline), sisa antrean dicoba lagi nanti
-// Entri baru yang masuk selama pengiriman langsung diproses di putaran berikutnya.
-export async function drainQueue(send, { onDenied } = {}) {
+// Kirim antrean menurut urutan `ts`, secara BERJENDELA-PARALEL (pipelining).
+//
+// Sebelumnya: `await send()` SATU PER SATU — tiap tulisan menunggu balasan
+// (ACK) server dulu sebelum yang berikutnya dikirim. Di sinyal seluler
+// (RTT 300–1000 ms) itu cuma ±1–3 tulisan/detik, dan 1 input kontrol = 2+
+// tulisan, jadi input cepat admin lebih cepat daripada antrean → menumpuk.
+// Sekarang: sampai `concurrency` tulisan DIPANGGIL BERURUTAN tanpa menunggu
+// ACK (SDK Firebase menjaga urutan di satu socket, jadi ketergantungan
+// antar-path tetap aman), lalu ditunggu bersama. Dampak:
+//  • sukses            → hapus-bersyarat sekaligus (1 transaksi per jendela)
+//  • PERMISSION_DENIED → hanya entri ITU yang ditandai `denied` (TIDAK dihapus);
+//                        yang lain di jendela tetap terkirim
+//  • error lain/timeout→ berhenti setelah jendela ini (kemungkinan offline);
+//                        yang sudah sukses tetap dihapus, sisanya dicoba lagi
+// `timeoutMs`: tulisan yang tak kunjung di-ACK (socket mati diam-diam)
+// dianggap gagal-sementara supaya antrean tidak macet selamanya; mengirim
+// ulang aman karena tulisan bersifat idempoten (set nilai yang sama).
+// `store` bisa disuntik untuk pengujian.
+const denganTimeout = (fn, ms) => {
+  let t;
+  const kirim = new Promise((res, rej) => { try { res(fn()); } catch (e) { rej(e); } });
+  const batas = new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error("Waktu kirim habis (tidak ada balasan server)"), { code: "kirim/timeout" })), ms); });
+  return Promise.race([kirim, batas]).finally(() => clearTimeout(t));
+};
+
+export async function drainQueue(send, { onDenied, onProgress, concurrency = 20, timeoutMs = 25000, store } = {}) {
+  const st = store || { getAll: queueGetAll, removeMany: queueRemoveManyIfSame, markDenied: queueMarkDenied };
   const hasil = { sent: 0, denied: 0, stopped: false, error: null };
   const sudah = new Set();
   for (let putaran = 0; putaran < 25; putaran++) {
-    const entries = (await queueGetAll())
+    const entries = (await st.getAll())
       .filter(e => !sudah.has(`${e.path}|${versiOf(e)}`))
       .sort((a, b) => ((a.ts || 0) - (b.ts || 0)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     if (!entries.length) break;
-    for (const entry of entries) {
-      sudah.add(`${entry.path}|${versiOf(entry)}`);
-      try {
-        await send(entry.path, entry.value);
-        await queueRemoveIfSame(entry);
-        hasil.sent++;
-      } catch (e) {
-        if (isPermissionDenied(e)) {
-          const pesan = e?.message || "Permission denied";
-          const ditandai = await queueMarkDenied(entry, pesan);
+    for (let i = 0; i < entries.length; i += concurrency) {
+      const jendela = entries.slice(i, i + concurrency);
+      jendela.forEach(e => sudah.add(`${e.path}|${versiOf(e)}`));
+      // send() dipanggil SINKRON berurutan di dalam map → urutan terbit = urutan ts.
+      const hs = await Promise.allSettled(jendela.map(e => denganTimeout(() => send(e.path, e.value), timeoutMs)));
+      const sukses = [];
+      let galat = null;
+      for (let k = 0; k < hs.length; k++) {
+        const h = hs[k], entry = jendela[k];
+        if (h.status === "fulfilled") { sukses.push(entry); continue; }
+        if (isPermissionDenied(h.reason)) {
+          const pesan = h.reason?.message || "Permission denied";
+          const ditandai = await st.markDenied(entry, pesan);
           if (ditandai) { hasil.denied++; if (onDenied) onDenied(entry, pesan); }
           continue;
         }
-        hasil.stopped = true; hasil.error = e;
-        return hasil;
+        if (!galat) galat = h.reason;
       }
+      await st.removeMany(sukses);
+      hasil.sent += sukses.length;
+      if (onProgress) { try { onProgress(hasil); } catch { /* callback UI tidak boleh menggagalkan pengiriman */ } }
+      if (galat) { hasil.stopped = true; hasil.error = galat; return hasil; }
     }
   }
   return hasil;
