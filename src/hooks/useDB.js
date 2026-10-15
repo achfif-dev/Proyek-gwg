@@ -4,7 +4,7 @@ import { FIREBASE_CONFIGURED, FIREBASE_CONFIG } from "../firebase/config";
 import { idbGet, idbSet, queueWrite, queueGetDenied, queueCount, queueRetryDenied, queueDiscardDenied, drainQueue, isPermissionDenied, saveLocalDB, flushLocalDBNow } from "../lib/offlineStore";
 import { DB_EMPTY } from "../config/dbEmpty";
 import { loadAppConfig } from "../config/appConfig";
-import { LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
+import { setTahunKontrolTidakTerlihat, LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
 import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/akuntansiHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "../lib/googleDrive";
@@ -599,6 +599,19 @@ export function useDB(user) {
   // menampilkan "N perubahan menunggu sinkron" di header.
   const [pendingSync, setPendingSync] = useState(0);
   const flushingRef = useRef(false);
+  // Waktu pengiriman sukses terakhir & titik "kemajuan" antrean — dipakai ikon
+  // sinkronisasi untuk membedakan "sedang mengirim" dari "macet" (lihat
+  // lib/syncStatus.js). Diperbarui paling sering 1x per 2 detik supaya
+  // pengiriman ratusan record tidak memicu ratusan render.
+  const [lastSendOk, setLastSendOk] = useState(null);
+  const [sendProgressAt, setSendProgressAt] = useState(null);
+  const progresDiPushRef = useRef(0);
+  const catatProgres = useCallback((paksa) => {
+    const t = Date.now();
+    if (!paksa && t - progresDiPushRef.current < 2000) return;
+    progresDiPushRef.current = t;
+    setLastSendOk(t); setSendProgressAt(t);
+  }, []);
   const refreshPendingCount = useCallback(() => {
     queueCount().then(setPendingSync);
   }, []);
@@ -633,12 +646,14 @@ export function useDB(user) {
           if (path.startsWith("tutupBuku")) TB("kirim ->", path, value === null ? "NULL(HAPUS)" : "ADA");
           await set(target, value);
           if (path.startsWith("tutupBuku")) TB("kirim OK", path);
+          catatProgres();
         } catch (e) {
           if (path.startsWith("tutupBuku")) TB("kirim GAGAL", path, e?.code || "", e?.message || String(e));
           if (!isPermissionDenied(e) || tokenSudahDiperbarui) throw e;
           tokenSudahDiperbarui = true;
           try { await firebaseAuth?.auth?.currentUser?.getIdToken(true); } catch { throw e; }
           await set(target, value);
+          catatProgres();
         }
       };
       do {
@@ -653,6 +668,7 @@ export function useDB(user) {
             setWriteDenied(prev => [...prev.filter(x => x.path !== entry.path), { path: entry.path, message, at: Date.now() }]);
           },
         });
+        if (hasil.sent > 0) catatProgres(true);
         if (hasil.stopped) {
           console.warn("Sinkron tertunda (kemungkinan masih offline):", hasil.error);
           break; // coba lagi nanti begitu online/retry berikutnya
@@ -662,7 +678,13 @@ export function useDB(user) {
       flushingRef.current = false;
       refreshPendingCount();
     }
-  }, [refreshPendingCount]);
+  }, [refreshPendingCount, catatProgres]);
+
+  // Titik awal "kemajuan" saat antrean mulai terisi; dibersihkan saat kosong.
+  useEffect(() => {
+    if (pendingSync > 0) setSendProgressAt(p => p ?? Date.now());
+    else setSendProgressAt(null);
+  }, [pendingSync]);
 
   // Perubahan yang ditolak rules di sesi SEBELUMNYA tetap tampil di banner
   // begitu user login lagi (state writeDenied sendiri hanya di memori).
@@ -1313,6 +1335,13 @@ export function useDB(user) {
   // tanpa perlu login/panggil Drive API dulu — token Google (popup) baru
   // diminta saat admin benar-benar klik Lihat/Export/Hapus/Arsipkan.
   const [archivedKontrolYears, setArchivedKontrolYears] = useState([]); // tahun yang sudah diarsipkan (dari index ringan)
+  // Beritahu recalcTokoStok (dataHelpers) tahun kontrol mana yang TIDAK ada di
+  // memori: tahun di cloud yang belum dimuat + tahun yang sudah diarsipkan.
+  // Dipakai sebagai pengaman supaya stok toko tidak ditimpa angka salah.
+  useEffect(() => {
+    const belumDimuat = (availableKontrolYears || []).filter(y => !(loadedKontrolYears || []).includes(y));
+    setTahunKontrolTidakTerlihat([...belumDimuat, ...(archivedKontrolYears || [])]);
+  }, [availableKontrolYears, loadedKontrolYears, archivedKontrolYears]);
   // Agregat pcs terjual/revenue/bonus PER TAHUN yang sudah diarsipkan — dibaca
   // dari field agregat di kontrolArchiveIndex/{tahun} (lihat archiveKontrolYear
   // & recalcArchivedYearAgregat di bawah). Tahun yang diarsipkan SEBELUM fitur
@@ -1759,7 +1788,7 @@ export function useDB(user) {
     return { ok: true };
   }, [db, save]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, lastSendOk, sendProgressAt, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
 }
 
 
