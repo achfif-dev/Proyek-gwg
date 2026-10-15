@@ -266,6 +266,7 @@ export function isPermissionDenied(e) {
 // dianggap gagal-sementara supaya antrean tidak macet selamanya; mengirim
 // ulang aman karena tulisan bersifat idempoten (set nilai yang sama).
 // `store` bisa disuntik untuk pengujian.
+export const isKirimTimeout = (e) => e?.code === "kirim/timeout";
 const denganTimeout = (fn, ms) => {
   let t;
   const kirim = new Promise((res, rej) => { try { res(fn()); } catch (e) { rej(e); } });
