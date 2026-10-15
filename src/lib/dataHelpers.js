@@ -279,13 +279,65 @@ export function buildProdukFlagUpdates(produkAktif, newIds) {
 // riwayat" di bawah akan salah mengira ini toko baru dan MEMBIARKAN stok
 // lama (dari entri yang baru saja dihapus) tetap nyangkut alih-alih
 // direset — parameter ini mencegah itu.
-export function recalcTokoStok(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList, forceIfEmpty) {
+// ─── PENGAMAN RIWAYAT KONTROL TIDAK LENGKAP ─────────────────────────────
+// db.kontrol di memori HANYA berisi tahun yang sedang live/dimuat (lihat
+// KONTROL_LIVE_YEARS di useDB.js) — tahun lama yang belum dimuat atau sudah
+// diarsipkan TIDAK ada di sana. recalcTokoStok menghitung stok dari entri
+// kontrol TERAKHIR toko; kalau kontrol terakhir toko justru ada di tahun yang
+// tidak termuat, "terakhir" kosong → baseline 0 → stok_* salah ditulis ke
+// RTDB (data bersama semua perangkat). useDB mengisi daftar tahun yang
+// belum terlihat ini lewat setTahunKontrolTidakTerlihat().
+let _tahunTidakTerlihat = [];
+export function setTahunKontrolTidakTerlihat(daftar) {
+  _tahunTidakTerlihat = Array.isArray(daftar) ? daftar.map(String).sort() : [];
+}
+export function getTahunKontrolTidakTerlihat() { return _tahunTidakTerlihat; }
+
+// true jika riwayat kontrol toko ini BISA saja ada di tahun yang tidak
+// termuat: ada tahun tak-terlihat yang >= tahun toko masuk. Toko tanpa
+// tanggalMasuk diperlakukan hati-hati (anggap mungkin punya riwayat lama).
+export function riwayatKontrolMungkinTersembunyi(toko, tahunTidakTerlihat = _tahunTidakTerlihat) {
+  if (!tahunTidakTerlihat || tahunTidakTerlihat.length === 0) return false;
+  const thn = String(toko?.tanggalMasuk || "").slice(0, 4);
+  if (!/^\d{4}$/.test(thn)) return true;
+  return tahunTidakTerlihat.some(y => String(y) >= thn);
+}
+
+// Pemberitahuan (dibatasi 1x per 10 detik supaya loop banyak toko tidak
+// membanjiri layar dengan alert).
+let _notifTerakhir = 0;
+function beritahuRecalcDilewati(toko, tokoId) {
+  const nama = toko?.nama || tokoId;
+  console.warn("recalcTokoStok DILEWATI (riwayat kontrol tahun lama tidak termuat):", tokoId, _tahunTidakTerlihat);
+  const now = Date.now();
+  if (now - _notifTerakhir < 10000) return;
+  _notifTerakhir = now;
+  try {
+    if (typeof alert === "function") alert(
+      `Stok toko "${nama}" TIDAK dihitung ulang: riwayat kontrol toko ini mungkin ada di tahun yang belum dimuat (${_tahunTidakTerlihat.join(", ")}).\n\n` +
+      `Muat dulu data tahun tersebut (menu Cadangan/Admin → Muat Data Tahun Lama), lalu ulangi aksinya. Stok yang tersimpan tidak diubah.`);
+  } catch { /* lingkungan tanpa alert (mis. test) */ }
+}
+
+export function recalcTokoStok(db, produkAktif, tokoId, updateRecord, extraKontrolList, extraPenyesuaianList, forceIfEmpty, opts) {
   const semuaKontrol = extraKontrolList || (db.kontrol||[]);
   const semuaPenyesuaian = extraPenyesuaianList || (db.penyesuaian||[]);
   const entriesToko = semuaKontrol
     .filter(k => k.tokoId === tokoId && k.status !== "menunggu" && k.status !== "ditolak")
     .sort((a,b) => (a.tanggal||"").localeCompare(b.tanggal||"") || (a.id||"").localeCompare(b.id||""));
   const terakhir = entriesToko[entriesToko.length-1];
+
+  // ✅ PENGAMAN: tidak ada kontrol terlihat untuk toko ini, padahal riwayatnya
+  // mungkin ada di tahun yang tidak termuat/terarsip → JANGAN menulis stok
+  // (baseline 0 akan menimpa stok yang benar). Berlaku juga untuk forceIfEmpty.
+  if (!terakhir) {
+    const tahunTak = opts?.tahunTidakTerlihat ?? _tahunTidakTerlihat;
+    const toko = (db.toko||[]).find(t => t.id === tokoId);
+    if (riwayatKontrolMungkinTersembunyi(toko, tahunTak)) {
+      if (!opts?.senyap) beritahuRecalcDilewati(toko, tokoId);
+      return { dilewati: true, alasan: "riwayat-kontrol-tidak-lengkap" };
+    }
+  }
 
   const baseline = {};
   (produkAktif||[]).forEach(p => { baseline[p.id] = terakhir ? Number(terakhir[`stok_${p.id}`]||0) : 0; });
