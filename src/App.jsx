@@ -12,6 +12,8 @@ import { SUPER_ADMIN_EMAIL, isSuperAdminEmail, SUPER_ADMIN_CANONICAL_ID } from "
 import { TABS, canAccessTab, getInitialActiveTab, ACTIVE_TAB_SESSION_KEY, SALES_ALLOWED_TABS } from "./config/tabs";
 import { useAuth } from "./hooks/useAuth";
 import { useOnlineStatus } from "./hooks/useOnlineStatus";
+import { useFirebaseConnected } from "./hooks/useFirebaseConnected";
+import { SyncIndicator } from "./components/SyncIndicator";
 import { useAppResumeReload } from "./hooks/useAppResumeReload";
 import { usePresence } from "./hooks/usePresence";
 import { kelompokkanPengguna, ringkasPresence, teksDiam } from "./lib/presenceHelpers";
@@ -437,7 +439,8 @@ export default function GWGSuperApp() {
     return () => { cancelled = true; };
   }, [fbReady, user]);
 
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, lastSendOk, sendProgressAt, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
+  const fbConnected = useFirebaseConnected(user);
   const analytics = useAnalytics(db);
 
   // ── Bedakan "LOGIN ULANG" (baru masuk) vs "REFRESH" (reload halaman saat
@@ -511,6 +514,8 @@ export default function GWGSuperApp() {
 
       /* ✅ Titik kecil berkedip dipakai di header (Rev:) & StatCard untuk
          menandai angka yang masih disinkronkan di latar belakang. */
+      @keyframes gw-spin { to { transform: rotate(360deg); } }
+      .gw-spin { animation: gw-spin 1s linear infinite; }
       @keyframes gw-pulse { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:.35; transform:scale(1.3); } }
 
       /* Header dibuat "cair" (fluid) memakai clamp() supaya ukurannya
@@ -1008,19 +1013,10 @@ export default function GWGSuperApp() {
                 <div className="gw-header-title" style={{ fontSize:20, fontWeight:800, color:"#fff", letterSpacing:"-0.02em" }}>{brand.companyName}</div>
                 <div className="gw-header-subtitle" style={{ fontSize:11, color:"rgba(255,255,255,.7)", letterSpacing:"0.08em", textTransform:"uppercase" }}>
                   {brand.tagline}
-                  {!isOnline ? (
-                    <span style={{ marginLeft:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
-                      <Icon.wifiOff size={11} strokeWidth={2.5} /> Offline{pendingSync > 0 ? ` · ${pendingSync} tersimpan` : ""}
-                    </span>
-                  ) : pendingSync > 0 ? (
-                    <span style={{ marginLeft:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(252,211,77,.25)", color:"#FCD34D", borderRadius:99, padding:"1px 8px", fontSize:10, fontWeight:700 }}>
-                      <Icon.refresh size={11} strokeWidth={2.5} /> Mengirim {pendingSync} perubahan...
-                    </span>
-                  ) : syncing && (
-                    <span style={{ marginLeft:8, display:"inline-flex", alignItems:"center", gap:4, background:"rgba(255,255,255,.2)", borderRadius:99, padding:"1px 8px", fontSize:10 }}>
-                      <Icon.refresh size={11} strokeWidth={2.5} /> Sinkronisasi...
-                    </span>
-                  )}
+                  <span style={{ marginLeft:8 }}><SyncIndicator variant="pill" isOnline={isOnline} fbConnected={fbConnected} writeDeniedCount={writeDenied?.length || 0}
+                      syncError={syncError} pendingSync={pendingSync} sendProgressAt={sendProgressAt}
+                      syncing={syncing} dataStillSyncing={dataStillSyncing} lastSendOk={lastSendOk} lastSync={lastSync}
+                      onDenied={() => document.getElementById("gw-banner-ditolak")?.scrollIntoView({ behavior: "smooth", block: "center" })} /></span>
                 </div>
               </div>
             </div>
@@ -1096,21 +1092,10 @@ export default function GWGSuperApp() {
                       <div style={{ maxWidth:110, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{user.displayName?.split(" ")[0]}</div>
                       <div style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
                       <span style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
-                      {!isOnline ? (
-                        <span style={{ color:"#FCD34D", display:"inline-flex", alignItems:"center", gap:3 }} title="Tidak ada koneksi internet — perubahan tersimpan di perangkat ini dan akan sinkron otomatis begitu online kembali">
-                          <Icon.wifiOff size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Offline{pendingSync > 0 ? ` · ${pendingSync} menunggu` : " · data lokal"}</span>
-                        </span>
-                      ) : pendingSync > 0 ? (
-                        <span style={{ color:"#FCD34D", display:"inline-flex", alignItems:"center", gap:3 }} title="Sedang mengirim perubahan yang tersimpan saat offline"><Icon.refresh size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Mengirim {pendingSync} perubahan...</span></span>
-                      ) : syncError ? (
-                        <span style={{ color:"#FCA5A5", display:"inline-flex", alignItems:"center", gap:3 }} title={syncError}><Icon.warning size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Gagal sync</span></span>
-                      ) : syncing ? (
-                        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }} title="Sedang memuat data dari cloud — di jaringan lambat ini bisa makan waktu"><Icon.refresh size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Sinkronisasi...</span></span>
-                      ) : lastSync ? (
-                        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><Icon.cloud size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Sinkron {lastSync.toLocaleTimeString("id-ID",{hour:"2-digit",minute:"2-digit"})}</span></span>
-                      ) : (
-                        <span style={{ display:"inline-flex", alignItems:"center", gap:3 }}><Icon.cloud size={11} strokeWidth={2.5} /><span className="gw-hide-xs"> Terhubung</span></span>
-                      )}
+                      <SyncIndicator isOnline={isOnline} fbConnected={fbConnected} writeDeniedCount={writeDenied?.length || 0}
+                      syncError={syncError} pendingSync={pendingSync} sendProgressAt={sendProgressAt}
+                      syncing={syncing} dataStillSyncing={dataStillSyncing} lastSendOk={lastSendOk} lastSync={lastSync}
+                      onDenied={() => document.getElementById("gw-banner-ditolak")?.scrollIntoView({ behavior: "smooth", block: "center" })} />
                       {" ·"}{" "}
                       </span>
                       <span style={{ background: daruratAktif ? "#DC2626" : "rgba(255,255,255,.2)", borderRadius:4, padding:"0 5px", fontWeight:700, display:"inline-flex", alignItems:"center", gap:3 }}>
@@ -1210,7 +1195,7 @@ export default function GWGSuperApp() {
           </div>
         )}
         {writeDenied && writeDenied.length > 0 && (
-          <div style={{ background:"#FEF2F2", border:"2px solid #DC2626", borderRadius:12,
+          <div id="gw-banner-ditolak" style={{ background:"#FEF2F2", border:"2px solid #DC2626", borderRadius:12,
             padding:"14px 18px", marginBottom:16, display:"flex", alignItems:"flex-start", gap:12,
             flexWrap:"wrap" }}>
             <span style={{ color:"#DC2626", flexShrink:0 }}><Icon.ban size={22} strokeWidth={2} /></span>
