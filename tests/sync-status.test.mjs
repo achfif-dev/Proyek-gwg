@@ -38,3 +38,19 @@ test("jam OK memakai yang terbaru antara data diterima dan perubahan terkirim", 
   const s = deriveSyncStatus({ ...dasar, lastSync: a, lastSendOk: b });
   assert.match(s.label, /11[.:]30/);
 });
+
+import { keputusanFlush, teksKendala } from "../src/lib/syncStatus.js";
+test("kunci flush: mulai / tunda / ambil-alih bila menggantung", () => {
+  assert.equal(keputusanFlush({ berjalan: false, mulai: 0, now: 1000 }), "mulai");
+  assert.equal(keputusanFlush({ berjalan: true, mulai: 1000, now: 20000 }), "tunda");
+  assert.equal(keputusanFlush({ berjalan: true, mulai: 1000, now: 1000 + 90001 }), "ambil-alih");
+});
+test("status macet menampilkan kendala terakhir (kode + pesan) saat diketuk", () => {
+  const now = 1_000_000;
+  const s = deriveSyncStatus({ ...dasar, pendingSync: 5, sendProgressAt: now - 60000, now,
+    sendError: { code: "kirim/timeout", message: "Waktu kirim habis (tidak ada balasan server)" } });
+  assert.equal(s.key, "macet");
+  assert.match(s.title, /kirim\/timeout/);
+  assert.match(teksKendala({ message: "x" }), /Kendala terakhir: x/);
+  assert.equal(teksKendala(null), "");
+});
