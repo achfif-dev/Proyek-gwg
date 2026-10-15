@@ -439,7 +439,7 @@ export default function GWGSuperApp() {
     return () => { cancelled = true; };
   }, [fbReady, user]);
 
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, lastSendOk, sendProgressAt, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, lastSendOk, sendProgressAt, sendError, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
   const fbConnected = useFirebaseConnected(user);
   const analytics = useAnalytics(db);
 
@@ -1015,7 +1015,7 @@ export default function GWGSuperApp() {
                   {brand.tagline}
                   <span style={{ marginLeft:8 }}><SyncIndicator variant="pill" isOnline={isOnline} fbConnected={fbConnected} writeDeniedCount={writeDenied?.length || 0}
                       syncError={syncError} pendingSync={pendingSync} sendProgressAt={sendProgressAt}
-                      syncing={syncing} dataStillSyncing={dataStillSyncing} lastSendOk={lastSendOk} lastSync={lastSync}
+                      syncing={syncing} dataStillSyncing={dataStillSyncing} lastSendOk={lastSendOk} lastSync={lastSync} sendError={sendError}
                       onDenied={() => document.getElementById("gw-banner-ditolak")?.scrollIntoView({ behavior: "smooth", block: "center" })} /></span>
                 </div>
               </div>
@@ -1094,7 +1094,7 @@ export default function GWGSuperApp() {
                       <span style={{ fontSize:10, color:"rgba(255,255,255,.6)", fontWeight:400, whiteSpace:"nowrap" }}>
                       <SyncIndicator isOnline={isOnline} fbConnected={fbConnected} writeDeniedCount={writeDenied?.length || 0}
                       syncError={syncError} pendingSync={pendingSync} sendProgressAt={sendProgressAt}
-                      syncing={syncing} dataStillSyncing={dataStillSyncing} lastSendOk={lastSendOk} lastSync={lastSync}
+                      syncing={syncing} dataStillSyncing={dataStillSyncing} lastSendOk={lastSendOk} lastSync={lastSync} sendError={sendError}
                       onDenied={() => document.getElementById("gw-banner-ditolak")?.scrollIntoView({ behavior: "smooth", block: "center" })} />
                       {" ·"}{" "}
                       </span>
