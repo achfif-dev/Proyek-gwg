@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { Icon } from "../theme/icons.jsx";
 import { deriveSyncStatus } from "../lib/syncStatus";
+import { salinLog } from "../lib/diagLog";
 
 const WARNA = {
   ok:   { fg: "rgba(255,255,255,.8)", bg: "transparent" },
@@ -23,7 +24,17 @@ export function SyncIndicator({ variant = "inline", onDenied, ...input }) {
   function ketuk(e) {
     e.stopPropagation();
     if (st.key === "ditolak" && onDenied) { onDenied(); return; }
-    alert(`${st.count > 0 ? st.count + " " : ""}${st.label}\n\n${st.title}`);
+    const info = `${st.count > 0 ? st.count + " " : ""}${st.label}\n\n${st.title}`;
+    // Status bermasalah: salin log diagnosa ke clipboard (untuk ditempel ke chat) dan
+    // tawarkan muat ulang SATU KETUKAN (antrean tersimpan di perangkat, aman).
+    if (["macet", "putus", "error"].includes(st.key)) {
+      salinLog(`status=${st.key} antrean=${st.count}`).then(ok => {
+        const muat = window.confirm(`${info}\n\n${ok ? "Log diagnosa sudah disalin ke clipboard — tempelkan ke chat." : "(Log diagnosa gagal disalin.)"}\n\nMuat ulang aplikasi sekarang? Data yang belum terkirim tetap aman dan dikirim setelah dimuat ulang.`);
+        if (muat) window.location.reload();
+      });
+      return;
+    }
+    alert(info);
   }
   return (
     <span role="status" aria-live="polite" onClick={ketuk} title={st.title}
