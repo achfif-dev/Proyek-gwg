@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { Badge, Btn, BulkActionBar, Card, ConfirmDelete, ExportMenu, FilterBar, ImportMenu, Input, Modal, SearchableSelect, StatCard, Table } from "../../components/ui";
 import { TabToko } from "../../features/toko/TabToko";
 import { useDB } from "../../hooks/useDB";
@@ -14,6 +14,7 @@ import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { bangunBarisJurnalKontrol, bangunBarisJurnalPenjualanLuar } from "../../lib/akuntansiHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { urutkanKontrol, bangunIndeksKontrol, saringKontrol } from "../../lib/kontrolFilter";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
 
 function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing, postJurnal, voidJurnal, createdBy }) {
@@ -32,7 +33,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // dipilih (lihat salesPerWilayah). Ref ini menandai kalau admin sudah mengetik/
   // mengubah nama itu sendiri, supaya pindah toko/wilayah tidak menimpa ketikannya.
   const salesManualRef = useRef(false);
-  const [filter, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:initialQuery||"",
+  const [filterLive, setFilter] = usePersistedState("kontrol.filter", { wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:initialQuery||"",
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
@@ -50,6 +51,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // Sales auto-approve lewat 24 jam tanpa sempat ditinjau Admin/Manajer
     // (yang satu-satunya jalur boleh menulis ke modul Piutang).
     piutangBelumTercatat:false });
+  // `filterLive` = nilai yang SEDANG dipilih/diketik (dipakai kolom filter agar langsung
+  // responsif); `filter` = versi "ditunda" yang dipakai semua hitungan berat turunan
+  // (daftar hasil, ringkasan, dropdown rute, dst.). React menyelesaikan render ringan dulu
+  // (dropdown menutup, huruf muncul), baru menghitung ulang daftar di prioritas rendah —
+  // inilah yang menghilangkan jeda saat memilih Wilayah.
+  const filter = useDeferredValue(filterLive);
   const [viewMode, setViewMode] = usePersistedState("kontrol.viewMode", "table"); // table | monthly
   // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
@@ -784,39 +791,13 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     return ids;
   }, [enriched, siklusSegmentsPerWilayah]);
 
-  const data = useMemo(() => enriched.filter(k =>
-    (!filter.wilayahId || k.wilayahId === filter.wilayahId) &&
-    (!filter.ruteId    || k.ruteId    === filter.ruteId) &&
-    (!filter.bulan     || k.tanggal?.startsWith(filter.bulan)) &&
-    (!filter.tanggal   || k.tanggal === filter.tanggal) &&
-    (!filter.dari      || k.tanggal >= filter.dari) &&
-    (!filter.sampai    || k.tanggal <= filter.sampai) &&
-    (!filter.salesPelapor || normTxt(k.salesPelapor) === normTxt(filter.salesPelapor)) &&
-    (!filter.q         || normTxt(k.tokoNama).includes(normTxt(filter.q)) || normTxt(k.toko?.kode).includes(normTxt(filter.q))) &&
-    (!filter.catatanStatus || (filter.catatanStatus==="manual" ? !k.catatanStatus || k.catatanStatus==="manual" : k.catatanStatus===filter.catatanStatus)) &&
-    (filter.minJumlah==="" || filter.minJumlah==null || k.totalTerjual >= Number(filter.minJumlah)) &&
-    (filter.maxJumlah==="" || filter.maxJumlah==null || k.totalTerjual <= Number(filter.maxJumlah)) &&
-    (!filter.kunjunganBerulang || kunjunganBerulangIds.has(k.id))
-  )
-    // ✅ Filter "Setoran Kurang Belum Tercatat Piutang" (lihat komentar di
-    // definisi filter di atas) — diterapkan lewat .filter TERPISAH setelah
-    // yang lain, supaya gampang dibaca sebagai langkah audit tambahan.
-    .filter(k => !filter.piutangBelumTercatat || (
-      k.status==="disetujui" && k.nominalDisetor!=="" && k.nominalDisetor!=null &&
-      Number(k.nominalDisetor) < (k.totalRev||0) && !k.piutangId
-    ))
-    // ✅ FIX (dilaporkan lewat screenshot — urutan tabel beda antara HP admin
-    // yang input & HP super admin, walau datanya identik): dulu tabel ini
-    // tidak diurutkan sama sekali — ikut apa adanya urutan `db.kontrol`
-    // lokal di perangkat masing-masing, yang bisa beda-beda tergantung
-    // urutan data itu diterima/sinkron di device itu (BUKAN urutan
-    // sebenarnya toko itu diinput). Sekarang selalu diurutkan berdasarkan
-    // `createdAt` (waktu SEBENARNYA kontrol itu disimpan) — sama seperti
-    // fix urutan toko di Rekap Harian sebelumnya — supaya urutan yang
-    // tampil SELALU sama persis di perangkat mana pun, sesuai toko yang
-    // pertama kali diinput.
-    .sort((a,b) => (a.createdAt||0)-(b.createdAt||0) || String(a.id).localeCompare(String(b.id)))
-  , [enriched, filter, kunjunganBerulangIds]);
+  // Urutan (createdAt lalu id) & teks ter-normalisasi dihitung SEKALI per perubahan data,
+  // bukan per ketukan. Hasil identik dengan logika lama (diuji: tests/kontrol-filter.test.mjs).
+  const enrichedUrut = useMemo(() => urutkanKontrol(enriched), [enriched]);
+  const indeksKontrol = useMemo(() => bangunIndeksKontrol(enrichedUrut), [enrichedUrut]);
+  const data = useMemo(
+    () => saringKontrol(enrichedUrut, indeksKontrol, filter, kunjunganBerulangIds),
+    [enrichedUrut, indeksKontrol, filter, kunjunganBerulangIds]);
 
   // Daftar nama Sales pelapor yang pernah dipakai (unik, tidak peka huruf besar/kecil)
   // — untuk filter dan saran isian di form.
@@ -2891,7 +2872,8 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
               { key:"statusLabel",  label:"Status" },
               { key:"catatan",      label:"Catatan" },
             ];
-            const kontrolExportData = [
+            // Dibangun HANYA saat tombol Ekspor diklik (lihat ExportMenu) — bukan tiap render.
+            const kontrolExportData = () => [
               ...data.map(row=>({
                 ...row,
                 totalRevFmt: fmtRp(row.totalRev||0),
@@ -3172,22 +3154,22 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         </div>
       )}
       <FilterBar filters={[
-        { key:"q",         label:"Cari Toko",value:filter.q,         placeholder:"Nama atau kode toko..." },
-        { key:"bulan",     label:"Bulan",    value:filter.bulan,     type:"month", placeholder:"2026-06" },
+        { key:"q",         label:"Cari Toko",value:filterLive.q,         placeholder:"Nama atau kode toko..." },
+        { key:"bulan",     label:"Bulan",    value:filterLive.bulan,     type:"month", placeholder:"2026-06" },
         // ✅ Filter Tgl Kontrol: menyaring ke SATU tanggal kunjungan yang
         // persis (berbeda dengan "Bulan" yang menyaring satu bulan penuh) —
         // mempermudah mencari rute yang dikontrol pada tanggal tertentu di
         // bulan yang sama. Lihat juga kartu "Ringkasan Tanggal Kontrol" di
         // bawah untuk melihat tanggal mana saja yang punya entri Kontrol.
-        { key:"tanggal",   label:"Tgl Kontrol", value:filter.tanggal, type:"date" },
+        { key:"tanggal",   label:"Tgl Kontrol", value:filterLive.tanggal, type:"date" },
         // Rentang tanggal (mis. satu perjalanan Sales yang uangnya ditumpuk sampai akhir):
         // dipakai bersama filter Sales/Wilayah/Rute untuk memvalidasi laporan WhatsApp.
-        { key:"dari",      label:"Dari Tgl",   value:filter.dari||"",   type:"date" },
-        { key:"sampai",    label:"Sampai Tgl", value:filter.sampai||"", type:"date" },
-        { key:"salesPelapor", label:"Sales Pelapor", value:filter.salesPelapor||"", options:salesOptsFilter },
-        ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filter.wilayahId, options:wilayahOpts }] : []),
-        { key:"ruteId",    label:"Rute",     value:filter.ruteId,    options:ruteOpts },
-        { key:"catatanStatus", label:"Status Kunjungan", value:filter.catatanStatus,
+        { key:"dari",      label:"Dari Tgl",   value:filterLive.dari||"",   type:"date" },
+        { key:"sampai",    label:"Sampai Tgl", value:filterLive.sampai||"", type:"date" },
+        { key:"salesPelapor", label:"Sales Pelapor", value:filterLive.salesPelapor||"", options:salesOptsFilter },
+        ...(!isSalesRestricted ? [{ key:"wilayahId", label:"Wilayah",  value:filterLive.wilayahId, options:wilayahOpts }] : []),
+        { key:"ruteId",    label:"Rute",     value:filterLive.ruteId,    options:ruteOpts },
+        { key:"catatanStatus", label:"Status Kunjungan", value:filterLive.catatanStatus,
           options:[
             { value:"manual",  label:"Isi Manual (normal)" },
             { value:"tutup",   label:"Toko Tutup" },
