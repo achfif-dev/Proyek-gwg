@@ -40,3 +40,22 @@ TIDAK disetor ke SDK (menghindari menggantung 25 dtk + duplikat); kirim otomatis
 `.info/connected` kembali true.
 **Risiko**: tiap upaya sambung ulang memakai baterai/data sedikit; 30 dtk dipilih supaya
 handshake di sinyal lemah punya waktu. Belum diuji di jaringan nyata.
+
+---
+## Tambahan 3: masih macet ("kirim/timeout", 0 KB/s) — diagnosa + pemulihan satu ketukan
+**Data dari foto**: 12 tertunda, 116 dtk tanpa kemajuan, kendala `[kirim/timeout]`, status BUKAN
+"tak terhubung" (SDK mengira tersambung), kecepatan jaringan 0,00 KB/s, layar terbagi dengan chat.
+Penyebab pastinya BELUM diketahui; yang pasti: tulisan tidak dibalas server sementara `.info/connected` true.
+
+**Perubahan**
+- `lib/diagLog.js` (baru): perekam log (ring buffer 300 baris) — peristiwa aplikasi (connected,
+  goOffline/goOnline, kirim berhenti, visibilitas, online/offline) + log internal SDK Firebase
+  (baru diaktifkan saat timeout pertama, karena berat bila aktif terus).
+- `SyncIndicator.jsx`: mengetuk ikon status macet/putus/gagal → log disalin ke clipboard +
+  konfirmasi "Muat ulang sekarang?" (antrean tersimpan di perangkat).
+- `offlineStore.js`: tulisan yang kena timeout ditandai "terbang" (masih di buffer SDK) dan TIDAK
+  dikirim ulang tiap 10 dtk (sebelumnya menumpuk salinan di buffer SDK); bila SDK membalas
+  terlambat, entri langsung dihapus dari antrean (`onLateOk`).
+- `useDB.js`: jeda putus-sambung default 60 → 30 dtk; pencatatan log; aktifkan log SDK saat timeout.
+- `firebase/init.js`: ekspos `enableLogging`.
+- Test +3 (terbang, balasan terlambat, TTL). Total 84 lulus, 0 gagal, 7 dilewati.
