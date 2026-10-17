@@ -5,6 +5,7 @@ import { idbGet, idbSet, queueWriteMany, queueGetDenied, queueCount, queueRetryD
 import { DB_EMPTY } from "../config/dbEmpty";
 import { loadAppConfig } from "../config/appConfig";
 import { keputusanFlush } from "../lib/syncStatus";
+import { catatApp, aktifkanLogSDK } from "../lib/diagLog";
 import { setTahunKontrolTidakTerlihat, LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
 import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/akuntansiHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
@@ -646,17 +647,20 @@ export function useDB(user) {
   // sedang terputus (menumpuk duplikat) dan (b) memutuskan kapan mempercepat
   // reconnect. Diisi oleh efek `.info/connected` di bawah.
   const terhubungRef = useRef(null);
+  const terbangRef = useRef(new Map()); // tulisan kena timeout yang masih di buffer SDK (lihat drainQueue)
   const terputusSejakRef = useRef(0);
-  const sambungUlangFirebase = useCallback(async (minJeda = 60000) => {
+  const sambungUlangFirebase = useCallback(async (minJeda = 30000) => {
     const t = Date.now();
-    if (t - sambungUlangTerakhirRef.current < minJeda) return false;
+    if (t - sambungUlangTerakhirRef.current < minJeda) { catatApp("putus-sambung dilewati (jeda", minJeda, "ms belum lewat)"); return false; }
     sambungUlangTerakhirRef.current = t;
     try {
       const { db: rtdb, goOffline, goOnline } = firebaseDB || {};
       if (!rtdb || !goOffline || !goOnline) return false;
       console.warn("Tulisan tak dibalas server — putus-sambung koneksi Firebase");
+      catatApp("goOffline");
       goOffline(rtdb);
       await new Promise(r => setTimeout(r, 800));
+      catatApp("goOnline");
       goOnline(rtdb);
       return true;
     } catch (e) { console.warn("Putus-sambung Firebase gagal:", e); return false; }
@@ -671,6 +675,7 @@ export function useDB(user) {
     if (terhubungRef.current !== false || !terputusSejakRef.current) return;
     if (Date.now() - terputusSejakRef.current < 8000) return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    catatApp("dorong sambung: terputus", Math.round((Date.now() - terputusSejakRef.current) / 1000), "dtk");
     sambungUlangFirebase(30000);
   }, [sambungUlangFirebase]);
   const flushWriteQueue = useCallback(async () => {
@@ -720,6 +725,9 @@ export function useDB(user) {
         flushAgainRef.current = false;
         const hasil = await drainQueue(kirim, {
           onProgress: () => refreshPendingCount(),
+          terbang: terbangRef.current,
+          // SDK akhirnya membalas tulisan yang tadi kena timeout → antrean ikut berkurang.
+          onLateOk: (e) => { catatApp("balasan TERLAMBAT diterima", e.path); catatProgres(true); setSendError(null); refreshPendingCount(); },
           // ✅ FIX: perubahan yang ditolak rules TIDAK lagi dibuang dari
           // antrean. Ia ditandai `denied` dan disimpan permanen di
           // IndexedDB sampai user memilih Kirim Ulang / Buang / Simpan
@@ -733,6 +741,8 @@ export function useDB(user) {
         if (hasil.stopped) {
           console.warn("Sinkron tertunda (kemungkinan masih offline):", hasil.error);
           setSendError({ code: hasil.error?.code || "", message: hasil.error?.message || String(hasil.error), at: Date.now() });
+          catatApp("kirim berhenti:", hasil.error?.code || "", hasil.error?.message || String(hasil.error), "| terkirim:", hasil.sent, "| terbang:", hasil.terbang, "| terhubung(.info):", terhubungRef.current);
+          if (isKirimTimeout(hasil.error)) aktifkanLogSDK(firebaseDB);
           // Tak dibalas server padahal dianggap tersambung → putus-sambung koneksi,
           // lalu coba lagi beberapa detik kemudian (tanpa menunggu interval).
           if (isKirimTimeout(hasil.error)) {
@@ -796,14 +806,16 @@ export function useDB(user) {
     if (!user || !firebaseDB) return;
     refreshPendingCount();
     flushWriteQueue();
-    const onOnline = () => flushWriteQueue();
+    const onOnline = () => { catatApp("event browser: online"); flushWriteQueue(); };
+    const onOffline = () => catatApp("event browser: offline");
+    window.addEventListener("offline", onOffline);
     window.addEventListener("online", onOnline);
     // Jaring pengaman tiap 10 dtk (dulu 30 dtk): murah — saat antrean kosong
     // cuma 1x baca IndexedDB lokal — tapi memangkas jeda pemulihan setelah
     // kegagalan sesaat (sinyal naik-turun) jadi sepertiganya.
     const interval = setInterval(() => { flushWriteQueue(); dorongSambung(); }, 10000);
     // Aplikasi kembali ke layar depan: kalau masih terputus, reset jeda sambung.
-    const onVisible = () => { if (document.visibilityState === "visible") dorongSambung(); };
+    const onVisible = () => { catatApp("visibilitas:", document.visibilityState); if (document.visibilityState === "visible") dorongSambung(); };
     document.addEventListener("visibilitychange", onVisible);
     // Begitu socket Firebase BENAR-BENAR tersambung lagi, langsung kirim —
     // event 'online' browser sering datang lebih dulu dari socket yang siap.
@@ -812,6 +824,7 @@ export function useDB(user) {
       const { db: rtdb, ref, onValue } = firebaseDB;
       unsubConn = onValue(ref(rtdb, ".info/connected"), snap => {
         const t = snap.val() === true;
+        catatApp(".info/connected =", t);
         terhubungRef.current = t;
         if (t) { terputusSejakRef.current = 0; flushWriteQueue(); }
         else if (!terputusSejakRef.current) terputusSejakRef.current = Date.now();
@@ -819,6 +832,7 @@ export function useDB(user) {
     } catch { /* tanpa pemicu ini, interval tetap jalan */ }
     return () => {
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisible);
       if (typeof unsubConn === "function") unsubConn();
