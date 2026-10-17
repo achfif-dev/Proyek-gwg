@@ -84,3 +84,38 @@ test("edit baru di path yang sama selama pengiriman TIDAK ikut terhapus (versi b
   assert.ok(hasil.sent >= 2);
   assert.equal(store.map.size, 0); // versi baru dikirim di putaran berikutnya, lalu terhapus
 });
+
+test("timeout → entri 'terbang': TIDAK dikirim ulang (tak menumpuk salinan di buffer SDK)", async () => {
+  const store = buatStore(isi(3));
+  const terbang = new Map();
+  let jumlahKirim = 0;
+  const sendMati = () => { jumlahKirim++; return new Promise(() => {}); };
+  await drainQueue(sendMati, { store, timeoutMs: 30, terbang });
+  assert.equal(jumlahKirim, 3); assert.equal(terbang.size, 3);
+  const h2 = await drainQueue(sendMati, { store, timeoutMs: 30, terbang });
+  assert.equal(jumlahKirim, 3); // tidak ada send() baru
+  assert.equal(h2.terbang, 3); assert.equal(store.map.size, 3);
+});
+
+test("balasan TERLAMBAT dari SDK menghapus entri dari antrean & memanggil onLateOk", async () => {
+  const store = buatStore(isi(2));
+  const terbang = new Map(); const lateOk = [];
+  const penyelesai = [];
+  const send = () => new Promise(res => penyelesai.push(res));
+  const h = await drainQueue(send, { store, timeoutMs: 20, terbang, onLateOk: e => lateOk.push(e.path) });
+  assert.equal(h.stopped, true); assert.equal(store.map.size, 2);
+  penyelesai.forEach(r => r()); // SDK akhirnya membalas (mis. setelah putus-sambung)
+  await tunda(20);
+  assert.equal(store.map.size, 0);
+  assert.equal(lateOk.length, 2); assert.equal(terbang.size, 0);
+});
+
+test("tanda 'terbang' kedaluwarsa setelah TTL → boleh dikirim ulang", async () => {
+  const store = buatStore(isi(1));
+  const terbang = new Map(); let n = 0;
+  const send = () => { n++; return new Promise(() => {}); };
+  await drainQueue(send, { store, timeoutMs: 20, terbang, terbangTtlMs: 40 });
+  await tunda(60);
+  await drainQueue(send, { store, timeoutMs: 20, terbang, terbangTtlMs: 40 });
+  assert.equal(n, 2);
+});
