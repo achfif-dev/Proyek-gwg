@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged,
-  onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline,
+  onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging,
 } from "firebase/database";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithCredential,
@@ -22,7 +22,7 @@ export async function initFirebase() {
     // Tidak ada lagi network fetch di sini — semua modul Firebase sudah
     // ter-bundle sejak build time (lihat import di bagian atas file).
     firebaseApp = initializeApp(FIREBASE_CONFIG);
-    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline };
+    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signInWithCredential, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
