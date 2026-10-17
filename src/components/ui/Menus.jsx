@@ -204,8 +204,11 @@ export function ExportMenu({ data, columns, title, filename, exportData, exportC
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
-  const eData = exportData || data;
+  // `exportData` boleh berupa FUNGSI → dibangun hanya saat tombol ekspor benar-benar
+  // diklik. Sebelumnya pemanggil membangun seluruh array ekspor di SETIAP render
+  // (ribuan baris disalin/diformat tiap ketukan di kolom pencarian) walau menu tidak dibuka.
   const eCols = exportCols || columns;
+  const ambilData = () => (typeof exportData === "function" ? exportData() : (exportData || data));
   return (
     <div ref={ref} style={{ position:"relative", display:"inline-block" }}>
       <Btn variant="secondary" size="sm" icon={Icon.upload} onClick={() => setOpen(!open)}>Ekspor</Btn>
@@ -213,12 +216,12 @@ export function ExportMenu({ data, columns, title, filename, exportData, exportC
         <div style={{ ...menuStyle, background:T.white, border:`1px solid ${T.gray200}`,
           borderRadius:10, boxShadow:"0 8px 24px rgba(0,0,0,.12)", zIndex:200, overflow:"hidden" }}>
           {[
-            { label:"CSV", icon:Icon.rekap, action: () => { exportCSV(eData, eCols, filename); setOpen(false); } },
-            { label:"Excel (.xlsx)", icon:Icon.checkCircle, action: () => { exportExcel(eData, eCols, title, filename); setOpen(false); } },
-            { label:"HTML", icon:Icon.globe, action: () => { exportHTML(eData, eCols, title, filename); setOpen(false); } },
-            { label:"JSON", icon:Icon.kontrol, action: () => { exportJSON(eData, filename); setOpen(false); } },
-            { label:"PDF Landscape", icon:Icon.file, action: () => { exportPDF(eData, eCols, title, filename); setOpen(false); } },
-            { label:"JPG", icon:Icon.image, action: () => { exportJPG(eData, eCols, title, filename); setOpen(false); } },
+            { label:"CSV", icon:Icon.rekap, action: () => { exportCSV(ambilData(), eCols, filename); setOpen(false); } },
+            { label:"Excel (.xlsx)", icon:Icon.checkCircle, action: () => { exportExcel(ambilData(), eCols, title, filename); setOpen(false); } },
+            { label:"HTML", icon:Icon.globe, action: () => { exportHTML(ambilData(), eCols, title, filename); setOpen(false); } },
+            { label:"JSON", icon:Icon.kontrol, action: () => { exportJSON(ambilData(), filename); setOpen(false); } },
+            { label:"PDF Landscape", icon:Icon.file, action: () => { exportPDF(ambilData(), eCols, title, filename); setOpen(false); } },
+            { label:"JPG", icon:Icon.image, action: () => { exportJPG(ambilData(), eCols, title, filename); setOpen(false); } },
           ].map((opt, i) => (
             <button key={i} onClick={opt.action}
               style={{ display:"flex", alignItems:"center", gap:8, width:"100%", padding:"10px 16px", textAlign:"left", border:"none",
