@@ -267,27 +267,49 @@ export function isPermissionDenied(e) {
 // ulang aman karena tulisan bersifat idempoten (set nilai yang sama).
 // `store` bisa disuntik untuk pengujian.
 export const isKirimTimeout = (e) => e?.code === "kirim/timeout";
-const denganTimeout = (fn, ms) => {
-  let t;
-  const kirim = new Promise((res, rej) => { try { res(fn()); } catch (e) { rej(e); } });
-  const batas = new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error("Waktu kirim habis (tidak ada balasan server)"), { code: "kirim/timeout" })), ms); });
-  return Promise.race([kirim, batas]).finally(() => clearTimeout(t));
-};
+const kunciEntri = (e) => `${e.path}|${versiOf(e)}`;
 
-export async function drainQueue(send, { onDenied, onProgress, concurrency = 20, timeoutMs = 25000, store } = {}) {
+// `terbang`: Map kunci→waktu untuk tulisan yang kena timeout TAPI belum selesai
+// (masih ada di buffer SDK Firebase). Selama masih "terbang" (maks `terbangTtlMs`)
+// tulisan itu TIDAK dikirim ulang — sebelumnya tiap putaran retry menambah salinan
+// baru ke buffer SDK (menumpuk selama sinyal buruk). Bila SDK akhirnya membalas
+// (mis. setelah putus-sambung), entri dihapus dari antrean saat itu juga (`onLateOk`).
+export async function drainQueue(send, { onDenied, onProgress, onLateOk, concurrency = 20, timeoutMs = 25000, store, terbang, terbangTtlMs = 120000 } = {}) {
   const st = store || { getAll: queueGetAll, removeMany: queueRemoveManyIfSame, markDenied: queueMarkDenied };
-  const hasil = { sent: 0, denied: 0, stopped: false, error: null };
+  const tb = terbang || new Map();
+  const hasil = { sent: 0, denied: 0, stopped: false, error: null, terbang: 0 };
   const sudah = new Set();
+  const kirimSatu = (e) => {
+    const kunci = kunciEntri(e);
+    const p = new Promise((res, rej) => { try { res(send(e.path, e.value)); } catch (x) { rej(x); } });
+    // Penyelesaian TERLAMBAT (setelah timeout menandai entri "terbang").
+    p.then(
+      () => { if (tb.has(kunci)) { tb.delete(kunci); st.removeMany([e]).then(() => { if (onLateOk) onLateOk(e); }); } },
+      (err) => {
+        if (!tb.has(kunci)) return;
+        tb.delete(kunci);
+        if (isPermissionDenied(err)) st.markDenied(e, err?.message || "Permission denied").then(ok => { if (ok && onDenied) onDenied(e, err?.message || "Permission denied"); });
+      });
+    let t;
+    const batas = new Promise((_, rej) => {
+      t = setTimeout(() => { tb.set(kunci, Date.now()); rej(Object.assign(new Error("Waktu kirim habis (tidak ada balasan server)"), { code: "kirim/timeout" })); }, timeoutMs);
+    });
+    return Promise.race([p, batas]).finally(() => clearTimeout(t));
+  };
   for (let putaran = 0; putaran < 25; putaran++) {
-    const entries = (await st.getAll())
-      .filter(e => !sudah.has(`${e.path}|${versiOf(e)}`))
+    const now = Date.now();
+    for (const [k, ts] of tb) if (now - ts > terbangTtlMs) tb.delete(k);
+    const semua = await st.getAll();
+    const entries = semua
+      .filter(e => !sudah.has(kunciEntri(e)))
+      .filter(e => { if (tb.has(kunciEntri(e))) { hasil.terbang++; return false; } return true; })
       .sort((a, b) => ((a.ts || 0) - (b.ts || 0)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     if (!entries.length) break;
     for (let i = 0; i < entries.length; i += concurrency) {
       const jendela = entries.slice(i, i + concurrency);
-      jendela.forEach(e => sudah.add(`${e.path}|${versiOf(e)}`));
+      jendela.forEach(e => sudah.add(kunciEntri(e)));
       // send() dipanggil SINKRON berurutan di dalam map → urutan terbit = urutan ts.
-      const hs = await Promise.allSettled(jendela.map(e => denganTimeout(() => send(e.path, e.value), timeoutMs)));
+      const hs = await Promise.allSettled(jendela.map(kirimSatu));
       const sukses = [];
       let galat = null;
       for (let k = 0; k < hs.length; k++) {
@@ -309,6 +331,7 @@ export async function drainQueue(send, { onDenied, onProgress, concurrency = 20,
   }
   return hasil;
 }
+
 // ── Penyimpanan lokal, dipecah 2 jalur berdasarkan ukuran tabel ──────────
 // Sebelumnya SETIAP panggilan saveLocalDB() men-JSON.stringify SELURUH
 // `db` (termasuk `toko` & `kontrol`) lalu localStorage.setItem SECARA

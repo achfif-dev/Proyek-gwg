@@ -58,7 +58,7 @@ export function deriveSyncStatus({
       const detik = Math.round((now - sendProgressAt) / 1000);
       return { key: "macet", level: "warn", icon: "warning", spin: false, count: pendingSync,
         label: "tertunda · macet",
-        title: `${pendingSync} perubahan belum terkirim dan belum ada kemajuan selama ${detik} detik. Sistem terus mencoba tiap 30 detik; data aman di perangkat. Jika berlanjut, periksa sinyal atau muat ulang aplikasi.${teksKendala(sendError)}` };
+        title: `${pendingSync} perubahan belum terkirim dan belum ada kemajuan selama ${detik} detik. Sistem terus mencoba (kirim ulang tiap 10 detik, sambung ulang koneksi maks tiap 30 detik); data aman di perangkat. Jika berlanjut, periksa sinyal atau muat ulang aplikasi.${teksKendala(sendError)}` };
     }
     return { key: "mengirim", level: "info", icon: "refresh", spin: true, count: pendingSync,
       label: "Mengirim perubahan...",
