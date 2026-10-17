@@ -86,3 +86,54 @@ test("performa: 20.000 baris, 'cari toko' per ketukan jauh lebih cepat daripada 
   console.log(`# perf 20rb baris x10 ketukan: lama=${lama.toFixed(0)}ms baru=${baru.toFixed(0)}ms`);
   assert.ok(baru < lama, `tidak lebih cepat: lama=${lama} baru=${baru}`);
 });
+
+// ─── tokoPerRute ───────────────────────────────────────────────────────────────
+import { indeksKontrolPerToko, hitungTokoPerRute } from "../src/lib/kontrolFilter.js";
+
+function tokoPerRuteLama(db, enriched, filter) {
+  const rutesToShow = filter.ruteId ? (db.rute||[]).filter(r=>r.id===filter.ruteId)
+    : filter.wilayahId ? (db.rute||[]).filter(r=>r.wilayahId===filter.wilayahId) : (db.rute||[]);
+  return rutesToShow.map(rute => {
+    const wilayah = (db.wilayah||[]).find(w=>w.id===rute.wilayahId);
+    const tokoList = (db.toko||[]).filter(t=>t.ruteId===rute.id && (t.status==="Aktif" || t.status==="Baru")
+      && (!filter.q || normTxt(t.nama).includes(normTxt(filter.q)) || normTxt(t.kode).includes(normTxt(filter.q))))
+      .map(toko => {
+        const entries = enriched.filter(k=>k.tokoId===toko.id && (!filter.bulan || k.tanggal?.startsWith(filter.bulan)));
+        const sudahDikontrolHariIni = enriched.some(k=>k.tokoId===toko.id && k.tanggal===filter.cekTanggal);
+        return { toko, entries, sudahDikontrolHariIni };
+      })
+      .filter(({sudahDikontrolHariIni}) => !filter.hanyaBelumHariIni || !sudahDikontrolHariIni);
+    return { rute, wilayah, tokoList };
+  }).filter(r=>r.tokoList.length>0);
+}
+function buatDb(nWil, nRute, nToko, nKontrol) {
+  const wilayah = Array.from({ length: nWil }, (_, i) => ({ id: `W${i}`, nama: `Wil ${i}` }));
+  const rute = Array.from({ length: nRute }, (_, i) => ({ id: `R${i}`, nama: `Rute ${i}`, wilayahId: `W${i % nWil}` }));
+  const toko = Array.from({ length: nToko }, (_, i) => ({ id: `T${i}`, nama: pilih(namaToko) + " " + i, kode: `T${String(i).padStart(4, "0")}`,
+    ruteId: `R${i % nRute}`, status: pilih(["Aktif", "Aktif", "Baru", "Non-Aktif"]) }));
+  const enriched = Array.from({ length: nKontrol }, (_, i) => ({ id: `K${i}`, tokoId: `T${Math.floor(rnd() * nToko)}`,
+    tanggal: `2026-${String(1 + Math.floor(rnd() * 10)).padStart(2, "0")}-${String(1 + Math.floor(rnd() * 28)).padStart(2, "0")}` }));
+  return { db: { wilayah, rute, toko }, enriched };
+}
+
+test("tokoPerRute baru IDENTIK dengan implementasi lama (isi & urutan) untuk 200 filter acak", () => {
+  const { db, enriched } = buatDb(4, 12, 150, 1200);
+  const perToko = indeksKontrolPerToko(enriched);
+  for (let n = 0; n < 200; n++) {
+    const f = { q: rnd() < 0.6 ? pilih(["b", "ba", "bar", " SINAR ", "t001", "zzz", ""]) : "",
+      wilayahId: rnd() < 0.3 ? pilih(["W0", "W1"]) : "", ruteId: rnd() < 0.2 ? pilih(["R1", "R5"]) : "",
+      bulan: rnd() < 0.3 ? pilih(["2026-03", "2026-10"]) : "", cekTanggal: pilih(["2026-05-10", "2026-03-03", "2026-10-17"]),
+      hanyaBelumHariIni: rnd() < 0.3 };
+    assert.deepEqual(hitungTokoPerRute(db, perToko, f), tokoPerRuteLama(db, enriched, f), `beda untuk ${JSON.stringify(f)}`);
+  }
+});
+
+test("performa tokoPerRute: 3.000 toko × 20.000 kontrol", () => {
+  const { db, enriched } = buatDb(5, 60, 3000, 20000);
+  const f = { q: "ba", cekTanggal: "2026-10-17" };
+  let t0 = performance.now(); tokoPerRuteLama(db, enriched, f); const lama = performance.now() - t0;
+  t0 = performance.now(); const perToko = indeksKontrolPerToko(enriched); hitungTokoPerRute(db, perToko, f); const baru = performance.now() - t0;
+  t0 = performance.now(); hitungTokoPerRute(db, perToko, { ...f, q: "bar" }); const ketukBerikut = performance.now() - t0;
+  console.log(`# perf tokoPerRute: lama=${lama.toFixed(0)}ms baru(+indeks)=${baru.toFixed(0)}ms ketukan berikutnya=${ketukBerikut.toFixed(0)}ms`);
+  assert.ok(baru < lama / 5, `kurang dari 5x lebih cepat: lama=${lama} baru=${baru}`);
+});
