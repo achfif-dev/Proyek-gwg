@@ -61,3 +61,47 @@ export function saringKontrol(rowsUrut, indeks, filter, kunjunganBerulangIds) {
   }
   return hasil;
 }
+
+// ─── Tampilan "View per Rute" (tokoPerRute) ───────────────────────────────────
+// Sebelumnya: untuk SETIAP toko, `enriched.filter(k => k.tokoId === toko.id ...)` DAN
+// `enriched.some(...)` memindai SELURUH kontrol → O(toko × kontrol) (mis. 3.000 × 20.000 =
+// 60 juta pembandingan, dua kali), dihitung ulang tiap ketukan di "Cari Toko" — dan dihitung
+// SELALU walau sedang di tampilan tabel (hasilnya hanya dipakai di tampilan per-rute).
+// Sekarang: kontrol dikelompokkan per toko sekali (indeksKontrolPerToko), lalu tiap toko hanya
+// melihat entrinya sendiri.
+export function indeksKontrolPerToko(enriched) {
+  const m = new Map();
+  for (const k of enriched) {
+    let arr = m.get(k.tokoId);
+    if (!arr) { arr = []; m.set(k.tokoId, arr); }
+    arr.push(k); // urutan `enriched` terjaga
+  }
+  return m;
+}
+
+export function hitungTokoPerRute({ rute, wilayah, toko }, perToko, filter) {
+  const qn = filter.q ? normTxt(filter.q) : "";
+  const rutesToShow = filter.ruteId
+    ? (rute || []).filter(r => r.id === filter.ruteId)
+    : filter.wilayahId
+      ? (rute || []).filter(r => r.wilayahId === filter.wilayahId)
+      : (rute || []);
+  const semuaToko = toko || [];
+  const hasil = [];
+  for (const r of rutesToShow) {
+    const w = (wilayah || []).find(x => x.id === r.wilayahId);
+    const tokoList = [];
+    for (const t of semuaToko) {
+      if (t.ruteId !== r.id) continue;
+      if (!(t.status === "Aktif" || t.status === "Baru")) continue;
+      if (qn && !(normTxt(t.nama).includes(qn) || normTxt(t.kode).includes(qn))) continue;
+      const semua = perToko.get(t.id) || [];
+      const entries = filter.bulan ? semua.filter(k => k.tanggal?.startsWith(filter.bulan)) : semua.slice();
+      const sudahDikontrolHariIni = semua.some(k => k.tanggal === filter.cekTanggal);
+      if (filter.hanyaBelumHariIni && sudahDikontrolHariIni) continue;
+      tokoList.push({ toko: t, entries, sudahDikontrolHariIni });
+    }
+    if (tokoList.length > 0) hasil.push({ rute: r, wilayah: w, tokoList });
+  }
+  return hasil;
+}
