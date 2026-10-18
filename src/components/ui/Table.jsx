@@ -1,7 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { T } from "../../theme/tokens";
 import { Btn, ConfirmDelete } from "./Primitives";
 import { Icon } from "../../theme/icons.jsx";
+import { proporsiBarisSama, AMBANG_BARIS_SAMA } from "../../lib/tableUtils";
 
 export function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, onToggleSelect, onToggleSelectAll, pageSize = 50 }) {
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -19,6 +20,29 @@ export function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, 
   // supaya tidak "nyangkut" di halaman kosong setelah pencarian dipersempit.
   useEffect(() => { setPage(1); }, [data]);
 
+  // RENDER BERTAHAP: setiap hasil filter/pencarian baru biasanya mengganti hampir semua baris yang
+  // tampil, dan membangun 50 baris × puluhan kolom sekaligus memblokir layar (ketikan terasa lemot di HP).
+  // Maka tiap `data` baru dirender dulu BARIS_AWAL baris (cepat), lalu sisanya ±80 ms kemudian di
+  // putaran terpisah sehingga input/ketukan berikutnya tidak tertahan. Pindah halaman tidak terpengaruh.
+  const BARIS_AWAL = 15;
+  const [penuhUntuk, setPenuhUntuk] = useState(null); // `data` yang barisnya sudah dirender penuh
+  const idTampilRef = useRef(new Set());              // id baris yang tampil di render sebelumnya
+  const jumlahData = data ? data.length : 0;
+  const mulaiH = (Math.min(page, Math.max(1, Math.ceil(jumlahData / pageSize))) - 1) * pageSize;
+  const kandidatH = data ? data.slice(mulaiH, mulaiH + pageSize) : [];
+  // Bila sebagian besar baris sama dengan yang sudah tampil → render penuh langsung (tanpa menciut).
+  const mirip = proporsiBarisSama(idTampilRef.current, kandidatH) >= AMBANG_BARIS_SAMA;
+  const penuh = penuhUntuk === data || mirip;
+  useEffect(() => {
+    if (penuh || !data || data.length <= BARIS_AWAL) return;
+    const id = setTimeout(() => setPenuhUntuk(data), 80);
+    return () => clearTimeout(id);
+  }, [data, penuh]);
+  // Catat baris yang kini tampil (setelah commit) untuk perbandingan render berikutnya.
+  useEffect(() => {
+    idTampilRef.current = new Set(kandidatH.slice(0, (penuh || jumlahData <= BARIS_AWAL) ? pageSize : Math.min(pageSize, BARIS_AWAL)).map(r => r.id));
+  });
+
   if (!data || !data.length) return (
     <div style={{ textAlign:"center", padding:40, color:T.gray400, fontSize:13 }}>
       Belum ada data. Klik <b>+ Tambah</b> untuk menambahkan.
@@ -28,13 +52,20 @@ export function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, 
   // "Pilih semua" tetap mengacu ke SELURUH data hasil filter (semua
   // halaman), bukan cuma baris yang sedang tampil di halaman ini — supaya
   // perilaku bulk-select tidak berubah gara-gara pagination.
-  const allChecked = hasSelection && data.length > 0 && data.every(row => (selectedIds||[]).includes(row.id));
-  const someChecked = hasSelection && (selectedIds||[]).some(id => data.find(r=>r.id===id));
+  // Himpunan (Set) → pengecekan O(1); sebelumnya includes()/find() berulang = O(dipilih × seluruh data).
+  const idTerpilih = hasSelection ? new Set(selectedIds || []) : null;
+  const allChecked = hasSelection && data.length > 0 && data.every(row => idTerpilih.has(row.id));
+  let someChecked = false;
+  if (hasSelection && idTerpilih.size > 0) {
+    const idData = new Set(data.map(r => r.id));
+    someChecked = [...idTerpilih].some(id => idData.has(id));
+  }
 
   const totalPages = Math.max(1, Math.ceil(data.length / pageSize));
   const safePage = Math.min(page, totalPages);
   const startIdx = (safePage - 1) * pageSize;
-  const pageData = data.slice(startIdx, startIdx + pageSize);
+  const batasBaris = (penuh || data.length <= BARIS_AWAL) ? pageSize : Math.min(pageSize, BARIS_AWAL);
+  const pageData = data.slice(startIdx, startIdx + batasBaris);
 
   return (
     <>
@@ -71,7 +102,7 @@ export function Table({ columns, data, onEdit, onDelete, rowStyle, selectedIds, 
           </thead>
           <tbody>
             {pageData.map((row, i) => {
-              const isSelected = hasSelection && (selectedIds||[]).includes(row.id);
+              const isSelected = hasSelection && idTerpilih.has(row.id);
               const rowBg = isSelected ? T.greenLt : (rowStyle ? (rowStyle(row) || (i%2===0 ? T.white : T.gray50)) : (i%2===0 ? T.white : T.gray50));
               return (
                 <tr key={row.id||(startIdx+i)} style={{ borderBottom:`1px solid ${T.gray100}`, background:rowBg, transition:"background .1s" }}>

@@ -14,8 +14,12 @@ import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { bangunBarisJurnalKontrol, bangunBarisJurnalPenjualanLuar } from "../../lib/akuntansiHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
-import { urutkanKontrol, bangunIndeksKontrol, saringKontrol } from "../../lib/kontrolFilter";
+import { urutkanKontrol, bangunIndeksKontrol, saringKontrol, indeksKontrolPerToko, hitungTokoPerRute, ringkasanPerTanggal, hitungRingkasanProduk } from "../../lib/kontrolFilter";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
+
+// Array kosong BERSAMA (stabil antar render) supaya useMemo yang bergantung padanya tidak
+// dianggap berubah tiap render.
+const ARR_KOSONG = Object.freeze([]);
 
 function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, salesWilayahId, isManajer, loadedKontrolYears, availableKontrolYears, initialQuery, dataStillSyncing, postJurnal, voidJurnal, createdBy }) {
   const isSalesRestricted = !!salesWilayahId; // true jika Sales dengan wilayah spesifik
@@ -901,7 +905,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // filter audit ini aktif, entri Luar Rute dikosongkan di sini supaya
   // semua ringkasan yang bergantung padanya tetap sinkron dengan filter.
   const adaFilterAuditKunjungan = !!filter.salesPelapor || !!filter.catatanStatus || filter.minJumlah !== "" || filter.maxJumlah !== "" || !!filter.kunjunganBerulang;
-  const luarRuteDataForSummary = adaFilterAuditKunjungan ? [] : luarRuteData;
+  const luarRuteDataForSummary = adaFilterAuditKunjungan ? ARR_KOSONG : luarRuteData;
 
   // ✅ RINGKASAN TANGGAL KONTROL — daftar tanggal (dalam Wilayah/Rute/Bulan
   // yang sedang difilter) yang punya minimal satu entri Kontrol, lengkap
@@ -913,24 +917,9 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // kunjunganBerulang supaya kartu ini tetap menampilkan GAMBARAN PENUH
   // sebulan (semua tanggal yang ada entrinya), bukan cuma tanggal yang
   // kebetulan lolos filter detail lain.
-  const ringkasanTanggalKontrol = useMemo(() => {
-    const map = {};
-    enriched.forEach(k => {
-      if (!k.tanggal) return;
-      if (filter.wilayahId && k.wilayahId !== filter.wilayahId) return;
-      if (filter.ruteId && k.ruteId !== filter.ruteId) return;
-      if (filter.bulan && !k.tanggal.startsWith(filter.bulan)) return;
-      if (!map[k.tanggal]) map[k.tanggal] = { tanggal: k.tanggal, count: 0, ruteMap: {} };
-      const entry = map[k.tanggal];
-      entry.count++;
-      const ruteKey = k.ruteId || `${k.ruteNama}|${k.wilayahNama}`;
-      if (!entry.ruteMap[ruteKey]) entry.ruteMap[ruteKey] = { ruteNama: k.ruteNama || "-", wilayahNama: k.wilayahNama || "-", count: 0 };
-      entry.ruteMap[ruteKey].count++;
-    });
-    return Object.values(map)
-      .map(e => ({ ...e, ruteList: Object.values(e.ruteMap).sort((a, b) => naturalCompare(a.ruteNama, b.ruteNama)) }))
-      .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
-  }, [enriched, filter.wilayahId, filter.ruteId, filter.bulan]);
+  const ringkasanTanggalKontrol = useMemo(
+    () => ringkasanPerTanggal(enriched, { wilayahId: filter.wilayahId, ruteId: filter.ruteId, bulan: filter.bulan }),
+    [enriched, filter.wilayahId, filter.ruteId, filter.bulan]);
 
   // ✅ DIAGNOSTIK CAKUPAN KONTROL — dibuat permanen di dalam app (bukan cek
   // manual sekali-sekali lewat file backup) supaya Admin/Manajer bisa
@@ -1054,33 +1043,14 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   }, [diagnostikBaseList, diagnostikFilterWilayahId, diagnostikFilterRuteId, diagnostikSearchQ, db.rute]);
 
   // Monthly view: tampilkan SEMUA toko di rute terpilih, bukan hanya yang ada entri kontrol
+  // Hanya dipakai di tampilan "View per Rute" → tidak dihitung sama sekali di tampilan tabel.
+  // Kontrol dikelompokkan per toko SEKALI (bukan memindai semua kontrol untuk tiap toko).
+  const kontrolPerTokoEnriched = useMemo(
+    () => (viewMode === "monthly" ? indeksKontrolPerToko(enriched) : null), [viewMode, enriched]);
   const tokoPerRute = useMemo(() => {
-    // Jika filter wilayah/rute aktif, filter sesuai; jika tidak, tampilkan semua rute
-    const rutesToShow = filter.ruteId
-      ? (db.rute||[]).filter(r=>r.id===filter.ruteId)
-      : filter.wilayahId
-        ? (db.rute||[]).filter(r=>r.wilayahId===filter.wilayahId)
-        : (db.rute||[]);
-
-    return rutesToShow.map(rute => {
-      const wilayah = (db.wilayah||[]).find(w=>w.id===rute.wilayahId);
-      // Semua toko aktif DAN baru di rute ini (Non-Aktif disembunyikan otomatis mulai bulan berikutnya)
-      const tokoList = (db.toko||[]).filter(t=>t.ruteId===rute.id && (t.status==="Aktif" || t.status==="Baru")
-        && (!filter.q || normTxt(t.nama).includes(normTxt(filter.q)) || normTxt(t.kode).includes(normTxt(filter.q))))
-        .map(toko => {
-          const entries = enriched.filter(k=>k.tokoId===toko.id && (!filter.bulan || k.tanggal?.startsWith(filter.bulan)));
-          // ✅ Cek apakah toko ini SUDAH ada entri kontrol pada tanggal yang dipilih (filter.cekTanggal)
-          const sudahDikontrolHariIni = enriched.some(k=>k.tokoId===toko.id && k.tanggal===filter.cekTanggal);
-          return { toko, entries, sudahDikontrolHariIni };
-        })
-        // Jika toggle "Hanya Belum Dikontrol (tanggal terpilih)" aktif → sembunyikan toko yang sudah dikontrol di tanggal itu
-        .filter(({sudahDikontrolHariIni}) => !filter.hanyaBelumHariIni || !sudahDikontrolHariIni);
-      return {
-        rute, wilayah,
-        tokoList
-      };
-    }).filter(r=>r.tokoList.length>0);
-  }, [db.rute, db.wilayah, db.toko, filter.ruteId, filter.wilayahId, filter.bulan, filter.q, filter.cekTanggal, filter.hanyaBelumHariIni, enriched]);
+    if (viewMode !== "monthly" || !kontrolPerTokoEnriched) return [];
+    return hitungTokoPerRute({ rute: db.rute, wilayah: db.wilayah, toko: db.toko }, kontrolPerTokoEnriched, filter);
+  }, [viewMode, db.rute, db.wilayah, db.toko, filter, kontrolPerTokoEnriched]);
 
   function getInitialStok(tokoId, produkId) {
     const toko = (db.toko||[]).find(t=>t.id===tokoId);
@@ -2023,14 +1993,22 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // Rute yang cocok dengan filter aktif — sebelumnya hanya menghitung entri
   // Kontrol Bulanan, jadi tidak konsisten dengan Rekap yang sudah menyertakan
   // kontribusi luar rute per rute.
-  const totalRevData = data.reduce((s,k)=>s+k.totalRev,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalRev,0);
-  const totalBonusData = data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalBonus,0);
+  // Semua ringkasan di bawah dihitung SEKALI per perubahan `data`/Luar Rute — bukan di setiap
+  // render (sebelumnya ±2 reduce × jumlah produk × seluruh baris hasil, tiap render).
+  const { totalRevData, totalBonusData, ringkasanProduk, ringkasanUang } = useMemo(() => ({
+    totalRevData: data.reduce((s,k)=>s+k.totalRev,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalRev,0),
+    totalBonusData: data.reduce((s,k)=>s+k.totalBonus,0) + luarRuteDataForSummary.reduce((s,k)=>s+k.totalBonus,0),
+    ringkasanProduk: hitungRingkasanProduk(produkAktif, data, luarRuteDataForSummary),
+    // Ringkasan uang untuk validasi laporan Sales: kontrol toko yang sesuai filter + Penjualan Luar
+    // Rute (form-nya tidak punya kolom setoran/tagihan lama, jadi dianggap diterima penuh = nilai
+    // penjualan, tanpa piutang). Sama dengan kartu di Tab Rekap.
+    ringkasanUang: ringkasanUangKontrol([...data, ...luarRuteDataForSummary]),
+  }), [data, luarRuteDataForSummary, produkAktif]);
   // Ringkasan uang untuk validasi laporan Sales: kontrol toko yang sesuai filter + Penjualan Luar
   // Rute (form-nya tidak punya kolom setoran/tagihan lama, jadi dianggap diterima penuh = nilai
   // penjualan, tanpa piutang). Sama dengan kartu di Tab Rekap. Luar Rute otomatis tidak ikut
   // (luarRuteDataForSummary kosong) kalau filter Sales/status/jumlah/kunjungan berulang aktif,
   // karena penjualan Luar Rute tidak punya data itu — selaras dengan Total Revenue di header.
-  const ringkasanUang = ringkasanUangKontrol([...data, ...luarRuteDataForSummary]);
   const catatanSt = form.catatanStatus||"";
 
   const cols = [
@@ -3301,11 +3279,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
           tidak relevan dengan status kunjungan tsb. */}
       {produkAktif.length > 0 && (data.length > 0 || luarRuteDataForSummary.length > 0) && (
         <div className="gw-stat-grid gw-dash-stats" style={{ marginBottom:14 }}>
-          {produkAktif.map(p => {
-            const totalTerjual = data.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0)
-              + luarRuteDataForSummary.reduce((s,k)=>s+(k[`terjual_${p.id}`]||0),0);
-            const bonusTotal = data.reduce((s,k)=>s+(k[`bonusInput_${p.id}`]!==undefined ? Number(k[`bonusInput_${p.id}`]) : (p.bonus||0)),0)
-              + luarRuteDataForSummary.reduce((s,k)=>s+Number(k[`bonusInput_${p.id}`]||0),0);
+          {ringkasanProduk.map(({ p, totalTerjual, bonusTotal }) => {
             return (
               <StatCard key={p.id}
                 label={p.nama}

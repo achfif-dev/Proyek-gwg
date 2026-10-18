@@ -6,7 +6,7 @@
 //   • sort ulang seluruh hasil (dengan localeCompare pada seri)
 // Sekarang: teks yang dinormalisasi dihitung SEKALI per perubahan data (indeks),
 // urutan dihitung SEKALI (urutkanKontrol), dan kata kunci dinormalisasi sekali per filter.
-import { normTxt } from "./format";
+import { normTxt, naturalCompare } from "./format";
 
 const bandingkanKontrol = (a, b) =>
   (a.createdAt || 0) - (b.createdAt || 0) || String(a.id).localeCompare(String(b.id));
@@ -104,4 +104,56 @@ export function hitungTokoPerRute({ rute, wilayah, toko }, perToko, filter) {
     if (tokoList.length > 0) hasil.push({ rute: r, wilayah: w, tokoList });
   }
   return hasil;
+}
+
+// ─── Ringkasan per tanggal (panel "Tanggal Kontrol") ──────────────────────────
+// Sebelumnya tiap tanggal mengurutkan daftar rutenya dengan naturalCompare (regex per
+// perbandingan) → ratusan ribu panggilan saat Wilayah/Rute/Bulan diganti. Sekarang nama rute
+// unik diurutkan SEKALI → peringkat; tiap tanggal cukup membandingkan angka peringkat.
+// Nama yang dianggap sama oleh naturalCompare diberi peringkat sama (urutan tie tetap stabil).
+export function ringkasanPerTanggal(enriched, { wilayahId, ruteId, bulan } = {}) {
+  const map = {};
+  enriched.forEach(k => {
+    if (!k.tanggal) return;
+    if (wilayahId && k.wilayahId !== wilayahId) return;
+    if (ruteId && k.ruteId !== ruteId) return;
+    if (bulan && !k.tanggal.startsWith(bulan)) return;
+    if (!map[k.tanggal]) map[k.tanggal] = { tanggal: k.tanggal, count: 0, ruteMap: {} };
+    const entry = map[k.tanggal];
+    entry.count++;
+    const ruteKey = k.ruteId || `${k.ruteNama}|${k.wilayahNama}`;
+    if (!entry.ruteMap[ruteKey]) entry.ruteMap[ruteKey] = { ruteNama: k.ruteNama || "-", wilayahNama: k.wilayahNama || "-", count: 0 };
+    entry.ruteMap[ruteKey].count++;
+  });
+  const namaUnik = new Set();
+  Object.values(map).forEach(e => Object.values(e.ruteMap).forEach(r => namaUnik.add(r.ruteNama)));
+  const urut = [...namaUnik].sort(naturalCompare);
+  const peringkat = new Map(); let rk = 0;
+  urut.forEach((nm, i) => { if (i > 0 && naturalCompare(urut[i - 1], nm) !== 0) rk++; peringkat.set(nm, rk); });
+  return Object.values(map)
+    .map(e => ({ ...e, ruteList: Object.values(e.ruteMap).sort((a, b) => peringkat.get(a.ruteNama) - peringkat.get(b.ruteNama)) }))
+    .sort((a, b) => b.tanggal.localeCompare(a.tanggal));
+}
+
+// Ringkasan pcs & bonus per produk (kartu di atas tabel) — rumus SAMA dengan yang dulu
+// dihitung inline di JSX pada setiap render; kini dipanggil di dalam useMemo.
+export function hitungRingkasanProduk(produkAktif, data, luarRute) {
+  // Kunci properti dibentuk SEKALI per produk (dulu template string dibuat di setiap iterasi
+  // baris → alokasi jutaan string kecil & beban GC). Urutan penjumlahan sama persis dengan reduce lama.
+  return produkAktif.map(p => {
+    const kT = `terjual_${p.id}`, kB = `bonusInput_${p.id}`, bonusBawaan = p.bonus || 0;
+    let tData = 0, bData = 0;
+    for (let i = 0; i < data.length; i++) {
+      const k = data[i];
+      tData = tData + (k[kT] || 0);
+      bData = bData + (k[kB] !== undefined ? Number(k[kB]) : bonusBawaan);
+    }
+    let tLuar = 0, bLuar = 0;
+    for (let i = 0; i < luarRute.length; i++) {
+      const k = luarRute[i];
+      tLuar = tLuar + (k[kT] || 0);
+      bLuar = bLuar + Number(k[kB] || 0);
+    }
+    return { p, totalTerjual: tData + tLuar, bonusTotal: bData + bLuar };
+  });
 }

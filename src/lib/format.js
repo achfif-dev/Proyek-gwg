@@ -1,4 +1,7 @@
-export const fmt = (n) => new Intl.NumberFormat("id-ID").format(n||0);
+// Formatter DIBUAT SEKALI: membuat `new Intl.NumberFormat(...)` itu mahal (puluhan µs di desktop,
+// lebih lama di HP) dan dulu dilakukan di SETIAP panggilan fmt() — ribuan kali per render tabel.
+const _formatAngkaId = new Intl.NumberFormat("id-ID");
+export const fmt = (n) => _formatAngkaId.format(n||0);
 export const fmtRp = (n) => "Rp " + fmt(n);
 export function genId(prefix, arr) {
   const nums = (arr||[]).map(r => parseInt(r.id?.replace(/\D/g,""))||0);
@@ -51,20 +54,34 @@ export function normTxt(s) {
 // lalu membandingkan potongan angka SEBAGAI ANGKA (bukan string). Ini supaya
 // "Bklu2" terurut sebelum "Bklu10" (bukan "Bklu1, Bklu10, Bklu11, ..., Bklu2"
 // seperti pada urutan alfabetis biasa).
+// Perbandingan "alami" (Rute 2 < Rute 10). Versi lama menjalankan 2 regex match + banyak
+// regex test + localeCompare(...) berpilihan PADA SETIAP perbandingan; di Tab Kontrol ia
+// dipanggil ratusan ribu kali saat memilih Wilayah (ringkasan per tanggal). Sekarang
+// pemecahan token di-cache per string & pembanding Intl.Collator dipakai ulang — hasil
+// IDENTIK (diuji terhadap implementasi lama di tests/natural-compare.test.mjs).
+const _kolatorAlami = new Intl.Collator("id", { sensitivity: "base" });
+const _cacheToken = new Map();
+function _tokenAlami(v) {
+  const str = String(v || "");
+  let t = _cacheToken.get(str);
+  if (t === undefined) {
+    if (_cacheToken.size > 20000) _cacheToken.clear();
+    const bagian = str.match(/(\d+|\D+)/g) || [];
+    t = bagian.map(x => ({ s: x, n: /^\d+$/.test(x) ? parseInt(x, 10) : null }));
+    _cacheToken.set(str, t);
+  }
+  return t;
+}
 export function naturalCompare(a, b) {
-  const ax = String(a||"").match(/(\d+|\D+)/g) || [];
-  const bx = String(b||"").match(/(\d+|\D+)/g) || [];
+  const ax = _tokenAlami(a), bx = _tokenAlami(b);
   const len = Math.max(ax.length, bx.length);
   for (let i = 0; i < len; i++) {
-    const an = ax[i] ?? "";
-    const bn = bx[i] ?? "";
-    const aIsNum = /^\d+$/.test(an);
-    const bIsNum = /^\d+$/.test(bn);
-    if (aIsNum && bIsNum) {
-      const diff = parseInt(an,10) - parseInt(bn,10);
+    const A = ax[i], B = bx[i];
+    if (A && B && A.n !== null && B.n !== null) {
+      const diff = A.n - B.n;
       if (diff !== 0) return diff;
     } else {
-      const cmp = an.localeCompare(bn, "id", { sensitivity:"base" });
+      const cmp = _kolatorAlami.compare(A ? A.s : "", B ? B.s : "");
       if (cmp !== 0) return cmp;
     }
   }
