@@ -5,6 +5,7 @@ import { fmt, fmtRp, sortProdukByUrutan } from "../../lib/format";
 import { hitungHppPeriode } from "../../lib/neracaHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { Icon } from "../../theme/icons.jsx";
+import { PerhatianToko } from "./PerhatianToko.jsx";
 
 export function MiniBar({ value, max, color }) {
   const pct = max>0 ? Math.round((value/max)*100) : 0;
@@ -181,6 +182,8 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
           pending={dataStillSyncing} pendingTitle="Dihitung dari data kontrol yang masih disinkronkan" />
         <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon={Icon.user} color={T.gray600} />
       </div>
+
+      <PerhatianToko db={db} salesWilayahId={salesWilayahId} dataStillSyncing={dataStillSyncing} />
 
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>

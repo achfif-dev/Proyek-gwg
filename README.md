@@ -212,6 +212,8 @@ Ringkasan kondisi bisnis secara real-time:
 - Bisa diekspor sebagai ringkasan 3 kolom (Kategori/Metrik/Nilai).
 - Untuk user **Sales** dengan wilayah tugas, Dashboard otomatis hanya menampilkan data wilayah tersebut (ditandai badge 🔒).
 
+**Kartu "Perlu Perhatian"** (di bawah kartu statistik): daftar **perkiraan stok habis** per toko/produk dan **toko terlambat dikontrol** (>35 hari). Ini perkiraan dari penjualan antar-kunjungan yang termuat, bukan kepastian; produk dengan data kurang dari 14 hari tidak ditandai. Sales hanya melihat wilayahnya. Aturan lengkap & batasannya: `CHANGES-peringatan-perhatian-toko.md`.
+
 ### 6.2 Master Wilayah
 - Menyimpan daftar wilayah operasional (contoh: Bangkalan Utara, Bangkalan Selatan, Sampang, dst).
 - Kolom: ID, Nama Wilayah, Deskripsi, jumlah Rute, jumlah Toko di wilayah tersebut.
@@ -602,7 +604,7 @@ Proyek-gwg-main/
 │   ├── features/setup/
 │   │   └── SetupWizard.jsx         # Wizard 4 langkah: Branding → Firebase → Super Admin → Selesai
 │   ├── features/                   # Satu folder per tab/menu utama
-│   │   ├── dashboard/  kontrol/  rekap/  toko/  rute/
+│   │   ├── dashboard/  kontrol/  rekap/  toko/  rute/   # dashboard/PerhatianToko.jsx = kartu "Perlu Perhatian"
 │   │   ├── wilayah/  produk/  pengguna/
 │   │   └── bagihasil/
 │   │       ├── TabBagiHasil.jsx     # Sub-nav + Bagi Hasil & Laporan Laba Rugi (SHU)
@@ -627,6 +629,7 @@ Proyek-gwg-main/
 │   │   ├── syncStatus.js           # Logika murni status gabungan ikon sinkronisasi
 │   │   ├── kontrolFilter.js        # Urutan & teks ternormalisasi Tab Kontrol (dihitung sekali per perubahan data)
 │   │   ├── tagihanLamaHelpers.js   # Perhitungan tagihan lama
+│   │   ├── analitikToko.js         # Peringatan Dashboard: toko terlambat dikontrol & perkiraan stok habis (fungsi murni)
 │   │   ├── presenceHelpers.js      # Logika murni status Aktif/Diam
 │   │   ├── remoteConfig.js         # Branding & email Super Admin tersentral lewat Firebase
 │   │   └── backupRestore.js, googleDrive.js, exportUtils.js, importUtils.js, dataHelpers.js, tableUtils.js, format.js, fileSave.js, diagLog.js
