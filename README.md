@@ -35,6 +35,9 @@ Aplikasi ini **white label** — instance bawaan sudah dikonfigurasi untuk **Gen
 16. [Struktur Proyek](#16-struktur-proyek)
 17. [Tips & Troubleshooting](#17-tips--troubleshooting)
 18. [Catatan Keamanan](#18-catatan-keamanan)
+19. [Akuntansi Jurnal (Double-Entry)](#19-akuntansi-jurnal-double-entry)
+20. [Pengujian Otomatis (Tests)](#20-pengujian-otomatis-tests)
+21. [Firebase Rules & Dokumen Pendukung](#21-firebase-rules--dokumen-pendukung)
 
 ---
 
@@ -48,7 +51,9 @@ GWG Super App adalah aplikasi web (Progressive Web App) yang menangani seluruh p
 - Pelacakan **stok** otomatis per toko per produk.
 - **Rekap** penjualan harian/bulanan/kuartal/tahunan.
 - Simulasi **bagi hasil** ke beberapa pihak (pemilik, investor, manajer, dll), lengkap dengan **Neraca Keuangan** (Kas Opname/buku kas, Stock Opname, Amortisasi Aset, rasio BOPO/SHU/ROE) dan simulasi **Laporan Pajak** (UMKM Non-PKP vs PKP).
-- **Manajemen pengguna** dengan 4 level akses (Admin, Manajer, Sales, Viewer).
+- **Manajemen pengguna** dengan 4 level akses (Admin, Manajer, Sales, Viewer), plus status "Aktif/Diam" per pengguna.
+- **Alur persetujuan Sales** — Kontrol Bulanan, Penyesuaian Stok, dan Tarik Toko yang diajukan Sales masuk status "menunggu" dulu, baru memengaruhi stok setelah disetujui Admin/Manajer (atau otomatis setelah 24 jam). Lihat [§6.6](#66-kontrol-bulanan).
+- **Pembukuan berpasangan (double-entry)** berjalan di belakang layar sebagai jurnal umum, dengan Neraca versi Jurnal sebagai pembanding. Lihat [§19](#19-akuntansi-jurnal-double-entry).
 - **Backup otomatis**, restore, dan reset database dengan pengaman berlapis.
 - **Impor/Ekspor** data lewat Excel, CSV, PDF, HTML, JPG, JSON.
 - **Bekerja penuh walau offline/sinyal lemah** — perubahan tersimpan aman di perangkat dan otomatis sinkron begitu online lagi.
@@ -261,8 +266,17 @@ Ini adalah **jantung operasional harian** aplikasi — tempat sales mencatat has
 - **Penjualan Luar Rute** — mencatat penjualan yang terjadi di luar kunjungan rute normal (misalnya penjualan perorangan) tanpa harus mengaitkannya ke toko/rute tertentu, supaya tetap tercatat dalam laporan.
 - **Import Kontrol dari Excel** — unduh template, isi data massal kunjungan, unggah kembali; stok toko yang terdampak otomatis disinkronkan ulang.
 - **Ekspor** — tabel kontrol lengkap dengan ringkasan Total Entri, Total Revenue, Total Bonus, dan Revenue Rata-rata di bagian bawah file ekspor.
-- Data kontrol dipartisi **per tahun** — secara default hanya tahun berjalan & tahun sebelumnya yang otomatis dimuat, untuk menghemat kuota Firebase gratis (lihat [§11](#11-mode-offline--sinkronisasi-otomatis) dan [§12](#12-arsip-data-lama-firebase-storage)).
+- Data kontrol dipartisi **per tahun** — secara default hanya **tahun kalender berjalan** yang otomatis dimuat (`KONTROL_LIVE_YEARS = 1` di `useDB.js`; tahun lain dimuat manual lewat **Muat Data Tahun Lama**), untuk menghemat kuota Firebase gratis (lihat [§11](#11-mode-offline--sinkronisasi-otomatis) dan [§12](#12-arsip-data-lama-google-drive)).
 - Sales dengan **Wilayah Tugas** hanya bisa melihat & menambah kontrol untuk toko-toko di wilayahnya sendiri.
+
+**Alur persetujuan (khusus pengajuan Sales):**
+- **Kontrol Bulanan** yang diinput Sales berstatus **"menunggu"**; yang diinput Admin/Manajer langsung **"disetujui"**.
+- **Penyesuaian Stok** dan **Tarik / Non-Aktifkan Toko** oleh Sales juga berstatus "menunggu" (Tarik Toko memakai koleksi `penarikanToko`).
+- Admin/Manajer meninjau lewat tombol **"Tinjau Pengajuan"** (daftar toko, tanggal, detail produk) lalu menyetujui/menolak. Pengajuan yang tidak ditinjau dalam **24 jam** otomatis disetujui.
+- Stok Master Toko, ceklis "Produk yang Dijual", dan status toko baru berubah **setelah** pengajuan disetujui (manual maupun otomatis).
+- Detail & alasan desain: `CHANGES-persetujuan-sales.md`.
+
+**Performa:** kolom pencarian teks di semua tab yang memakai FilterBar kini menunggu ±250 ms setelah berhenti mengetik, dan ekspor dibangun hanya saat menu Ekspor diklik (lihat `CHANGES-kontrol-filter-cepat.md`).
 
 ### 6.7 Rekap
 Laporan agregat dalam 4 mode periode:
@@ -412,13 +426,16 @@ Aplikasi ini dirancang untuk tetap bisa dipakai penuh oleh sales di lapangan **w
 - Kalau gagal terkirim (offline), perubahan **tetap aman tersimpan** di antrean — tidak hilang walau HP mati/aplikasi ditutup sebelum sempat online lagi.
 - Antrean otomatis dikirim ulang lewat 3 pemicu:
   1. Event `online` dari browser (begitu sinyal kembali).
-  2. Percobaan otomatis setiap 30 detik (jaring pengaman untuk sinyal seluler yang naik-turun).
-  3. Saat aplikasi dibuka/login kembali (menyapu sisa antrean dari sesi sebelumnya).
+  2. Otomatis begitu koneksi Firebase (`.info/connected`) kembali tersambung.
+  3. Percobaan otomatis setiap 10 detik (jaring pengaman untuk sinyal seluler yang naik-turun).
+  4. Saat aplikasi dibuka/login kembali (menyapu sisa antrean dari sesi sebelumnya).
+- Pengiriman memakai **jendela paralel** (hingga 20 tulisan sekaligus) agar input kontrol yang cepat tidak menumpuk di sinyal lambat; tulisan dalam satu jendela tidak atomik (tiap path berdiri sendiri).
+- Jika pengiriman tidak mendapat balasan server (±25 detik), koneksi diputus-sambung otomatis lalu dikirim ulang; antrean yang menggantung >90 detik diambil alih agar tidak macet sampai halaman di-refresh.
 - Edit berkali-kali ke record yang sama saat offline **tidak menumpuk** — hanya versi terakhir yang disimpan & dikirim.
-- Indikator status selalu terlihat di header:
-  - `📴 Offline · N menunggu` — sedang offline, ada N perubahan tersimpan lokal.
-  - `🔄 Mengirim N perubahan...` — baru online lagi, sedang mengirim antrean.
-  - `☁️ Sinkron HH:MM` — semua data sudah tersinkron ke cloud.
+- Indikator sinkronisasi di header (`SyncIndicator`) menggabungkan semua kondisi jadi satu status, urutan prioritas: **ditolak** (oleh Rules) › **offline** › **putus dari server** › **gagal baca** › **macet** (>45 dtk tanpa kemajuan) › **mengirim** › **memuat** › **OK**. Status "OK" hanya muncul jika Firebase benar-benar terhubung (bukan sekadar HP punya sinyal).
+  - Di HP, ikon tetap tampil dengan badge jumlah perubahan tertunda.
+  - **Ketuk ikon** untuk melihat penjelasan; pada status "macet" ditampilkan kode & pesan kendala terakhir, pada status "ditolak" halaman menggulir ke banner penolakan.
+- Perbaikan antrean macet & ikon sinkron **belum seluruhnya teruji di perangkat/RTDB asli** (lihat `CHANGES-antrean-*.md` dan `CHANGES-ikon-sinkronisasi.md` bagian "Belum diuji").
 
 > Ini membuat sales bisa input data kunjungan toko di daerah tanpa sinyal, lanjut ke toko berikutnya, dan begitu HP dapat sinyal lagi (walau sebentar), data otomatis terkirim tanpa perlu aksi manual apa pun.
 
@@ -446,7 +463,7 @@ Data yang diarsipkan **tidak pernah hilang** — hanya dipindah tempat penyimpan
 ## 13. Instalasi & Menjalankan Secara Lokal
 
 ### Prasyarat
-- **Node.js** versi 18 ke atas ([nodejs.org](https://nodejs.org))
+- **Node.js** versi 18 ke atas untuk menjalankan/build aplikasi ([nodejs.org](https://nodejs.org)); **Node 22** dibutuhkan untuk `npm test` (lihat [§20](#20-pengujian-otomatis-tests))
 - **npm** (terpasang otomatis bersama Node.js)
 - Akun Firebase (opsional, hanya jika ingin mode cloud)
 
@@ -541,7 +558,7 @@ Project ini sudah dikonfigurasi dengan **Capacitor** + 3 workflow GitHub Actions
 4. Artifact **`crash-log`**, **`network-log`**, dan **`full-log`** juga ikut diunggah — berguna untuk debug kalau APK-nya nge-hang/crash saat pertama dibuka.
 
 **B.2 — Build APK/AAB release, sudah ditandatangani** (untuk rilis sungguhan / upload ke Play Store)
-1. **Sekali saja** — jalankan workflow **"Generate Release Keystore"** (tab Actions → Run workflow). Hasilnya (keystore + password) muncul di ringkasan run & artifact; simpan sebagai 4 Secrets: `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`. **Jangan jalankan ulang** kalau sudah pernah rilis ke pengguna — keystore baru = HP lama tidak bisa update, harus uninstall dulu.
+1. **Sekali saja** — buat dulu secret `SECRETS_WRITE_TOKEN` (fine-grained PAT dengan izin **Secrets: read/write** pada repo ini), lalu jalankan workflow **"Generate Release Keystore"** (tab Actions → Run workflow). Sejak audit keamanan 28 Sep 2026, workflow **tidak lagi mencetak password ke ringkasan atau mengunggah keystore sebagai artifact** (repo publik); kuncinya langsung disimpan sebagai 4 Secrets: `RELEASE_KEYSTORE_BASE64`, `RELEASE_KEYSTORE_PASSWORD`, `RELEASE_KEY_ALIAS`, `RELEASE_KEY_PASSWORD`. Workflow menolak menimpa keystore yang sudah ada. **Cadangkan keystore & password di tempat aman sendiri** — setelah tersimpan sebagai Secret, nilainya tidak bisa dibaca kembali dari GitHub. **Jangan jalankan ulang** kalau sudah pernah rilis ke pengguna — keystore baru = HP lama tidak bisa update, harus uninstall dulu.
 2. Setelah 4 Secrets itu tersimpan, jalankan workflow **"Build Signed Release APK/AAB"** (`release-build.yml`) lewat tab Actions → Run workflow (bisa isi `versionName` opsional, mis. `1.1.0`).
 3. Workflow otomatis cek kelengkapan 4 Secret keystore → generate `.env` dari Secrets → terapkan branding → build web → decode keystore → verifikasi password/alias cocok → **build APK + AAB signed**.
 4. Unduh dari **Artifacts**: `gwg-superapp-release-apk` (siap install manual) dan `gwg-superapp-release-aab` (format yang diwajibkan Play Console untuk submit ke Play Store).
@@ -564,12 +581,17 @@ Proyek-gwg-main/
 ├── netlify.toml                    # Konfigurasi build & redirect untuk Netlify
 ├── vercel.json                     # Konfigurasi alternatif untuk Vercel
 ├── capacitor.config.json           # Konfigurasi APK Android (di-generate ulang dari .env saat CI build)
+├── firebase-rules/                 # Versi-versi Firebase Realtime Database Rules (lihat §21)
+├── tests/                          # Tes otomatis Node (`npm test`, lihat §20)
+├── tools/bench-kontrol/            # Skrip pengukur kinerja Tab Kontrol (butuh komputer + Node 20+, bukan untuk HP)
+├── CHANGES-*.md, AUDIT-*.md, RANCANGAN-double-entry.md, ARSITEKTUR.md   # Catatan perubahan, audit & rancangan (lihat §21)
 ├── PANDUAN-PENGGUNAAN.md           # Panduan pakai aplikasi sehari-hari (setup awal + tiap fitur, non-teknis)
 ├── PANDUAN-SETUP-WHITE-LABEL.md    # Panduan lengkap + FAQ untuk perusahaan lain (pelengkap §5.B)
 ├── .github/workflows/
 │   ├── android-build.yml           # CI: build APK Android debug otomatis (lihat §15.B.1)
 │   ├── generate-keystore.yml       # CI: generate keystore signing release, jalankan sekali saja (§15.B.2)
-│   └── release-build.yml           # CI: build APK+AAB release yang sudah ditandatangani (§15.B.2)
+│   ├── release-build.yml           # CI: build APK+AAB release yang sudah ditandatangani (§15.B.2)
+│   └── tests.yml                   # CI: jalankan `npm test` (Node 22) tiap push ke main & pull request
 ├── src/
 │   ├── main.jsx                    # Bootstrap React + registrasi service worker (registerSW)
 │   ├── App.jsx                     # Layout utama, header, menu, routing antar tab
@@ -589,16 +611,29 @@ Proyek-gwg-main/
 │   ├── hooks/
 │   │   ├── useDB.js                # Sinkronisasi Firebase + cache lokal + antrean offline
 │   │   ├── useAnalytics.js         # Kalkulasi revenue/rekap/statistik (dipakai Dashboard & Rekap)
-│   │   └── usePersistedState.js    # Filter/pencarian yang tersimpan otomatis lintas refresh
+│   │   ├── usePersistedState.js    # Filter/pencarian yang tersimpan otomatis lintas refresh
+│   │   ├── useFirebaseConnected.js # Membaca status koneksi Firebase (`.info/connected`) untuk indikator sinkron
+│   │   ├── usePresence.js          # Status pengguna Aktif/Diam (heartbeat saat tab terlihat & ada interaksi)
+│   │   ├── useOnlineStatus.js      # Status jaringan perangkat
+│   │   ├── useAppResumeReload.js   # Penyegaran saat aplikasi kembali ke latar depan
+│   │   └── useAuth.js              # Login Google & penentuan role
 │   ├── firebase/
 │   │   ├── config.js               # Baca kredensial Firebase (dari appConfig/.env)
 │   │   └── init.js                 # Inisialisasi Firebase App/Auth/Database
 │   ├── lib/                        # Helper murni: format, export (Excel/PDF/JPG), import, dsb
-│   │   └── neracaHelpers.js        # Kalkulasi Neraca Keuangan: amortisasi, stok sistem, saldo kas, hutang/piutang, nilai persediaan, HPP, kunci periode
+│   │   ├── neracaHelpers.js        # Kalkulasi Neraca Keuangan: amortisasi, stok sistem, saldo kas, hutang/piutang, nilai persediaan, HPP, kunci periode
+│   │   ├── akuntansiHelpers.js     # Inti pembukuan berpasangan: daftar akun, validasi jurnal (debit = kredit), entry & pembalik (§19)
+│   │   ├── offlineStore.js         # Cache IndexedDB + antrean tulis offline (drainQueue jendela-paralel)
+│   │   ├── syncStatus.js           # Logika murni status gabungan ikon sinkronisasi
+│   │   ├── kontrolFilter.js        # Urutan & teks ternormalisasi Tab Kontrol (dihitung sekali per perubahan data)
+│   │   ├── tagihanLamaHelpers.js   # Perhitungan tagihan lama
+│   │   ├── presenceHelpers.js      # Logika murni status Aktif/Diam
+│   │   ├── remoteConfig.js         # Branding & email Super Admin tersentral lewat Firebase
+│   │   └── backupRestore.js, googleDrive.js, exportUtils.js, importUtils.js, dataHelpers.js, tableUtils.js, format.js, fileSave.js, diagLog.js
 │   ├── theme/
 │   │   ├── tokens.js                # Palet warna (dari brand config, fallback hijau/emas GWG)
 │   │   └── logo.js                  # Logo bawaan (base64, fallback kalau belum upload logo custom)
-│   └── components/                 # Komponen UI reusable (Table, Modal, StatCard, FilterBar, dst)
+│   └── components/                 # Komponen UI reusable (Table, Modal, StatCard, FilterBar, SyncIndicator, ErrorBoundary, LoginPage, dst)
 └── public/
     ├── logo.png                    # Logo default + ikon PWA (public/icons/*) — GANTI MANUAL untuk white-label, lihat §5.B Langkah 6
     ├── icons/                      # Ikon PWA (192px, 512px, apple-touch-icon) — GANTI MANUAL juga
@@ -615,6 +650,8 @@ Proyek-gwg-main/
 - **Stok toko terasa tidak sesuai?** Stok dihitung otomatis dari entri Kontrol **terakhir** + Penyesuaian Stok sesudahnya. Gunakan menu **Update Stok** di panel "Daftar Stok Produk per Toko" untuk koreksi manual (stok opname).
 - **Sales tidak bisa lihat wilayah lain?** Itu memang disengaja — atur "Wilayah Tugas" di tab Pengguna jika ingin membuka akses ke wilayah lain, atau kosongkan untuk memberi akses semua wilayah.
 - **Toko baru tidak kunjung jadi "Aktif"?** Status "Baru" otomatis berubah "Aktif" setelah **30 hari** sejak Tanggal Masuk — proses ini berjalan otomatis sekali saat aplikasi dimuat.
+- **Muncul peringatan stok toko tidak dihitung ulang ("dilewati")?** Kontrol terakhir toko itu ada di tahun yang belum dimuat/terarsip, sehingga stok sengaja **tidak ditulis** agar tidak tertimpa 0. Buka **Cadangan/Admin → Muat Data Tahun Lama**, lalu ulangi aksinya (lihat `CHANGES-fix-stok-riwayat-kontrol.md`).
+- **Ikon sinkron kuning/merah atau angka tidak turun?** Ketuk ikonnya — pesan di dalamnya menjelaskan status (offline, putus, macet, atau ditolak Rules). Untuk "macet", catat pesan "Kendala terakhir" sebelum melapor.
 - **Muncul nama wilayah/rute/toko dobel di filter?** Lihat [Pencegahan Data Duplikat](#9-pencegahan-data-duplikat) — gunakan tombol "Gabungkan Duplikat" di tab Master Wilayah.
 - **Tidak sengaja reset/hapus data penting?** Buka menu ☰ → **Backup & Restore**, pilih snapshot sebelum kejadian, klik Restore.
 - **Butuh menaikkan role sendiri tapi tidak ada Admin lagi?** Sistem punya jalur darurat otomatis — login saja, Anda akan sementara diberi akses Admin untuk memperbaikinya.
@@ -637,6 +674,56 @@ Proyek-gwg-main/
 - Proses arsip ke Google Drive selalu **upload dulu → dapat file ID sukses → baru hapus dari database aktif**, sehingga tidak ada risiko kehilangan data walau koneksi terputus di tengah proses.
 - Perubahan data offline disimpan di antrean lokal (IndexedDB) yang **tidak menumpuk versi lama** — hanya versi terakhir per data yang dikirim, mencegah data usang menimpa data terbaru saat kembali online.
 - Data finansial di sub-tab **Neraca Keuangan** (`kasTransaksi`, `asetAmortisasi`, `stockOpname`, `hutangPiutang`, `distribusiLog`, `tutupBuku`, `gudangTransaksi`) memakai izin Firebase Rules yang **sama ketatnya dengan `bagiHasilConfig`** — hanya role Admin & Manajer yang bisa baca/tulis, Sales & Viewer tidak bisa mengaksesnya sama sekali (baik dari tampilan maupun langsung ke database).
+
+- **Audit keamanan 28 Sep 2026** (`CHANGES-audit-keamanan-28sep2026.md`):
+  - Semua teks yang masuk ke HTML cetak/ekspor di-escape (anti-XSS); ekspor CSV memberi awalan `'` pada teks bebas yang diawali `= + - @` (anti CSV injection).
+  - Rules v13: Sales hanya boleh membuat entry `jurnalUmum` yang seimbang, 2–6 baris, dengan `createdBy` = emailnya sendiri, akun terbatas pada daftar putih, dan wilayah sesuai wilayah tugasnya. Klaim pertama `_config/superAdminEmail` dan Admin pertama hanya untuk email Super Admin.
+  - **Keterbatasan yang diketahui:** Rules tidak bisa menghitung ulang nominal dari data produk, sehingga Sales masih bisa memposting entry yang *seimbang tetapi bernominal salah* untuk wilayahnya sendiri. Pencegah penuh butuh rekonsiliasi di sisi Admin atau Cloud Function.
+  - **Instalasi BARU wajib** mengganti kedua placeholder `__SUPER_ADMIN_EMAIL__` di file Rules dengan email Super Admin sebelum Publish; jika lupa, bootstrap gagal tertutup (tidak ada yang bisa mengklaim). Database yang sudah berjalan tidak terpengaruh.
+
+---
+
+## 19. Akuntansi Jurnal (Double-Entry)
+
+Selain perhitungan Neraca/Bagi Hasil yang lama, aplikasi memiliki lapisan **pembukuan berpasangan** yang dibangun bertahap (Fase 1–9, rincian di `CHANGES-fase*.md`, rancangan di `RANCANGAN-double-entry.md`, audit integrasi di `AUDIT-integrasi-neraca-bagihasil-pajak.md`).
+
+- **Jurnal Umum** (`jurnalUmum`) + **Daftar Akun** (`daftarAkun`) + **Saldo Akun Bulanan** (`saldoAkunBulanan`). Setiap entry divalidasi: minimal 2 baris, tidak ada nilai negatif, dan **total debit = total kredit**; entry yang tidak seimbang ditolak.
+- Entry **tidak dihapus** saat diedit/dibatalkan — dibuat entry pembalik (audit trail), sehingga jurnal tumbuh lebih cepat daripada jumlah transaksi.
+- Titik yang memposting otomatis: Kas, Kontrol/Penjualan, Aset & Amortisasi, Hutang/Piutang, Dana Cadangan, serta pada **Tutup Buku**: akrual Beban Usaha dan pengakuan Kewajiban Bagi Hasil (Fase 9).
+- **Status saat ini:** Laporan Neraca yang lama **masih menjadi sumber utama** (Laba Ditahan masih angka sisa, lihat [§6.8.2](#682-neraca-keuangan-lengkap)). Neraca versi Jurnal tampil sebagai kartu perbandingan (collapsed) di sub-tab Laporan Neraca untuk verifikasi. Selisih antara keduanya berarti ada yang perlu diperiksa sebelum migrasi penuh.
+- Pendapatan memakai **historical cost**; kategori Kas "Biaya Operasional" melunasi `2140 Hutang Beban Usaha` (bukan mendebit beban langsung) agar tidak terhitung dua kali.
+- **Ekspor Penuh** dari menu ☰ menyertakan semua tahun beserta jurnal.
+- Backup harian menyimpan salinan penuh database (10 terakhir), sehingga pertumbuhan jurnal ikut terkalikan di kuota RTDB — lihat `CHANGES-optimasi-ukuran-rtdb.md`.
+
+---
+
+## 20. Pengujian Otomatis (Tests)
+
+```bash
+npm test      # node --import ./tests/register.mjs --test tests/*.test.mjs  (butuh Node 22)
+```
+
+- Tanpa dependensi tambahan. Dijalankan otomatis oleh GitHub Actions (`tests.yml`) tiap push ke `main` dan pull request.
+- Cakupan di `tests/`: akuntansi/jurnal, Rules (sintaks, tutup buku, persetujuan, hapus kontrol, hapus penjualan luar), antrean kirim offline, status sinkron, presence, stok riwayat, tagihan lama, filter Kontrol, urutan natural, utilitas tabel, ekspor.
+- Tes Rules memeriksa logika terhadap file di `firebase-rules/`, **bukan** terhadap RTDB sungguhan; perilaku antrean/sinkron juga belum diuji di perangkat asli (lihat bagian "Belum diuji" di tiap `CHANGES-*.md`).
+
+---
+
+## 21. Firebase Rules & Dokumen Pendukung
+
+**Firebase Rules** — folder `firebase-rules/` berisi versi bertahap (v10 → v14, lalu v17). File terbaru di repo: `database_rules_v17_penjualanluar_hapus.json`. Rules aktif di Firebase Console **harus dicek manual** agar sesuai versi yang diharapkan kode; sebagian catatan perubahan mewajibkan publish Rules baru *sebelum* deploy kode.
+
+**Dokumen pendukung:**
+
+| Dokumen | Isi |
+|---|---|
+| `PANDUAN-PENGGUNAAN.md` | Panduan pakai harian (non-teknis) |
+| `PANDUAN-SETUP-WHITE-LABEL.md` | Setup untuk perusahaan lain + FAQ |
+| `SETUP-CAPACITOR.md` | Setup pembungkus Android |
+| `ARSITEKTUR.md` | Gambaran arsitektur |
+| `RANCANGAN-double-entry.md`, `AUDIT-integrasi-neraca-bagihasil-pajak.md` | Rancangan & audit pembukuan berpasangan |
+| `CHANGES-*.md` | Catatan tiap perubahan (masalah, penyebab, perbaikan, yang belum teruji) |
+| `RINGKASAN-PERUBAHAN.md` | Ringkasan optimasi awal (Agustus 2026) |
 
 ---
 
