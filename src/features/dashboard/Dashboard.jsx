@@ -17,7 +17,7 @@ export function MiniBar({ value, max, color }) {
   );
 }
 
-function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
+function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing, bolehAturPeringatan }) {
   const isSalesRestricted = !!salesWilayahId;
   // Filter analytics data berdasarkan wilayah Sales (jika berlaku)
   const { totalRev: allRev, labaBersih: allLaba, marginPctGlobal, metodeHppGlobal,
@@ -183,7 +183,7 @@ function DashboardImpl({ db, analytics, salesWilayahId, dataStillSyncing }) {
         <StatCard label="Pengguna"        value={(db.pengguna||[]).length} sub="terdaftar"                       icon={Icon.user} color={T.gray600} />
       </div>
 
-      <PerhatianToko db={db} salesWilayahId={salesWilayahId} dataStillSyncing={dataStillSyncing} />
+      <PerhatianToko db={db} salesWilayahId={salesWilayahId} dataStillSyncing={dataStillSyncing} bolehAtur={!!bolehAturPeringatan} />
 
       <div className="gw-grid2" style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
         <Card>

@@ -1242,7 +1242,7 @@ export default function GWGSuperApp() {
             mengingat tab mana yang aktif lintas refresh, yang ini menjaga
             state DI DALAM tiap tab tetap utuh saat pindah-pindah tab. */}
         <div style={{ display: activeTab==="dashboard" ? "block" : "none" }}>
-          <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} dataStillSyncing={dataStillSyncing} />
+          <Dashboard db={db} analytics={analytics} salesWilayahId={!isManajer ? currentUserRecord?.wilayahId||"" : ""} dataStillSyncing={dataStillSyncing} bolehAturPeringatan={isManajer} />
         </div>
         {/* ✅ CODE-SPLITTING: 1 Suspense boundary membungkus semua tab yang
             di-lazy-load. Tab yang gagal lolos canAccessTab() tidak pernah

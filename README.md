@@ -212,7 +212,7 @@ Ringkasan kondisi bisnis secara real-time:
 - Bisa diekspor sebagai ringkasan 3 kolom (Kategori/Metrik/Nilai).
 - Untuk user **Sales** dengan wilayah tugas, Dashboard otomatis hanya menampilkan data wilayah tersebut (ditandai badge 🔒).
 
-**Kartu "Perlu Perhatian"** (di bawah kartu statistik): daftar **perkiraan stok habis** per toko/produk dan **toko terlambat dikontrol** (>35 hari). Ini perkiraan dari penjualan antar-kunjungan yang termuat, bukan kepastian; produk dengan data kurang dari 14 hari tidak ditandai. Sales hanya melihat wilayahnya. Aturan lengkap & batasannya: `CHANGES-peringatan-perhatian-toko.md`.
+**Kartu "Perlu Perhatian"** (di bawah kartu statistik): daftar **perkiraan stok habis** per toko/produk dan **toko terlambat dikontrol** (>35 hari). Ini perkiraan dari penjualan antar-kunjungan yang termuat, bukan kepastian; produk dengan data kurang dari 14 hari tidak ditandai. Sales hanya melihat wilayahnya. Admin/Manajer bisa mengubah ambangnya lewat ikon ⚙ di kartu (berlaku untuk semua pengguna; disimpan di `gwg_data/_config/analitikToko`, **butuh Firebase Rules v18**). Aturan lengkap & batasannya: `CHANGES-peringatan-perhatian-toko.md`.
 
 ### 6.2 Master Wilayah
 - Menyimpan daftar wilayah operasional (contoh: Bangkalan Utara, Bangkalan Selatan, Sampang, dst).
@@ -630,6 +630,7 @@ Proyek-gwg-main/
 │   │   ├── kontrolFilter.js        # Urutan & teks ternormalisasi Tab Kontrol (dihitung sekali per perubahan data)
 │   │   ├── tagihanLamaHelpers.js   # Perhitungan tagihan lama
 │   │   ├── analitikToko.js         # Peringatan Dashboard: toko terlambat dikontrol & perkiraan stok habis (fungsi murni)
+│   │   ├── analitikConfig.js       # Baca/tulis ambang kartu "Perlu Perhatian" di Firebase (+ cache lokal)
 │   │   ├── presenceHelpers.js      # Logika murni status Aktif/Diam
 │   │   ├── remoteConfig.js         # Branding & email Super Admin tersentral lewat Firebase
 │   │   └── backupRestore.js, googleDrive.js, exportUtils.js, importUtils.js, dataHelpers.js, tableUtils.js, format.js, fileSave.js, diagLog.js
@@ -714,7 +715,7 @@ npm test      # node --import ./tests/register.mjs --test tests/*.test.mjs  (but
 
 ## 21. Firebase Rules & Dokumen Pendukung
 
-**Firebase Rules** — folder `firebase-rules/` berisi versi bertahap (v10 → v14, lalu v17). File terbaru di repo: `database_rules_v17_penjualanluar_hapus.json`. Rules aktif di Firebase Console **harus dicek manual** agar sesuai versi yang diharapkan kode; sebagian catatan perubahan mewajibkan publish Rules baru *sebelum* deploy kode.
+**Firebase Rules** — folder `firebase-rules/` berisi versi bertahap (v10 → v14, v17, lalu v18). File terbaru di repo: `database_rules_v18_analitik_toko.json` (= v17 + node `_config/analitikToko`: baca semua pengguna login, tulis Admin/Manajer, nilai dibatasi). **Publikasikan v18 sebelum memakai pengaturan kartu "Perlu Perhatian"**; tanpa itu kartu tetap jalan dengan nilai bawaan, hanya penyimpanan pengaturannya yang ditolak. Rules aktif di Firebase Console **harus dicek manual** agar sesuai versi yang diharapkan kode; sebagian catatan perubahan mewajibkan publish Rules baru *sebelum* deploy kode.
 
 **Dokumen pendukung:**
 

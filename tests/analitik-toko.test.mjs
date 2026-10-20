@@ -125,3 +125,38 @@ test("performa: 3.800 toko × 12 kontrol < 1 detik", () => {
   assert.ok(r.restok.length > 0);
   assert.ok(ms < 1000, `terlalu lambat: ${ms}ms`);
 });
+
+// ── Konfigurasi ──────────────────────────────────────────
+import { BATAS, KUNCI_CONFIG, ANALITIK_DEFAULT, validasiAnalitikConfig, bacaAnalitikConfig } from "../src/lib/analitikToko.js";
+
+test("bawaan sendiri lolos validasi (kalau tidak, form tak bisa dibuka lalu disimpan)", () => {
+  assert.equal(validasiAnalitikConfig(ANALITIK_DEFAULT).ok, true);
+});
+test("validasi: angka dari input teks diterima & dibulatkan; kosong/huruf ditolak", () => {
+  const r = validasiAnalitikConfig({ ...ANALITIK_DEFAULT, terlambatHari: "40" });
+  assert.equal(r.ok, true); assert.equal(r.nilai.terlambatHari, 40);
+  assert.equal(validasiAnalitikConfig({ ...ANALITIK_DEFAULT, terlambatHari: "" }).errors.terlambatHari, "Isi dengan angka.");
+  assert.ok(validasiAnalitikConfig({ ...ANALITIK_DEFAULT, segeraHari: "abc" }).errors.segeraHari);
+});
+test("validasi: di luar rentang ditolak, bukan dipotong diam-diam", () => {
+  const r = validasiAnalitikConfig({ ...ANALITIK_DEFAULT, segeraHari: 0, jendelaMaksHari: 9999 });
+  assert.ok(r.errors.segeraHari && r.errors.jendelaMaksHari);
+});
+test("validasi antar-field: terlambat ≥ jarak; segera < jarak; min ≤ target ≤ maks", () => {
+  assert.ok(validasiAnalitikConfig({ ...ANALITIK_DEFAULT, jarakKunjunganHari: 40, terlambatHari: 35 }).errors.terlambatHari);
+  assert.ok(validasiAnalitikConfig({ ...ANALITIK_DEFAULT, segeraHari: 30 }).errors.segeraHari);
+  assert.ok(validasiAnalitikConfig({ ...ANALITIK_DEFAULT, jendelaMinHari: 50, jendelaTargetHari: 20 }).errors.jendelaMinHari);
+  assert.ok(validasiAnalitikConfig({ ...ANALITIK_DEFAULT, jendelaTargetHari: 150, jendelaMaksHari: 100 }).errors.jendelaTargetHari);
+});
+test("bacaAnalitikConfig: null/rusak → bawaan; sebagian valid dipakai; kombinasi melanggar → seluruhnya bawaan", () => {
+  assert.deepEqual(bacaAnalitikConfig(null), ANALITIK_DEFAULT);
+  assert.deepEqual(bacaAnalitikConfig("x"), ANALITIK_DEFAULT);
+  assert.equal(bacaAnalitikConfig({ terlambatHari: 45 }).terlambatHari, 45);
+  assert.equal(bacaAnalitikConfig({ terlambatHari: -5 }).terlambatHari, ANALITIK_DEFAULT.terlambatHari);
+  assert.deepEqual(bacaAnalitikConfig({ jarakKunjunganHari: 60 }), ANALITIK_DEFAULT); // terlambat 35 < 60 → tolak semua
+});
+test("konfigurasi memengaruhi hasil: terlambatHari 20 menandai toko 25 hari, bawaan tidak", () => {
+  const kontrol = [{ id: "1", tokoId: "t1", tanggal: "2026-09-15" }];
+  assert.equal(jalan([tk()], kontrol, "2026-10-10").terlambat.length, 0);
+  assert.equal(jalan([tk()], kontrol, "2026-10-10", { opsi: { terlambatHari: 20, jarakKunjunganHari: 14, segeraHari: 5 } }).terlambat.length, 1);
+});

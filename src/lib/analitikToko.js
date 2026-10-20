@@ -170,3 +170,62 @@ export function hitungPeringatanToko({ toko, kontrol, rute, produk, hariIni, wil
 
   return { terlambat, restok, tanpaRiwayat, produkDataKurang, opsi };
 }
+
+// ─────────────────────────────────────────────
+//  KONFIGURASI (ambang yang bisa diubah Admin/Manajer)
+// ─────────────────────────────────────────────
+// Disimpan di Firebase: gwg_data/_config/analitikToko (lihat analitikConfig.js).
+// BATAS dipakai oleh form, validasi, DAN Firebase Rules v18 (nilai di sana harus sama;
+// ada tes yang menjaga keselarasannya).
+export const BATAS = {
+  jarakKunjunganHari: { min: 7,  max: 120, label: "Jarak kunjungan normal",      satuan: "hari", info: "Seberapa sering tiap toko biasanya dikunjungi." },
+  terlambatHari:      { min: 7,  max: 180, label: "Dianggap terlambat setelah",   satuan: "hari", info: "Harus ≥ jarak kunjungan normal, kalau tidak toko yang sesuai jadwal ikut ditandai." },
+  segeraHari:         { min: 1,  max: 30,  label: "\"Segera habis\" bila sisa",   satuan: "hari", info: "Harus < jarak kunjungan normal." },
+  jendelaMinHari:     { min: 7,  max: 60,  label: "Data minimum agar dipercaya",  satuan: "hari", lanjutan: true, info: "Di bawah ini produk tidak ditandai sama sekali." },
+  jendelaTargetHari:  { min: 14, max: 180, label: "Jendela perhitungan laju",     satuan: "hari", lanjutan: true, info: "Berapa hari ke belakang penjualan dijumlahkan. Pendek = peka tapi berisik." },
+  jendelaMaksHari:    { min: 30, max: 365, label: "Data tertua yang dipakai",     satuan: "hari", lanjutan: true, info: "Penjualan lebih lama dari ini diabaikan." },
+};
+export const KUNCI_CONFIG = Object.keys(BATAS);
+
+const bulat = (v) => (typeof v === "number" && Number.isFinite(v) ? Math.round(v) : NaN);
+
+/**
+ * Validasi KETAT untuk form (sebelum disimpan). Tidak mengubah nilai diam-diam.
+ * @returns {{ok:boolean, errors:Object<string,string>, nilai:object}}
+ */
+export function validasiAnalitikConfig(raw) {
+  const errors = {};
+  const nilai = {};
+  for (const k of KUNCI_CONFIG) {
+    const b = BATAS[k];
+    const v = bulat(typeof raw?.[k] === "string" && raw[k].trim() !== "" ? Number(raw[k]) : raw?.[k]);
+    if (Number.isNaN(v)) { errors[k] = "Isi dengan angka."; continue; }
+    if (v < b.min || v > b.max) { errors[k] = `Harus antara ${b.min}–${b.max} ${b.satuan}.`; continue; }
+    nilai[k] = v;
+  }
+  if (!errors.terlambatHari && !errors.jarakKunjunganHari && nilai.terlambatHari < nilai.jarakKunjunganHari)
+    errors.terlambatHari = "Tidak boleh lebih kecil dari jarak kunjungan normal.";
+  if (!errors.segeraHari && !errors.jarakKunjunganHari && nilai.segeraHari >= nilai.jarakKunjunganHari)
+    errors.segeraHari = "Harus lebih kecil dari jarak kunjungan normal.";
+  if (!errors.jendelaMinHari && !errors.jendelaTargetHari && nilai.jendelaMinHari > nilai.jendelaTargetHari)
+    errors.jendelaMinHari = "Tidak boleh lebih besar dari jendela perhitungan.";
+  if (!errors.jendelaTargetHari && !errors.jendelaMaksHari && nilai.jendelaTargetHari > nilai.jendelaMaksHari)
+    errors.jendelaTargetHari = "Tidak boleh lebih besar dari data tertua yang dipakai.";
+  return { ok: Object.keys(errors).length === 0, errors, nilai };
+}
+
+/**
+ * Pembacaan LONGGAR dari Firebase/cache: data rusak/tidak lengkap tidak boleh merusak kartu.
+ * Nilai yang tidak valid diganti bawaan; bila kombinasi melanggar aturan antar-field,
+ * seluruh konfigurasi jatuh ke bawaan (lebih aman daripada kombinasi setengah-benar).
+ */
+export function bacaAnalitikConfig(raw) {
+  const kandidat = { ...ANALITIK_DEFAULT };
+  if (raw && typeof raw === "object") {
+    for (const k of KUNCI_CONFIG) {
+      const v = bulat(raw[k]);
+      if (!Number.isNaN(v) && v >= BATAS[k].min && v <= BATAS[k].max) kandidat[k] = v;
+    }
+  }
+  return validasiAnalitikConfig(kandidat).ok ? kandidat : { ...ANALITIK_DEFAULT };
+}

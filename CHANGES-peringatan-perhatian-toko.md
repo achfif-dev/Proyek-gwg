@@ -26,7 +26,24 @@ di Dashboard lintas wilayah, dan MENAMBAH perkiraan stok habis (baru).
 - Musiman (Ramadan/Lebaran/akhir tahun) TIDAK dikoreksi: laju memakai penjualan 1–4 bulan terakhir, jadi bisa
   meleset menjelang/seusai musim. Perkiraan, bukan kepastian.
 - Penyesuaian Stok setelah kontrol terakhir mengubah `toko.stok_*` tetapi dianggap berlaku sejak tanggal kontrol terakhir.
-- Ambang (35 hari, 7 hari, dst.) masih nilai bawaan di `ANALITIK_DEFAULT`, belum bisa diubah dari UI.
 - Belum diuji dengan data asli maupun di HP. Tes memakai data sintetis (termasuk 3.800 toko × 12 kontrol < 1 dtk di Node).
   **Cara validasi**: bandingkan daftar di kartu dengan penilaian Anda atas ±20 toko yang Anda kenal.
 - Peringatan slow-moving, tren turun, dan anomali belum dibuat.
+
+## Tahap 2: ambang bisa diatur (Admin/Manajer)
+
+- Ikon ⚙ di kartu membuka panel: jarak kunjungan normal (30), batas terlambat (35), batas "segera" (7), dan —
+  di "Pengaturan lanjutan" — data minimum (14), jendela perhitungan (60), data tertua (120). Ada tombol
+  "Kembalikan bawaan" (menghapus node).
+- Disimpan SATU kali untuk semua pengguna di `gwg_data/_config/analitikToko`. Sales/Viewer ikut membaca (tanpa ⚙).
+  Alasan tidak memakai `bagiHasilConfig`: path itu hanya bisa DIBACA Admin/Manajer (Sales tak bisa), dan
+  `saveConfig` menimpa seluruh objek sehingga kunci tambahan bisa hilang.
+- **Wajib publikasikan `firebase-rules/database_rules_v18_analitik_toko.json`** (= v17 + node baru). Tanpa itu:
+  kartu tetap jalan memakai bawaan/cache terakhir; tombol Simpan menampilkan "Ditolak server…".
+- Validasi dua lapis: form (ketat, tolak — tidak memotong diam-diam; aturan antar-field: terlambat ≥ jarak,
+  segera < jarak, min ≤ target ≤ maks) dan Rules (rentang tiap angka + tolak field asing). Aturan antar-field
+  TIDAK bisa diekspresikan di Rules, jadi hanya dijaga klien; data yang melanggar dibaca sebagai bawaan.
+- Cache lokal `gwg.analitikToko.v1` supaya kartu memakai nilai terakhir saat offline.
+- Perubahan baru: `src/lib/analitikConfig.js`, `tests/rules-analitik-toko.test.mjs`; sentuhan kecil di `App.jsx`
+  (1 prop: `bolehAturPeringatan={isManajer}`) dan `Dashboard.jsx`.
+- **Belum**: pengaturan tidak ikut Ekspor/Backup (berada di `_config`, bukan `shared`); belum diuji di Firebase asli.
