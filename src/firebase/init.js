@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import {
   getDatabase, ref, set, get, onValue, onChildAdded, onChildChanged,
-  onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging, forceLongPolling,
+  onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging, forceLongPolling, update,
 } from "firebase/database";
 import {
   getAuth, GoogleAuthProvider, signInWithPopup, signInWithCredential,
@@ -28,7 +28,7 @@ export async function initFirebase() {
       if (localStorage.getItem("gwg.forceLP") === "1") forceLongPolling();
     } catch { /* abaikan */ }
     firebaseApp = initializeApp(FIREBASE_CONFIG);
-    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging };
+    firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging, update };
     firebaseAuth = { auth: getAuth(firebaseApp), GoogleAuthProvider, signInWithPopup, signInWithCredential, signOut, onAuthStateChanged };
     firebaseReady = true;
     return true;
