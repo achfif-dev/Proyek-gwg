@@ -11,7 +11,7 @@ import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/
 import { isSuperAdminEmail } from "../config/superAdmin";
 import { gdriveUploadJSON, gdriveDownloadJSON, gdriveDeleteFile } from "../lib/googleDrive";
 import { downloadJSON } from "../lib/fileSave";
-import { ambilSnapshotServer, simpanBackupCloud, jalankanReset, jalankanRestore, snapshotKosong } from "../lib/backupRestore";
+import { ambilSnapshotServer, simpanBackupCloud, daftarBackupMeta, ambilIsiBackup, jalankanReset, jalankanRestore, snapshotKosong } from "../lib/backupRestore";
 
 // [TB-DIAG] Logging sementara untuk melacak kenapa record tutupBuku hilang. Filter Console dengan "[TB]".
 const TB = (...a) => { try { console.log("[TB]", new Date().toISOString().slice(11, 23), ...a); } catch { /* noop */ } };
@@ -1203,12 +1203,12 @@ export function useDB(user) {
   // masih cukup untuk jaga-jaga kalau ada kesalahan input/impor yang baru
   // ketahuan beberapa hari kemudian, dan mengurangi separuh pengganda
   // ukuran backup (lihat catatan di backupNow() soal jurnalUmum).
-  const MAX_BACKUPS = 5;
+  const MAX_BACKUPS = 2;
   const HARIAN_TERMASUK_JURNAL = true;
 
   // Objek API Firebase minimal untuk modul lib/backupRestore.js.
   const fbApi = () => {
-    const { db: rtdb, ref, set, get } = firebaseDB;
+    const { db: rtdb, ref, set, get, update } = firebaseDB;
     // Daftar NAMA kunci anak tanpa mengunduh isinya (REST ?shallow=true).
     // Dipakai untuk memangkas backup lama tanpa mengunduh semua snapshot.
     // Gagal/tidak tersedia → null, pemanggil jatuh ke get() biasa.
@@ -1223,7 +1223,7 @@ export function useDB(user) {
         return j && typeof j === "object" ? Object.keys(j) : [];
       } catch { return null; }
     };
-    return { rtdb, ref, set, get, shallowKeys };
+    return { rtdb, ref, set, get, update, shallowKeys };
   };
 
   // ✅ FIX (audit): snapshot cloud sekarang diambil dari SERVER, bukan dari
@@ -1301,35 +1301,46 @@ export function useDB(user) {
   }, [user, db.pengguna]);
   useEffect(() => {
     if (!cloudLoaded || !bolehBackupCloud || autoBackupBerjalanRef.current) return;
-    // SEMENTARA NONAKTIF (22 Okt 2026): backup harian = SATU set() besar yang
-    // memblokir semua tulisan di belakangnya (antrean macet). Aktifkan kembali
-    // lewat localStorage "gwg.autoBackup" = "1" setelah backup dipecah per bagian.
-    try { if (localStorage.getItem("gwg.autoBackup") !== "1") return; } catch { return; }
+    // Matikan darurat: localStorage "gwg.autoBackup" = "0".
+    try { if (localStorage.getItem("gwg.autoBackup") === "0") return; } catch { return; }
     let today;
     try {
       today = new Date().toISOString().slice(0, 10);
       if (localStorage.getItem("gwg_last_autobackup") === today) return;
     } catch { return; }
+    // Backup baru berjalan setelah aplikasi tenang: tunggu 60 dtk, layar terlihat,
+    // dan antrean kirim kosong (maks 5 percobaan). Backup dipotong-potong
+    // (lihat simpanBackupCloud) agar input pengguna tidak tertahan.
     autoBackupBerjalanRef.current = true;
-    backupNow(null, { reason: "auto-harian" })
-      .then(r => { if (r?.cloudOk) { try { localStorage.setItem("gwg_last_autobackup", today); } catch {} } })
-      .finally(() => { autoBackupBerjalanRef.current = false; });
+    let batal = false;
+    (async () => {
+      try {
+        for (let i = 0; i < 5 && !batal; i++) {
+          await new Promise(r => setTimeout(r, 60000));
+          if (batal) return;
+          if (typeof document !== "undefined" && document.visibilityState !== "visible") continue;
+          if ((await queueCount()) > 0) continue;
+          const r = await backupNow(null, { reason: "auto-harian" });
+          if (r?.cloudOk) { try { localStorage.setItem("gwg_last_autobackup", today); } catch {} }
+          return;
+        }
+      } finally { if (!batal) autoBackupBerjalanRef.current = false; }
+    })();
+    return () => { batal = true; autoBackupBerjalanRef.current = false; };
   }, [cloudLoaded, bolehBackupCloud, backupNow]);
 
   // Daftar backup yang tersedia di cloud, untuk ditampilkan di menu Admin.
+  // Hanya METADATA (tanpa isi data) — lihat daftarBackupMeta. Melempar error bila gagal
+  // supaya UI tidak salah menampilkan "belum ada backup".
   const listBackups = useCallback(async () => {
     if (!firebaseDB) return [];
-    try {
-      const { db: rtdb, ref, get } = firebaseDB;
-      const snap = await get(ref(rtdb, `gwg_data/_backups`));
-      const all = snap.val() || {};
-      return Object.entries(all)
-        .map(([key, val]) => ({ key, ts: val?.ts, reason: val?.reason, data: val?.data, jurnalUmumDikecualikan: val?.jurnalUmumDikecualikan }))
-        .sort((a, b) => b.key.localeCompare(a.key));
-    } catch (e) {
-      console.warn("Gagal memuat daftar backup:", e);
-      return [];
-    }
+    return daftarBackupMeta(fbApi());
+  }, []);
+
+  // Isi satu backup (per tabel) — dipanggil hanya saat unduh file / pulihkan.
+  const muatIsiBackup = useCallback(async (key, opsi) => {
+    if (!firebaseDB) throw new Error("Firebase belum aktif");
+    return ambilIsiBackup(fbApi(), key, opsi);
   }, []);
 
   // Restore dari satu snapshot backup. Semua penulisan PER RECORD (lihat
@@ -1899,7 +1910,7 @@ export function useDB(user) {
     return { ok: true };
   }, [db, save]);
 
-  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, lastSendOk, sendProgressAt, sendError, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
+  return { db, addRecord, updateRecord, deleteRecord, resetDB, updateStokToko, save, syncing, lastSync, lastSendOk, sendProgressAt, sendError, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, muatIsiBackup, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, postJurnal, voidJurnal, seedDaftarAkunJikaKosong, archiveJurnalTahun, archivedJurnalYears };
 }
 
 
