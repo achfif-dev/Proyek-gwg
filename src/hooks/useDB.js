@@ -1301,6 +1301,10 @@ export function useDB(user) {
   }, [user, db.pengguna]);
   useEffect(() => {
     if (!cloudLoaded || !bolehBackupCloud || autoBackupBerjalanRef.current) return;
+    // SEMENTARA NONAKTIF (22 Okt 2026): backup harian = SATU set() besar yang
+    // memblokir semua tulisan di belakangnya (antrean macet). Aktifkan kembali
+    // lewat localStorage "gwg.autoBackup" = "1" setelah backup dipecah per bagian.
+    try { if (localStorage.getItem("gwg.autoBackup") !== "1") return; } catch { return; }
     let today;
     try {
       today = new Date().toISOString().slice(0, 10);
