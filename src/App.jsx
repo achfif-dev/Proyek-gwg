@@ -265,6 +265,7 @@ export default function GWGSuperApp() {
   const [backupLoading, setBackupLoading] = useState(false);
   const [backupCloudMsg, setBackupCloudMsg] = useState(null); // { ok, message } — hasil klik "Simpan Snapshot ke Cloud"
   const [restoring, setRestoring] = useState(false); // true selama proses tulis restore berjalan (cegah klik ganda + kasih indikator)
+  const [unduhBackupKey, setUnduhBackupKey] = useState(null); // kunci backup yang isinya sedang diunduh dari cloud
   const [restoreTarget, setRestoreTarget] = useState(null); // snapshot yang mau direstore (perlu konfirmasi)
   const [restoreConfirmText, setRestoreConfirmText] = useState("");
   const [restoreFileError, setRestoreFileError] = useState(""); // error saat baca file backup lokal/Drive
@@ -439,7 +440,7 @@ export default function GWGSuperApp() {
     return () => { cancelled = true; };
   }, [fbReady, user]);
 
-  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, lastSendOk, sendProgressAt, sendError, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
+  const { db, addRecord: rawAddRecord, updateRecord: rawUpdateRecord, deleteRecord: rawDeleteRecord, resetDB: rawResetDB, save: rawSave, syncing, lastSync, lastSendOk, sendProgressAt, sendError, syncError, writeDenied, clearWriteDenied, retryDenied, discardDenied, exportDenied, pindahIdPengguna, eksporPenuh, pendingSync, cloudLoaded, dataStillSyncing, backupNow, listBackups, muatIsiBackup, restoreBackup, deletedUsersRef, listDeletedUsers, restoreDeletedUser, loadedKontrolYears, availableKontrolYears, loadKontrolYear, runKontrolYearMigration, archivedKontrolYears, archiveKontrolYear, viewArchivedKontrolYear, exportArchivedKontrolYear, deleteArchivedKontrolYear, archivedKontrolAgregat, recalcArchivedYearAgregat, totalArsipPcsTerjual, seedDaftarAkunJikaKosong, postJurnal, voidJurnal, archiveJurnalTahun, archivedJurnalYears } = useDB(user);
   const fbConnected = useFirebaseConnected(user);
   const analytics = useAnalytics(db);
 
@@ -577,7 +578,8 @@ export default function GWGSuperApp() {
   const openBackupModal = useCallback(async () => {
     setShowBackup(true);
     setBackupLoading(true);
-    try { setBackupList(await listBackups()); } catch { setBackupList([]); }
+    try { setBackupList(await listBackups()); }
+    catch (e) { setBackupList([]); setBackupCloudMsg({ ok: false, message: `Gagal memuat daftar backup: ${e?.message || e}` }); }
     setBackupLoading(false);
   }, [listBackups]);
 
@@ -1320,7 +1322,7 @@ export default function GWGSuperApp() {
                 setBackupCloudMsg(result.cloudOk
                   ? { ok: true, message: "Snapshot berhasil disimpan ke Firebase." }
                   : { ok: false, message: `Gagal menyimpan ke cloud: ${result.cloudError || "tidak diketahui"}. Salinan lokal tetap tersimpan di perangkat ini.` });
-                setBackupList(await listBackups());
+                try { setBackupList(await listBackups()); } catch { /* daftar gagal dimuat; snapshot tetap tersimpan */ }
                 setBackupLoading(false);
               }}>
                 {backupLoading ? "Menyimpan..." : "Simpan Snapshot ke Cloud (Firebase)"}
@@ -1661,7 +1663,13 @@ export default function GWGSuperApp() {
                       <div style={{ fontSize:11, color:T.gray400 }}>{b.reason || "—"} · {b.ts ? new Date(b.ts).toLocaleString("id-ID") : "-"}</div>
                     </div>
                     <div style={{ display:"flex", gap:6 }}>
-                      <Btn size="sm" variant="secondary" icon={Icon.download} onClick={() => downloadJSON(`gwg_backup_${b.key}.json`, b)} />
+                      <Btn size="sm" variant="secondary" icon={unduhBackupKey === b.key ? Icon.refresh : Icon.download} disabled={!!unduhBackupKey}
+                        onClick={async () => {
+                          setUnduhBackupKey(b.key);
+                          try { const data = await muatIsiBackup(b.key); await downloadJSON(`gwg_backup_${b.key}.json`, { ...b, data }); }
+                          catch (e) { alert("Gagal mengunduh isi backup dari server: " + (e?.message || e)); }
+                          setUnduhBackupKey(null);
+                        }} />
                       <Btn size="sm" variant="danger" onClick={() => { setRestoreTarget(b); setRestoreConfirmText(""); }}>Pulihkan</Btn>
                     </div>
                   </div>
@@ -1710,7 +1718,11 @@ export default function GWGSuperApp() {
                 onClick={async ()=>{
                   if (!isAdmin || restoreConfirmText.trim().toUpperCase() !== "PULIHKAN" || restoring) return;
                   setRestoring(true);
-                  const result = await restoreBackup(restoreTarget.data);
+                  let isiBackup;
+                  try { isiBackup = await muatIsiBackup(restoreTarget.key); }
+                  catch (e) { setRestoring(false); alert("Restore DIBATALKAN: gagal membaca isi backup dari server (" + (e?.message || e) + "). Data tidak diubah."); return; }
+                  if (!isiBackup || Object.keys(isiBackup).length === 0) { setRestoring(false); alert("Restore DIBATALKAN: isi backup kosong atau tidak terbaca. Data tidak diubah."); return; }
+                  const result = await restoreBackup(isiBackup);
                   setRestoring(false);
                   setRestoreTarget(null);
                   setRestoreConfirmText("");
