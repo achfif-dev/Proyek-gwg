@@ -21,12 +21,11 @@ export async function initFirebase() {
   try {
     // Tidak ada lagi network fetch di sini — semua modul Firebase sudah
     // ter-bundle sejak build time (lihat import di bagian atas file).
-    // Paksa transport long-polling (HTTP) alih-alih WebSocket. Gejala yang diatasi:
-    // `.info/connected` = true tetapi tulisan tak pernah di-ACK ([kirim/timeout]).
-    // Harus dipanggil SEBELUM getDatabase(). Matikan lewat localStorage
-    // "gwg.forceLP" = "0" jika ingin kembali ke WebSocket.
+    // Long-polling HANYA bila diminta eksplisit (localStorage "gwg.forceLP" = "1").
+    // Default WebSocket: long-polling mengirim data dalam potongan ~1,8 KB sehingga
+    // tulisan besar jauh lebih lambat. Harus dipanggil SEBELUM getDatabase().
     try {
-      if (localStorage.getItem("gwg.forceLP") !== "0") forceLongPolling();
+      if (localStorage.getItem("gwg.forceLP") === "1") forceLongPolling();
     } catch { /* abaikan */ }
     firebaseApp = initializeApp(FIREBASE_CONFIG);
     firebaseDB = { db: getDatabase(firebaseApp), ref, set, get, onValue, onChildAdded, onChildChanged, onChildRemoved, off, onDisconnect, serverTimestamp, remove, goOffline, goOnline, enableLogging };
