@@ -95,24 +95,103 @@ export async function ambilSnapshotServer(fb, { termasukJurnal = false } = {}) {
   return data;
 }
 
-// Simpan snapshot ke cloud dalam SATU tulisan (atomik), lalu pangkas yang
-// paling lama (kecuali yang baru ditulis). Daftar kunci diambil lewat
-// `fb.shallowKeys` (hanya nama kunci, TANPA mengunduh isi semua snapshot);
-// kalau tidak tersedia/gagal, jatuh ke get() biasa.
-export async function simpanBackupCloud(fb, snapshot, key, maxBackups = 5) {
-  await fb.set(fb.ref(fb.rtdb, `gwg_data/_backups/${key}`), snapshot);
-  let keys = null;
-  if (typeof fb.shallowKeys === "function") keys = await fb.shallowKeys("gwg_data/_backups");
-  if (!Array.isArray(keys)) {
-    const semua = (await fb.get(fb.ref(fb.rtdb, "gwg_data/_backups"))).val();
-    keys = semua ? Object.keys(semua) : [];
+// ── SIMPAN BACKUP KE CLOUD — DIPECAH JADI POTONGAN KECIL ─────────────
+// Sebelumnya: SATU set() ~9 MB. Di RTDB tulisan diproses berurutan per koneksi,
+// jadi tulisan raksasa itu menahan SEMUA input di belakangnya (antrean macet),
+// dan tiap putus-sambung mengulangnya dari nol. Sekarang: potongan ≤ ~200 KB,
+// dikirim satu per satu (await) dengan jeda singkat, sehingga input pengguna
+// bisa menyelip di antara potongan.
+// Bentuk data di cloud TETAP SAMA (_backups/{kunci}/data/{tabel}/{indeks}) —
+// pembaca lama (daftar backup & restore) tidak perlu diubah.
+// Kelengkapan: kunci dikosongkan dulu, metadata (ts, reason, versi, ...) ditulis
+// PALING AKHIR. Backup tanpa `ts` = belum lengkap → diabaikan dan dibersihkan.
+export const BATAS_POTONGAN_BYTE = 200000;
+const tunggu = (ms) => new Promise(r => setTimeout(r, ms));
+
+// Bagi array/objek jadi daftar peta { kunci: nilai } berukuran ≤ batas (perkiraan).
+export function bagiPotongan(nilai, batas = BATAS_POTONGAN_BYTE) {
+  const entri = Array.isArray(nilai) ? nilai.map((v, i) => [String(i), v]) : Object.entries(nilai || {});
+  const hasil = [];
+  let cur = {}, ukuran = 0, n = 0;
+  for (const [k, v] of entri) {
+    if (v === undefined || v === null) continue;
+    const u = JSON.stringify(v).length + k.length + 6;
+    if (n > 0 && ukuran + u > batas) { hasil.push(cur); cur = {}; ukuran = 0; n = 0; }
+    cur[k] = v; ukuran += u; n++;
   }
-  keys = [...keys].sort();
-  const lebih = keys.length - maxBackups;
-  if (lebih > 0) {
-    const hapus = keys.filter(k => k !== key).slice(0, lebih);
-    await Promise.all(hapus.map(k => fb.set(fb.ref(fb.rtdb, `gwg_data/_backups/${k}`), null)));
+  if (n > 0) hasil.push(cur);
+  return hasil;
+}
+
+function denganTimeout(promise, ms, label) {
+  let t;
+  const batas = new Promise((_, rej) => { t = setTimeout(() => rej(Object.assign(new Error(`Backup berhenti: ${label} tidak dibalas server dalam ${Math.round(ms / 1000)} detik`), { code: "backup/timeout" })), ms); });
+  return Promise.race([promise, batas]).finally(() => clearTimeout(t));
+}
+
+export async function simpanBackupCloud(fb, snapshot, key, maxBackups = 5, { jedaMs = 150, timeoutMs = 90000, batas = BATAS_POTONGAN_BYTE, onProgress } = {}) {
+  const { data = {}, ...meta } = snapshot || {};
+  const akar = `gwg_data/_backups/${key}`;
+  const R = (sub) => fb.ref(fb.rtdb, sub ? `${akar}/${sub}` : akar);
+
+  await denganTimeout(fb.set(R(""), null), timeoutMs, "pengosongan backup");
+  let nomor = 0;
+  for (const [tabel, nilai] of Object.entries(data)) {
+    if (nilai === null || nilai === undefined || typeof nilai !== "object") {
+      if (nilai !== null && nilai !== undefined) await denganTimeout(fb.set(R(`data/${tabel}`), nilai), timeoutMs, tabel);
+      continue;
+    }
+    for (const potongan of bagiPotongan(nilai, batas)) {
+      await denganTimeout(fb.update(R(`data/${tabel}`), potongan), timeoutMs, `${tabel} (potongan ${nomor + 1})`);
+      nomor++;
+      if (onProgress) onProgress({ tabel, nomor });
+      if (jedaMs) await tunggu(jedaMs);
+    }
   }
+  const metaBersih = Object.fromEntries(Object.entries(meta).filter(([, v]) => v !== undefined));
+  await denganTimeout(fb.update(R(""), metaBersih), timeoutMs, "metadata backup");
+
+  // Pangkas: backup tak lengkap (tanpa ts) dihapus; sisanya dipertahankan maxBackups terbaru.
+  // Tanpa shallowKeys → lewati (JANGAN mengunduh semua snapshot hanya untuk memangkas).
+  const keys = typeof fb.shallowKeys === "function" ? await fb.shallowKeys("gwg_data/_backups") : null;
+  if (!Array.isArray(keys)) return;
+  const lengkap = [], rusak = [];
+  for (const k of [...keys].sort()) {
+    if (k === key) { lengkap.push(k); continue; }
+    const ts = (await fb.get(fb.ref(fb.rtdb, `gwg_data/_backups/${k}/ts`))).val();
+    (ts ? lengkap : rusak).push(k);
+  }
+  const lebih = lengkap.length - maxBackups;
+  const hapus = [...rusak, ...(lebih > 0 ? lengkap.filter(k => k !== key).slice(0, lebih) : [])];
+  await Promise.all(hapus.map(k => fb.set(fb.ref(fb.rtdb, `gwg_data/_backups/${k}`), null)));
+}
+
+// ── BACA BACKUP DARI CLOUD (hemat: tidak mengunduh semua snapshot) ─────
+// Daftar: hanya metadata kecil (ts, reason, ...) per kunci — TANPA isi data.
+// Sebelumnya get() seluruh _backups (≈ 9 MB × jumlah backup) tiap menu dibuka.
+export async function daftarBackupMeta(fb) {
+  const keys = typeof fb.shallowKeys === "function" ? await fb.shallowKeys("gwg_data/_backups") : null;
+  if (!Array.isArray(keys)) throw new Error("daftar backup tidak dapat dibaca (koneksi atau izin)");
+  const baca = async (k, f) => (await fb.get(fb.ref(fb.rtdb, `gwg_data/_backups/${k}/${f}`))).val();
+  const hasil = await Promise.all(keys.map(async (key) => {
+    const [ts, reason, jurnalUmumDikecualikan] = await Promise.all([baca(key, "ts"), baca(key, "reason"), baca(key, "jurnalUmumDikecualikan")]);
+    return { key, ts, reason, jurnalUmumDikecualikan };
+  }));
+  return hasil.filter(b => b.ts).sort((a, b) => b.key.localeCompare(a.key)); // tanpa ts = belum lengkap
+}
+
+// Isi satu backup, diunduh PER TABEL (berurutan) hanya saat dibutuhkan
+// (unduh file / pulihkan). Hasil = bentuk `data` yang sama seperti sebelumnya.
+export async function ambilIsiBackup(fb, key, { onProgress } = {}) {
+  const dasar = `gwg_data/_backups/${key}/data`;
+  const tabel = typeof fb.shallowKeys === "function" ? await fb.shallowKeys(dasar) : null;
+  if (!Array.isArray(tabel)) return (await fb.get(fb.ref(fb.rtdb, dasar))).val() || {};
+  const data = {};
+  for (const t of tabel) {
+    data[t] = (await fb.get(fb.ref(fb.rtdb, `${dasar}/${t}`))).val();
+    if (onProgress) onProgress(t);
+  }
+  return data;
 }
 
 // ── RESET ───────────────────────────────────────────────────────────
