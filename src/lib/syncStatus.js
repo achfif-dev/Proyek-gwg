@@ -78,3 +78,19 @@ export function deriveSyncStatus({
     label: terbaru ? `Sinkron ${terbaru}` : "Terhubung",
     title: `Terhubung ke server.${terima ? ` Data terakhir diterima ${terima}.` : ""}${kirim ? ` Perubahan terakhir terkirim ${kirim}.` : ""}` };
 }
+
+// Pelindung MUAT AWAL: kapan hasil dari server boleh MENIMPA salinan lokal (toko/kontrol).
+// Latar belakang: listener per-child tidak punya sinyal "selesai"; aplikasi menganggap muat
+// awal selesai bila aliran data diam 0,9 dtk atau 12 dtk tanpa data. Saat sinyal hilang/sangat
+// lambat, itu salah dikira "server kosong/hanya sedikit" lalu salinan lokal (dan IndexedDB)
+// ikut tertimpa. Keputusan:
+//  • "tahan"  → jangan timpa; pakai salinan lokal dulu, coba lagi nanti
+//  • "terima" → timpa dengan data server (perilaku lama)
+// Tak terhubung → selalu "tahan". Terhubung tetapi hasil kosong/menyusut tajam dibanding lokal
+// → "tahan" sampai koneksi stabil `stabilMs` (data benar-benar sedikit/kosong di server).
+export function keputusanMuatAwal({ terhubung, jumlahBaru, jumlahLokal, lamaTerhubungMs = 0, ambang = 0.8, stabilMs = 45000 }) {
+  if (!terhubung) return "tahan";
+  if (!(jumlahLokal > 0)) return "terima";
+  const menyusut = jumlahBaru === 0 || jumlahBaru < jumlahLokal * ambang;
+  return menyusut && lamaTerhubungMs < stabilMs ? "tahan" : "terima";
+}

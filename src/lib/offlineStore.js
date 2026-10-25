@@ -274,14 +274,18 @@ const kunciEntri = (e) => `${e.path}|${versiOf(e)}`;
 // tulisan itu TIDAK dikirim ulang — sebelumnya tiap putaran retry menambah salinan
 // baru ke buffer SDK (menumpuk selama sinyal buruk). Bila SDK akhirnya membalas
 // (mis. setelah putus-sambung), entri dihapus dari antrean saat itu juga (`onLateOk`).
-export async function drainQueue(send, { onDenied, onProgress, onLateOk, concurrency = 20, timeoutMs = 25000, store, terbang, terbangTtlMs = 120000 } = {}) {
+export async function drainQueue(send, { onDenied, onProgress, onLateOk, concurrency = 20, timeoutMs = 25000, store, terbang, terbangTtlMs = 120000, onLog } = {}) {
   const st = store || { getAll: queueGetAll, removeMany: queueRemoveManyIfSame, markDenied: queueMarkDenied };
   const tb = terbang || new Map();
   const hasil = { sent: 0, denied: 0, stopped: false, error: null, terbang: 0 };
   const sudah = new Set();
+  const log = (...a) => { if (onLog) { try { onLog(...a); } catch { /* log tidak boleh mengganggu kirim */ } } };
   const kirimSatu = (e) => {
     const kunci = kunciEntri(e);
+    const t0 = Date.now();
+    log("set MULAI", e.path);
     const p = new Promise((res, rej) => { try { res(send(e.path, e.value)); } catch (x) { rej(x); } });
+    p.then(() => log("set ACK", e.path, Date.now() - t0, "ms"), (err) => log("set GAGAL", e.path, Date.now() - t0, "ms", err?.code || "", err?.message || ""));
     // Penyelesaian TERLAMBAT (setelah timeout menandai entri "terbang").
     p.then(
       () => { if (tb.has(kunci)) { tb.delete(kunci); st.removeMany([e]).then(() => { if (onLateOk) onLateOk(e); }); } },
