@@ -5,7 +5,8 @@ import { idbGet, idbSet, queueWriteMany, queueGetDenied, queueCount, queueRetryD
 import { DB_EMPTY } from "../config/dbEmpty";
 import { loadAppConfig } from "../config/appConfig";
 import { keputusanFlush } from "../lib/syncStatus";
-import { catatApp, aktifkanLogSDK } from "../lib/diagLog";
+import { catatApp, aktifkanLogSDK, mulaiDiagAwal } from "../lib/diagLog";
+import { keputusanMuatAwal } from "../lib/syncStatus";
 import { setTahunKontrolTidakTerlihat, LIST_TABLES, arrToMap, mapToArr, kontrolYearOf, encodeEmailKey, decodeEmailKey, hitungAgregatTahunKontrol } from "../lib/dataHelpers";
 import { DEFAULT_DAFTAR_AKUN, buatEntryJurnal, buatEntryPembalik } from "../lib/akuntansiHelpers";
 import { isSuperAdminEmail } from "../config/superAdmin";
@@ -46,6 +47,9 @@ export function useDB(user) {
     });
     return () => { cancelled = true; };
   }, []);
+  // Salinan terkini `db` untuk pelindung muat awal (dibaca dari callback listener).
+  const dbRef = useRef(db);
+  dbRef.current = db;
   const [syncing, setSyncing] = useState(false);
   const [lastSync, setLastSync] = useState(null);
   const [syncError, setSyncError] = useState(null);
@@ -272,6 +276,32 @@ export function useDB(user) {
         }
       };
 
+      // ── Pelindung muat awal (toko & kontrol) ──
+      // Kasus nyata: sinyal hilang/sangat lambat saat app memuat → aliran data diam/kosong
+      // dikira "server kosong" → db.toko/db.kontrol dan IndexedDB TERTIMPA kosong/sebagian,
+      // sehingga tidak bisa input kontrol. Selama tak terhubung (atau hasil kosong/menyusut
+      // tajam sebelum koneksi stabil 45 dtk) salinan lokal DIPERTAHANKAN. Lihat keputusanMuatAwal.
+      const muat = { aktif: false, terhubung: false, sejak: 0, pernahPutus: false, pendengar: new Set() };
+      muat.putuskan = (jumlahBaru, jumlahLokal) => keputusanMuatAwal({
+        terhubung: muat.aktif ? muat.terhubung : true, // pemantau gagal dipasang → perilaku lama
+        jumlahBaru, jumlahLokal,
+        lamaTerhubungMs: muat.terhubung ? Date.now() - muat.sejak : 0,
+      });
+      try {
+        const uConn = onValue(ref(rtdb, ".info/connected"), snap => {
+          const t = snap.val() === true;
+          if (t) {
+            muat.terhubung = true; muat.sejak = Date.now();
+            muat.pendengar.forEach(p => { try { p(muat.pernahPutus); } catch { /* abaikan */ } });
+          } else {
+            if (muat.terhubung) muat.pernahPutus = true;
+            muat.terhubung = false;
+          }
+        });
+        muat.aktif = true;
+        if (typeof uConn === "function") unsubs.push(uConn);
+      } catch { /* tanpa pemantau → perilaku lama */ }
+
       paths.forEach(key => {
         const r = ref(rtdb, `gwg_data/shared/${key}`);
 
@@ -301,18 +331,29 @@ export function useDB(user) {
             if (kontrolYearUnsubsRef.current[year]) return; // sudah aktif
             const yr = ref(rtdb, `gwg_data/shared/kontrol/${year}`);
             kontrolByYearRef.current[year] = kontrolByYearRef.current[year] || {};
-            let settleTimer = null, postSettleTimer = null, firstBatchDone = false;
+            let settleTimer = null, postSettleTimer = null, cekUlang = null, firstBatchDone = false;
+            const cobaTerima = () => {
+              if (firstBatchDone) return;
+              const baru = Object.values(kontrolByYearRef.current).reduce((n, m) => n + Object.keys(m).length, 0);
+              const lokal = (dbRef.current?.kontrol || []).length;
+              if (muat.putuskan(baru, lokal) === "tahan") {
+                catatApp("muat awal kontrol ditahan (salinan lokal dipertahankan): server", baru, "lokal", lokal);
+                if (countTowardBoot) markLoadedAndFlush("kontrol"); // app tetap bisa dipakai dgn salinan lokal
+                if (cekUlang) clearTimeout(cekUlang);
+                cekUlang = setTimeout(cobaTerima, 15000);
+                return;
+              }
+              firstBatchDone = true;
+              recomputeKontrolArr();
+              setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
+              if (countTowardBoot) markLoadedAndFlush("kontrol");
+            };
             const settle = () => {
               if (settleTimer) clearTimeout(settleTimer);
               // ✅ Diperpanjang (dari 400ms) — sama alasannya seperti tabel
               // toko: di jaringan sangat lambat, jeda alami antar-batch data
               // yang masih mengalir jangan sampai dikira "sudah selesai".
-              settleTimer = setTimeout(() => {
-                firstBatchDone = true;
-                recomputeKontrolArr();
-                setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
-                if (countTowardBoot) markLoadedAndFlush("kontrol");
-              }, 900);
+              settleTimer = setTimeout(cobaTerima, 900);
             };
             // ✅ Setelah batch pertama, update-update berikutnya juga
             // di-debounce (bukan recompute per record) — supaya ribuan
@@ -333,10 +374,11 @@ export function useDB(user) {
             // toko: di jaringan sangat lambat, record pertama yang memang
             // ada tapi belum sempat tiba jangan sampai dikira "tahun ini
             // kosong".
-            const emptyFallback = setTimeout(() => {
-              if (!firstBatchDone) { firstBatchDone = true; recomputeKontrolArr(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); if (countTowardBoot) markLoadedAndFlush("kontrol"); }
-            }, 12000);
-            kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); clearTimeout(emptyFallback); };
+            const emptyFallback = setTimeout(cobaTerima, 12000);
+            // Sambung ulang setelah putus saat muat awal → nilai ulang begitu aliran diam.
+            const pendengar = (kembali) => { if (kembali && !firstBatchDone) settle(); };
+            muat.pendengar.add(pendengar);
+            kontrolYearUnsubsRef.current[year] = () => { off(yr); muat.pendengar.delete(pendengar); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); if (cekUlang) clearTimeout(cekUlang); clearTimeout(emptyFallback); };
             unsubs.push(kontrolYearUnsubsRef.current[year]);
           };
 
@@ -392,6 +434,7 @@ export function useDB(user) {
           const localMap = {};
           let settleTimer = null;
           let postSettleTimer = null; // ✅ debounce update SETELAH batch pertama juga
+          let cekUlang = null;
           let firstBatchDone = false;
 
           const flushToState = () => {
@@ -416,6 +459,22 @@ export function useDB(user) {
             postSettleTimer = setTimeout(flushToState, 300);
           };
 
+          const cobaTerima = () => {
+            if (firstBatchDone) return;
+            const baru = Object.keys(localMap).length;
+            const lokal = (dbRef.current?.[key] || []).length;
+            if (muat.putuskan(baru, lokal) === "tahan") {
+              catatApp("muat awal", key, "ditahan (salinan lokal dipertahankan): server", baru, "lokal", lokal);
+              markLoadedAndFlush(key); // app tetap bisa dipakai dgn salinan lokal
+              if (cekUlang) clearTimeout(cekUlang);
+              cekUlang = setTimeout(cobaTerima, 15000);
+              return;
+            }
+            firstBatchDone = true;
+            flushToState();
+            markLoadedAndFlush(key);
+          };
+
           const scheduleSettle = () => {
             // Selama listener child_added masih "membanjir" data awal
             // (initial sync), tunda update UI sampai aliran berhenti
@@ -426,11 +485,7 @@ export function useDB(user) {
             // antar-batch data yang masih mengalir tidak salah dikira "sudah
             // selesai" padahal masih banyak record berikutnya dalam perjalanan.
             if (settleTimer) clearTimeout(settleTimer);
-            settleTimer = setTimeout(() => {
-              firstBatchDone = true;
-              flushToState();
-              markLoadedAndFlush(key);
-            }, 900);
+            settleTimer = setTimeout(cobaTerima, 900);
           };
 
           const unsubAdd = onChildAdded(r, snap => {
@@ -459,11 +514,11 @@ export function useDB(user) {
           // record PERTAMA yang memang ada tapi belum sempat tiba tidak
           // keliru dianggap "tabel ini kosong" — itu akar masalah Dashboard
           // sempat menampilkan "0 toko" padahal datanya ada, cuma lambat.
-          const emptyFallback = setTimeout(() => {
-            if (!firstBatchDone) { firstBatchDone = true; flushToState(); markLoadedAndFlush(key); }
-          }, 12000);
+          const emptyFallback = setTimeout(cobaTerima, 12000);
+          const pendengar = (kembali) => { if (kembali && !firstBatchDone) scheduleSettle(); };
+          muat.pendengar.add(pendengar);
 
-          unsubs.push(() => { off(r); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); clearTimeout(emptyFallback); });
+          unsubs.push(() => { off(r); muat.pendengar.delete(pendengar); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); if (cekUlang) clearTimeout(cekUlang); clearTimeout(emptyFallback); });
           return;
         }
 
@@ -724,6 +779,7 @@ export function useDB(user) {
       do {
         flushAgainRef.current = false;
         const hasil = await drainQueue(kirim, {
+          onLog: catatApp,
           onProgress: () => refreshPendingCount(),
           terbang: terbangRef.current,
           // SDK akhirnya membalas tulisan yang tadi kena timeout → antrean ikut berkurang.
@@ -805,6 +861,7 @@ export function useDB(user) {
   useEffect(() => {
     if (!user || !firebaseDB) return;
     refreshPendingCount();
+    mulaiDiagAwal(firebaseDB);
     flushWriteQueue();
     const onOnline = () => { catatApp("event browser: online"); flushWriteQueue(); };
     const onOffline = () => catatApp("event browser: offline");
