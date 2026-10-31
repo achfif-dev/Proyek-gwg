@@ -14,6 +14,7 @@ import { downloadKontrolTemplate } from "../../lib/importUtils";
 import { bangunBarisJurnalKontrol, bangunBarisJurnalPenjualanLuar } from "../../lib/akuntansiHelpers";
 import { CATATAN_STATUS, T } from "../../theme/tokens";
 import { usePersistedState } from "../../hooks/usePersistedState";
+import { hariIniLokal } from "../../lib/analitikToko";
 import { urutkanKontrol, bangunIndeksKontrol, saringKontrol, indeksKontrolPerToko, hitungTokoPerRute, ringkasanPerTanggal, hitungRingkasanProduk } from "../../lib/kontrolFilter";
 import { Icon, StatusDot } from "../../theme/icons.jsx";
 
@@ -32,7 +33,12 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // siklus berjalan) — mempermudah menyisir toko yang masih perlu dikunjungi.
   // ✅ PERSISTEN: filter & pencarian tab ini disimpan ke localStorage supaya
   // tetap sama setelah refresh / app dibuka ulang, bukan balik ke default.
-  const [hanyaBelumKontrol, setHanyaBelumKontrol] = usePersistedState("kontrol.hanyaBelumKontrol", false);
+  // ✅ FIX filter hilang setelah restart: TabKontrol juga ditanam di Tab Rekap (panel "Cari Toko",
+  // ditandai prop initialQuery). Dua instance memakai kunci localStorage yang SAMA, jadi instance
+  // di Rekap menimpa filter instance utama (q diganti query Rekap, wilayah/rute/bulan ditimpa
+  // salinan lama). Instance yang ditanam tidak lagi membaca/menulis penyimpanan.
+  const embedded = initialQuery !== undefined;
+  const [hanyaBelumKontrol, setHanyaBelumKontrol] = usePersistedState("kontrol.hanyaBelumKontrol", false, !embedded);
   // Sales Pelapor di modal Tambah Kontrol terisi OTOMATIS sesuai wilayah toko yang
   // dipilih (lihat salesPerWilayah). Ref ini menandai kalau admin sudah mengetik/
   // mengubah nama itu sendiri, supaya pindah toko/wilayah tidak menimpa ketikannya.
@@ -41,7 +47,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // ✅ Filter "Belum Dikontrol Hari Ini": cek tanggal tertentu (default hari ini),
     // tampilkan hanya toko yang BELUM ada entri kontrol pada tanggal tsb,
     // padahal toko lain di rute yang sama sudah.
-    cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni: false,
+    cekTanggal: hariIniLokal(), hanyaBelumHariIni: false,
     // ✅ Filter tambahan supaya lebih gampang ketemu kesalahan input:
     // status catatan kunjungan (Tutup/Tidak Terjual/Bermasalah/Isi Manual),
     // dan rentang jumlah penjualan (total pcs semua produk per entri).
@@ -54,14 +60,14 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
     // sebagai Piutang di Neraca Keuangan — bisa terjadi kalau pengajuan
     // Sales auto-approve lewat 24 jam tanpa sempat ditinjau Admin/Manajer
     // (yang satu-satunya jalur boleh menulis ke modul Piutang).
-    piutangBelumTercatat:false });
+    piutangBelumTercatat:false }, !embedded);
   // `filterLive` = nilai yang SEDANG dipilih/diketik (dipakai kolom filter agar langsung
   // responsif); `filter` = versi "ditunda" yang dipakai semua hitungan berat turunan
   // (daftar hasil, ringkasan, dropdown rute, dst.). React menyelesaikan render ringan dulu
   // (dropdown menutup, huruf muncul), baru menghitung ulang daftar di prioritas rendah —
   // inilah yang menghilangkan jeda saat memilih Wilayah.
   const filter = useDeferredValue(filterLive);
-  const [viewMode, setViewMode] = usePersistedState("kontrol.viewMode", "table"); // table | monthly
+  const [viewMode, setViewMode] = usePersistedState("kontrol.viewMode", "table", !embedded); // table | monthly
   // ✅ Diagnostik Cakupan Kontrol: kartu ringkas default tertutup (biar tidak
   // mengganggu tampilan harian), daftar rincian toko baru dimuat saat dibuka.
   const [diagnostikOpen, setDiagnostikOpen] = useState(false);
@@ -72,19 +78,19 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
   // harus tebak-tebak tanggal satu-satu.
   const [ringkasanTanggalOpen, setRingkasanTanggalOpen] = useState(false);
   const [diagnostikShowList, setDiagnostikShowList] = useState(false);
-  const [diagnostikGroupBy, setDiagnostikGroupBy] = usePersistedState("kontrol.diagnostikGroupBy", "wilayah"); // "wilayah" | "rute"
+  const [diagnostikGroupBy, setDiagnostikGroupBy] = usePersistedState("kontrol.diagnostikGroupBy", "wilayah", !embedded); // "wilayah" | "rute"
   // ✅ Filter khusus daftar/ekspor di kartu Diagnostik Cakupan Kontrol — terpisah
   // dari filter utama tab, supaya bisa saring per Wilayah/Rute + cari nama/kode
   // toko sebelum kirim daftar "belum dikontrol" ke sales tertentu.
-  const [diagnostikFilterWilayahId, setDiagnostikFilterWilayahId] = usePersistedState("kontrol.diagnostikFilterWilayahId", "");
-  const [diagnostikFilterRuteId, setDiagnostikFilterRuteId] = usePersistedState("kontrol.diagnostikFilterRuteId", "");
-  const [diagnostikSearchQ, setDiagnostikSearchQ] = usePersistedState("kontrol.diagnostikSearchQ", "");
+  const [diagnostikFilterWilayahId, setDiagnostikFilterWilayahId] = usePersistedState("kontrol.diagnostikFilterWilayahId", "", !embedded);
+  const [diagnostikFilterRuteId, setDiagnostikFilterRuteId] = usePersistedState("kontrol.diagnostikFilterRuteId", "", !embedded);
+  const [diagnostikSearchQ, setDiagnostikSearchQ] = usePersistedState("kontrol.diagnostikSearchQ", "", !embedded);
   // ✅ Mode "Rentang Waktu": selain "belum pernah SAMA SEKALI", tambahkan opsi
   // "tidak dikontrol dalam N hari terakhir" — menangkap toko yang PERNAH
   // dikontrol tapi sudah lama tidak dikunjungi lagi (kasus ini tidak kena
   // filter "belum pernah" karena secara historis pernah ada entrinya).
-  const [diagnostikMode, setDiagnostikMode] = usePersistedState("kontrol.diagnostikMode", "never"); // "never" | "rentang"
-  const [diagnostikRentangHari, setDiagnostikRentangHari] = usePersistedState("kontrol.diagnostikRentangHari", 30);
+  const [diagnostikMode, setDiagnostikMode] = usePersistedState("kontrol.diagnostikMode", "never", !embedded); // "never" | "rentang"
+  const [diagnostikRentangHari, setDiagnostikRentangHari] = usePersistedState("kontrol.diagnostikRentangHari", 30, !embedded);
 
   // ✅ Kunci ulang wilayahId filter ke wilayah Sales setiap kali status
   // pembatasan berubah (mis. filter tersimpan dari sesi login Admin
@@ -3164,7 +3170,7 @@ function TabKontrolImpl({ db, addRecord, updateRecord, deleteRecord, save, sales
         });
         else setFilter(p=>({...p,[k]:v}));
       }} onReset={()=>setFilter({wilayahId: salesWilayahId||"", ruteId:"", bulan:"", tanggal:"", dari:"", sampai:"", salesPelapor:"", q:"",
-        cekTanggal: new Date().toISOString().slice(0,10), hanyaBelumHariIni:false,
+        cekTanggal: hariIniLokal(), hanyaBelumHariIni:false,
         catatanStatus:"", minJumlah:"", maxJumlah:"", kunjunganBerulang:false, piutangBelumTercatat:false})} />
 
       {/* Filter rentang Jumlah Penjualan (total pcs semua produk per entri)
