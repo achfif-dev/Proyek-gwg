@@ -377,12 +377,44 @@ if (typeof window !== "undefined") {
   });
 }
 
+// ✅ FIX filter (rute/tanggal) hilang setelah app ditutup: sebelumnya SETIAP perubahan db menulis
+// ulang irisan tabel kecil (bisa ratusan KB) ke localStorage secara sinkron. Chromium/WebView
+// membatasi laju commit localStorage ke disk (byte & jumlah commit per jam), jadi tulisan kecil
+// yang datang belakangan — misalnya filter Rute & Tgl Kontrol yang dipilih terakhir — bisa
+// tertahan di memori dan HILANG kalau proses app dimatikan sebelum sempat di-commit. Sekarang
+// tulisan besar ini di-debounce, dilewati kalau isinya tidak berubah, dan di-flush saat app
+// disembunyikan/ditutup, sehingga antrean commit tidak membanjiri localStorage.
+let smallTimer = null;
+let smallPending = null;
+let smallLastJson = null;
+function flushSmallNow() {
+  if (smallTimer) { clearTimeout(smallTimer); smallTimer = null; }
+  if (smallPending === null) return;
+  const slice = smallPending;
+  smallPending = null;
+  try {
+    const json = JSON.stringify(slice);
+    if (json === smallLastJson) return;
+    localStorage.setItem("gwg_db_v2_small", json);
+    smallLastJson = json;
+  } catch {}
+}
+if (typeof window !== "undefined") {
+  window.addEventListener("beforeunload", flushSmallNow);
+  window.addEventListener("pagehide", flushSmallNow);
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") flushSmallNow();
+  });
+}
+
 export function saveLocalDB(data) {
   const smallSlice = {};
   for (const key in data) {
     if (!LARGE_TABLES.includes(key)) smallSlice[key] = data[key];
   }
-  try { localStorage.setItem("gwg_db_v2_small", JSON.stringify(smallSlice)); } catch {}
+  smallPending = smallSlice;
+  if (smallTimer) clearTimeout(smallTimer);
+  smallTimer = setTimeout(flushSmallNow, 400);
 
   idbFlushPending = data;
   if (idbFlushTimer) clearTimeout(idbFlushTimer);
@@ -392,6 +424,7 @@ export function saveLocalDB(data) {
 // Dipakai di titik-titik kritis (sebelum reset/restore/logout) supaya
 // tidak menunggu window debounce 500ms saat kepastian tersimpan itu penting.
 export function flushLocalDBNow() {
+  flushSmallNow();
   flushIdbNow();
 }
 
