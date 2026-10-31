@@ -36,28 +36,34 @@ export function useAppResumeReload() {
     let pausedAt = null;
     let listenerHandle;
     const RELOAD_THRESHOLD_MS = 3 * 60 * 1000; // 3 menit (sebelumnya 60 detik)
-    const CONNECTED_CHECK_TIMEOUT_MS = 4000;
+    const CONNECTED_CHECK_TIMEOUT_MS = 8000; // sinyal lemah butuh waktu menyambung; 4 dtk terlalu cepat memicu reload
 
     function maybeReloadIfDisconnected() {
       // Firebase belum sempat init (jarang, tapi jaga-jaga) — tidak bisa
       // dicek, langsung reload seperti perilaku lama supaya tetap aman.
       if (!firebaseDB) { window.location.reload(); return; }
-      const { db: rtdb, ref, onValue, off } = firebaseDB;
+      const { db: rtdb, ref, onValue } = firebaseDB;
       const connectedRef = ref(rtdb, ".info/connected");
       let settled = false;
+      // ✅ FIX: JANGAN pakai off(connectedRef) — tanpa callback ia melepas SEMUA listener
+      // `.info/connected` di app (useDB, useFirebaseConnected, usePresence), sehingga indikator
+      // koneksi, pemicu kirim saat tersambung, dan presence mati diam-diam setelah app dibuka
+      // lagi. Pakai fungsi berhenti milik listener ini saja.
+      let berhenti = null;
+      const lepas = () => { if (typeof berhenti === "function") { berhenti(); berhenti = null; } };
       const timeout = setTimeout(() => {
         if (settled) return;
         settled = true;
-        off(connectedRef);
+        lepas();
         window.location.reload(); // tidak kunjung tersambung — reload penuh
       }, CONNECTED_CHECK_TIMEOUT_MS);
-      onValue(connectedRef, snap => {
+      berhenti = onValue(connectedRef, snap => {
         if (settled || snap.val() !== true) return;
         // Masih/sudah tersambung sendiri — batalkan reload, listener lama
         // tetap jalan, tidak ada data yang perlu diunduh ulang dari nol.
         settled = true;
         clearTimeout(timeout);
-        off(connectedRef);
+        lepas();
       });
     }
 

@@ -586,18 +586,32 @@ export function useDB(user) {
       if (postSettleTimer) clearTimeout(postSettleTimer);
       postSettleTimer = setTimeout(recompute, 300);
     };
+    // ✅ FIX gerbang muat tahun lama: sebelumnya fallback 12 dtk / settle 900ms langsung
+    // recompute() walau belum ada satu record pun dari server (sinyal putus/lemah) →
+    // salinan lokal tahun itu tertimpa kosong. Sekarang: bila server belum memberi record
+    // dan (socket tidak tersambung ATAU salinan lokal tahun ini ada), TAHAN & coba lagi 15 dtk.
+    const tahunAdaDiLokal = () => (dbRef.current?.kontrol || []).some(k => String(k.tanggal || "").startsWith(year));
+    const terima = () => {
+      if (firstBatchDone) return;
+      const baru = Object.keys(kontrolByYearRef.current[year] || {}).length;
+      if (baru === 0 && (terhubungRef.current !== true || tahunAdaDiLokal())) {
+        catatApp("muat tahun", year, "ditahan (salinan lokal dipertahankan): server 0, terhubung", terhubungRef.current);
+        if (settleTimer) clearTimeout(settleTimer);
+        settleTimer = setTimeout(terima, 15000);
+        return;
+      }
+      firstBatchDone = true;
+      recompute();
+      setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
+    };
     const settle = () => {
       if (settleTimer) clearTimeout(settleTimer);
-      settleTimer = setTimeout(() => {
-        firstBatchDone = true;
-        recompute();
-        setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort());
-      }, 900);
+      settleTimer = setTimeout(terima, 900);
     };
     onChildAdded(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity("kontrol", snap.key); if (!firstBatchDone) settle(); else recomputeDebounced(); });
     onChildChanged(yr, snap => { kontrolByYearRef.current[year][snap.key] = snap.val(); markSyncActivity("kontrol", snap.key); if (firstBatchDone) recomputeDebounced(); });
     onChildRemoved(yr, snap => { delete kontrolByYearRef.current[year][snap.key]; markSyncActivity("kontrol", snap.key); if (firstBatchDone) recomputeDebounced(); });
-    setTimeout(() => { if (!firstBatchDone) { firstBatchDone = true; recompute(); setLoadedKontrolYears(prev => prev.includes(year) ? prev : [...prev, year].sort()); } }, 12000);
+    setTimeout(terima, 12000);
     kontrolYearUnsubsRef.current[year] = () => { off(yr); if (settleTimer) clearTimeout(settleTimer); if (postSettleTimer) clearTimeout(postSettleTimer); };
   }, [user]);
 
