@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { idbGet, idbSet } from "../lib/offlineStore";
 
 // ─────────────────────────────────────────────────────────────────────────
 // usePersistedState — pengganti drop-in untuk useState, TAPI nilainya
@@ -51,16 +52,46 @@ function readStored(key, fallback) {
 export function usePersistedState(key, initialValue, enabled = true) {
   const [value, setValue] = useState(() => (enabled ? readStored(key, initialValue) : nilaiAwal(initialValue)));
   const keyRef = useRef(key);
+  const awalJsonRef = useRef(null);   // isi yang dipulihkan dari localStorage saat mount
+  const disentuhRef = useRef(false);  // true kalau nilai sudah berubah sejak mount
+
+  // ✅ FIX filter hilang setelah app ditutup paksa: localStorage WebView tidak langsung ke disk,
+  // jadi pilihan terakhir (mis. Rute & Tgl Kontrol) bisa hilang. Salinan CADANGAN ditulis juga
+  // ke IndexedDB (transaksi selesai dalam hitungan ms) beserta cap waktu; saat mount, kalau
+  // cadangan itu lebih baru daripada localStorage dan user belum mengubah apa pun, dipakai.
+  useEffect(() => {
+    if (!enabled) return;
+    let batal = false;
+    try { awalJsonRef.current = JSON.stringify(value); } catch { awalJsonRef.current = null; }
+    idbGet(STORAGE_PREFIX + keyRef.current).then(rec => {
+      if (batal || disentuhRef.current || !rec || rec.t === undefined) return;
+      let tLokal = 0;
+      try { tLokal = Number(localStorage.getItem(STORAGE_PREFIX + keyRef.current + "@t") || 0); } catch {}
+      if (rec.t <= tLokal) return;
+      const def = nilaiAwal(initialValue);
+      setValue(objekBiasa(def) && objekBiasa(rec.v) ? { ...def, ...rec.v } : rec.v);
+    }).catch(() => {});
+    return () => { batal = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled]);
 
   useEffect(() => {
     if (!enabled) return;
+    let json = null;
+    try { json = JSON.stringify(value); } catch { /* tidak bisa diserialisasi → abaikan */ }
+    if (json !== null && json !== awalJsonRef.current) disentuhRef.current = true;
+    // Jangan menulis ulang (dan memperbarui cap waktu) hanya karena komponen baru dipasang —
+    // itu akan membuat salinan lama dari localStorage tampak "lebih baru" daripada cadangan IDB.
+    if (!disentuhRef.current) return;
+    const t = Date.now();
     try {
-      localStorage.setItem(STORAGE_PREFIX + keyRef.current, JSON.stringify(value));
+      localStorage.setItem(STORAGE_PREFIX + keyRef.current, json ?? "null");
+      localStorage.setItem(STORAGE_PREFIX + keyRef.current + "@t", String(t));
     } catch {
-      // Kuota localStorage penuh / mode private browsing — abaikan saja,
-      // filter tetap berfungsi normal untuk sesi berjalan, hanya saja
-      // tidak tersimpan lintas-reload.
+      // Kuota localStorage penuh / mode private browsing — abaikan saja; cadangan IndexedDB
+      // di bawah tetap mencoba menyimpan.
     }
+    idbSet(STORAGE_PREFIX + keyRef.current, { v: value, t });
   }, [value, enabled]);
 
   return [value, setValue];
@@ -68,5 +99,6 @@ export function usePersistedState(key, initialValue, enabled = true) {
 
 /** Hapus satu filter tersimpan (dipakai tombol "Reset" supaya reset juga menghapus dari localStorage, bukan cuma kembali ke default di memori). */
 export function clearPersistedState(key) {
-  try { localStorage.removeItem(STORAGE_PREFIX + key); } catch {}
+  try { localStorage.removeItem(STORAGE_PREFIX + key); localStorage.removeItem(STORAGE_PREFIX + key + "@t"); } catch {}
+  idbSet(STORAGE_PREFIX + key, undefined);
 }
