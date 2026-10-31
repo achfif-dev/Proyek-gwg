@@ -24,27 +24,36 @@ import { useState, useEffect, useRef } from "react";
 
 const STORAGE_PREFIX = "gwg_filter_v1:";
 
+const nilaiAwal = (fallback) => (typeof fallback === "function" ? fallback() : fallback);
+const objekBiasa = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+
 function readStored(key, fallback) {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + key);
-    if (raw === null || raw === undefined) {
-      return typeof fallback === "function" ? fallback() : fallback;
-    }
-    return JSON.parse(raw);
+    if (raw === null || raw === undefined) return nilaiAwal(fallback);
+    const parsed = JSON.parse(raw);
+    // Gabungkan dengan default: field filter yang ditambahkan di versi app yang lebih baru
+    // (belum ada di data tersimpan) tetap punya nilai awal, bukan undefined.
+    const def = nilaiAwal(fallback);
+    return objekBiasa(def) && objekBiasa(parsed) ? { ...def, ...parsed } : parsed;
   } catch {
-    return typeof fallback === "function" ? fallback() : fallback;
+    return nilaiAwal(fallback);
   }
 }
 
 /**
  * @param {string} key - kunci unik per filter, disarankan format "namaTab.namaFilter"
  * @param {*} initialValue - nilai default (dipakai kalau belum pernah tersimpan di device ini)
+ * @param {boolean} [enabled=true] - false = state biasa TANPA baca/tulis localStorage. Dipakai oleh
+ *   instance KEDUA dari komponen yang sama (mis. TabKontrol yang ditanam di dalam Tab Rekap) supaya
+ *   tidak menimpa filter milik instance utama lewat kunci localStorage yang sama.
  */
-export function usePersistedState(key, initialValue) {
-  const [value, setValue] = useState(() => readStored(key, initialValue));
+export function usePersistedState(key, initialValue, enabled = true) {
+  const [value, setValue] = useState(() => (enabled ? readStored(key, initialValue) : nilaiAwal(initialValue)));
   const keyRef = useRef(key);
 
   useEffect(() => {
+    if (!enabled) return;
     try {
       localStorage.setItem(STORAGE_PREFIX + keyRef.current, JSON.stringify(value));
     } catch {
@@ -52,7 +61,7 @@ export function usePersistedState(key, initialValue) {
       // filter tetap berfungsi normal untuk sesi berjalan, hanya saja
       // tidak tersimpan lintas-reload.
     }
-  }, [value]);
+  }, [value, enabled]);
 
   return [value, setValue];
 }
