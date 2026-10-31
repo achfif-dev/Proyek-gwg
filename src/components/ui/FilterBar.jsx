@@ -47,6 +47,11 @@ export function FilterBar({ filters, onChange, onReset }) {
               style={{ width:"100%", padding:"7px 10px", border:`1.5px solid ${T.gray200}`,
                 borderRadius:7, fontSize:12, fontFamily:"inherit", background:T.white }}>
               <option value="">Semua</option>
+              {/* ✅ Nilai tersimpan yang opsinya belum termuat (data masih sinkron/sinyal lemah)
+                  tetap ditampilkan, bukan terlihat "hilang" jadi Semua. */}
+              {f.value && !f.options.some(o => o.value === f.value) && (
+                <option value={f.value}>(memuat… / tidak ditemukan)</option>
+              )}
               {f.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </select>
           ) : (
